@@ -81,7 +81,8 @@ def main():
     feeding_cfg = make_feeding_cfg(cfg)
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
-    worm.decision_version = make_decision_cfg(cfg)
+    worm.brain = load_brain_module(make_decision_cfg(cfg))
+
 
     reset_sim(world, feeding_cfg, rng, worm)
 
