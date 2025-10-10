@@ -48,10 +48,6 @@ def make_sensor_cfg(cfg_yaml):
 def make_decision_cfg(cfg_yaml):
     return str(cfg_yaml["decisionmaking"]["version"])
 
-def make_acting_cfg(cfg_yaml):
-    return str(cfg_yaml["acting"]["version"])
-
-
 def reset_sim(world, feeding_cfg, rng, worm):
     world.reset_food()
     apply_feeding(world, feeding_cfg, rng)
@@ -69,12 +65,7 @@ def main():
     feeding_cfg = make_feeding_cfg(cfg)
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
-    decision_version = make_decision_cfg(cfg)
-    acting_version = make_acting_cfg(cfg)
-
-    worm.decision_version = decision_version
-    worm.acting_version = acting_version
-
+    worm.decision_version = make_decision_cfg(cfg)
 
     reset_sim(world, feeding_cfg, rng, worm)
 

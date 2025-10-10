@@ -1,26 +1,25 @@
 from .world import World
 
-def act(world: World, worm, action: tuple):
-    kind = action[0]
+def act(world, worm, action):
+    """Execute the given action tuple ('move', (y,x)) or ('eat',)."""
+    verb = action[0]
+    fn = ACTION_REGISTRY.get(verb)
+    if fn is None:
+        raise ValueError(f"Unknown action type: {verb}")
+    fn(world, worm, *action[1:])
 
-    if kind == "eat":
-        if world.eat_one(worm.y, worm.x):
-            worm.eats += 1
-            # Refill or add energy gain
-            worm.energy = min(
-                worm.cfg.energy_capacity,
-                worm.energy + worm.cfg.energy_capacity
-            )
+def do_move(world, worm, pos):
+    ny, nx = pos
+    worm.y, worm.x = ny, nx
+    worm.energy = max(0, worm.energy - 1)  # movement cost
 
-    elif kind == "move":
-        new_y, new_x = action[1]
-        # Extra movement cost
-        move_cost = 1
-        worm.energy = max(0, worm.energy - move_cost)
+def do_eat(world, worm):
+    if world.eat_one(worm.y, worm.x):
+        worm.energy = worm.cfg.energy_capacity
+        worm.eats += 1
 
-        if (new_y, new_x) != (worm.y, worm.x):
-            worm.distance += 1
-        worm.y, worm.x = new_y, new_x
-
-    else:
-        raise ValueError(f"Unknown action type: {kind}")
+ACTION_REGISTRY = {
+    "move": do_move,
+    "eat": do_eat,
+    # later: "flee": do_flee, "mate": do_mate, etc.
+}
