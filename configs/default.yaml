@@ -2,7 +2,7 @@ world:
   grid_width: 51
   grid_height: 51
   start_pos: [25, 25]
-  rng_seed: 45
+  rng_seed: 46
 
 viz:
   fps: 4
@@ -14,5 +14,5 @@ food:
 worm:
   worm_version: random
   speed: 1
-  energy_capacity: 20
+  energy_capacity: 30
   metabolic_rate: 1

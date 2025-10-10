@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from .world import World
-from .policies import choose_next_position
+from .decisionmaking import decide
+from .acting import act
+from .sensory import perceive
 
 @dataclass
 class WormConfig:
@@ -26,40 +28,33 @@ class Worm:
         self.distance = 0
         self.ticks = 0
 
-
     def death_gate(self) -> bool:
-        # If energy is 0 at START of tick, die immediately
+        """If energy is 0 at START of tick, die immediately."""
         if self.energy <= 0:
             self.alive = False
             return True
         return False
 
-    def step(self, rng, policy_name: str):
+    def step(self, rng):
         if not self.alive:
             return
 
-        # 1) Death gate at start of tick
-        if self.death_gate():
-            return
-
-        # 2) Decide action (forced eat if on food)
-        on_food = self.world.has_food(self.y, self.x)
-
-        # 3) Drain first
+        # 1) Baseline metabolism
         self.energy = max(0, self.energy - self.cfg.metabolic_rate)
 
-        # 4) Apply action
-        if on_food:
-            # Eat consumes tick, then refills to cap
-            if self.world.eat_one(self.y, self.x):
-                self.eats += 1
-            self.energy = self.cfg.energy_capacity
-        else:
-            # Move (speed=1)
-            ny, nx = choose_next_position(policy_name, self.world, (self.y, self.x), rng)
-            # distance = Manhattan of one step (always 1 here)
-            if (ny, nx) != (self.y, self.x):
-                self.distance += 1
-            self.y, self.x = ny, nx
+        # 2) Death gate
+        if self.energy <= 0:
+            self.alive = False
+            return
 
+        # 3) Sense
+        inputs = perceive(self.world, self)
+
+        # 4) Decide
+        action = decide(self.world, self, rng, inputs)
+
+        # 5) Act
+        act(self.world, self, action)
+
+        # 6) Advance time
         self.ticks += 1
