@@ -6,7 +6,6 @@ from .sensory import perceive
 
 @dataclass
 class WormConfig:
-    worm_version: str   # "random"
     speed: int          # cells per tick (must be 1 in v1)
     energy_capacity: int
     metabolic_rate: int # energy per tick

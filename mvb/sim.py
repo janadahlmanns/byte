@@ -35,12 +35,22 @@ def make_feeding_cfg(cfg_yaml):
 def make_worm(world, cfg_yaml):
     w = cfg_yaml["worm"]
     wcfg = WormConfig(
-        worm_version=str(w["worm_version"]),
         speed=int(w["speed"]),
         energy_capacity=int(w["energy_capacity"]),
         metabolic_rate=int(w["metabolic_rate"]),
     )
     return Worm(wcfg, world)
+
+def make_sensor_cfg(cfg_yaml):
+    sensors = cfg_yaml.get("sensors", {})
+    return sensors.get("active", ["current_field"])
+
+def make_decision_cfg(cfg_yaml):
+    return str(cfg_yaml["decisionmaking"]["version"])
+
+def make_acting_cfg(cfg_yaml):
+    return str(cfg_yaml["acting"]["version"])
+
 
 def reset_sim(world, feeding_cfg, rng, worm):
     world.reset_food()
@@ -58,6 +68,13 @@ def main():
     world = make_world(cfg, rng)
     feeding_cfg = make_feeding_cfg(cfg)
     worm = make_worm(world, cfg)
+    worm.active_sensors = make_sensor_cfg(cfg)
+    decision_version = make_decision_cfg(cfg)
+    acting_version = make_acting_cfg(cfg)
+
+    worm.decision_version = decision_version
+    worm.acting_version = acting_version
+
 
     reset_sim(world, feeding_cfg, rng, worm)
 

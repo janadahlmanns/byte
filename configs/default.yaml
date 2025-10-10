@@ -12,7 +12,15 @@ food:
   initial_fraction_per_cell: 0.5
 
 worm:
-  worm_version: random
   speed: 1
   energy_capacity: 30
   metabolic_rate: 1
+
+sensors:
+  active: ["current_field"]
+
+decisionmaking:
+  version: prio_food
+
+acting:
+  version: eat_random_move
