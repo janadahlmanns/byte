@@ -21,6 +21,3 @@ sensors:
 
 decisionmaking:
   version: prio_food
-
-acting:
-  version: eat_random_move
