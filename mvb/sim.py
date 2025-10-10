@@ -6,7 +6,7 @@ import numpy as np
 import importlib
 
 from .world import World, WorldConfig
-from .feeding import FeedingConfig, apply_feeding
+from .feeding import FeedingConfig, seed_food
 from .worm import Worm, WormConfig
 from .render_mpl import MPLRenderer
 
@@ -44,8 +44,9 @@ def make_world(cfg_yaml, rng):
 def make_feeding_cfg(cfg_yaml):
     f = cfg_yaml["food"]
     return FeedingConfig(
-        feeding_paradigm=str(f["feeding_paradigm"]),
+        feeding_paradigm=f.get("feeding_paradigm", {"initial": True}),
         initial_fraction_per_cell=float(f["initial_fraction_per_cell"]),
+        regrow_time = int(f["regrow_time"]),
     )
 
 def make_worm(world, cfg_yaml):
@@ -66,7 +67,7 @@ def make_decision_cfg(cfg_yaml):
 
 def reset_sim(world, feeding_cfg, rng, worm):
     world.reset_food()
-    apply_feeding(world, feeding_cfg, rng)
+    seed_food(world, feeding_cfg, rng)
     worm.reset()
 
 def main():
@@ -79,6 +80,7 @@ def main():
 
     world = make_world(cfg, rng)
     feeding_cfg = make_feeding_cfg(cfg)
+    world.feeding_cfg = feeding_cfg
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
     worm.brain = load_brain_module(make_decision_cfg(cfg))
@@ -118,6 +120,7 @@ def main():
             reset_requested = False
 
         if not paused or renderer.single_step:
+            world.step()
             worm.step(rng)
             renderer.single_step = False
             # If worm died, stop the loop
