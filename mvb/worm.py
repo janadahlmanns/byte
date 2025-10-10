@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from .world import World
-from .decisionmaking import decide
+from .brains.decisionmaking_prio_food import decide
 from .acting import act
 from .sensory import perceive
 
