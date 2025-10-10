@@ -1,4 +1,5 @@
 from .world import World
+from .feeding import on_eat
 
 def act(world, worm, action):
     """Execute the given action tuple ('move', (y,x)) or ('eat',)."""
@@ -6,15 +7,15 @@ def act(world, worm, action):
     fn = ACTION_REGISTRY.get(verb)
     if fn is None:
         raise ValueError(f"Unknown action type: {verb}")
-    fn(world, worm, *action[1:])
+    fn(world, worm, *action[1:])  # consistent call
 
-def do_move(world, worm, pos):
+def do_move(world, worm, pos, *args):   # <— fixed: world first!
     ny, nx = pos
     worm.y, worm.x = ny, nx
     worm.energy = max(0, worm.energy - 1)  # movement cost
 
-def do_eat(world, worm):
-    if world.eat_one(worm.y, worm.x):
+def do_eat(world, worm, *args):
+    if on_eat(world, world.feeding_cfg, worm.y, worm.x):
         worm.energy = worm.cfg.energy_capacity
         worm.eats += 1
 
