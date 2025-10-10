@@ -40,5 +40,3 @@ class World:
         if self.in_bounds(y, x - 1): moves.append(("left", (y, x - 1)))
         if self.in_bounds(y, x + 1): moves.append(("right", (y, x + 1)))
         return moves
-
-#test github connection

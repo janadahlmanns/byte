@@ -93,7 +93,7 @@ def main():
             reset_requested = False
 
         if not paused or renderer.single_step:
-            worm.step(rng, policy_name=cfg["worm"]["worm_version"])
+            worm.step(rng)
             renderer.single_step = False
             # If worm died, stop the loop
             if not worm.alive:
