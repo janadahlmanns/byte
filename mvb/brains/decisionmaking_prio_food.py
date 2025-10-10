@@ -1,5 +1,5 @@
 import numpy as np
-from .world import World
+from ..world import World
 
 def random_valid_move(world: World, pos: tuple[int, int], rng: np.random.Generator):
     """Pick a random valid neighboring cell."""

@@ -3,6 +3,7 @@ import sys
 import time
 import yaml
 import numpy as np
+import importlib
 
 from .world import World, WorldConfig
 from .feeding import FeedingConfig, apply_feeding
@@ -15,6 +16,21 @@ def load_config(path: str):
 
 def build_rng(seed: int):
     return np.random.default_rng(int(seed))
+
+def load_brain_module(version: str):
+    """
+    Dynamically import a decision-making module from mvb.brains/.
+    Example: version='prio_food' -> mvb.brains.decisionmaking_prio_food
+    """
+    module_name = f"mvb.brains.decisionmaking_{version}"
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        raise ImportError(f"Could not find brain module '{module_name}'.")
+    if not hasattr(module, "decide"):
+        raise AttributeError(f"Brain module '{module_name}' has no 'decide' function.")
+    return module
+
 
 def make_world(cfg_yaml, rng):
     wcfg = WorldConfig(
