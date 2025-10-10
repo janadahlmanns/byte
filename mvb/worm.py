@@ -47,10 +47,10 @@ class Worm:
             return
 
         # 3) Sense
-        inputs = perceive(self.world, self)
+        sensory_information = perceive(self.world, self)
 
         # 4) Decide
-        action = decide(self.world, self, rng, inputs)
+        action = self.brain.decide(self.world, self, rng, sensory_information)
 
         # 5) Act
         act(self.world, self, action)
