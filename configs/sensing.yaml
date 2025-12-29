@@ -1,0 +1,26 @@
+world:
+  grid_width: 51
+  grid_height: 51
+  start_pos: [25, 25]
+  rng_seed: 47
+
+viz:
+  fps: 4
+
+food:
+  feeding_paradigm:
+    initial: true
+    regrow: true
+  initial_fraction_per_cell: 0.3
+  regrow_time: 30
+
+worm:
+  speed: 1
+  energy_capacity: 30
+  metabolic_rate: 1
+
+sensors:
+  active: ["current_field"]
+
+decisionmaking:
+  version: prio_food
