@@ -5,6 +5,7 @@ world:
   rng_seed: 47
 
 viz:
+  enabled: false
   fps: 4
 
 food:
