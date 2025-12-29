@@ -2,17 +2,17 @@ world:
   grid_width: 51
   grid_height: 51
   start_pos: [26, 26]
-  rng_seed: 47
+  rng_seed: 1
 
 viz:
   enabled: true
-  fps: 4
+  fps: 25
 
 food:
   feeding_paradigm:
     initial: true
     regrow: true
-  initial_fraction_per_cell: 0.1
+  initial_fraction_per_cell: 0.8
   regrow_time: 30
 
 worm:
