@@ -1,7 +1,7 @@
 world:
-  grid_width: 5
-  grid_height: 5
-  start_pos: [2, 2]
+  grid_width: 51
+  grid_height: 51
+  start_pos: [26, 26]
   rng_seed: 47
 
 viz:
@@ -11,7 +11,7 @@ food:
   feeding_paradigm:
     initial: true
     regrow: true
-  initial_fraction_per_cell: 0.3
+  initial_fraction_per_cell: 0.1
   regrow_time: 30
 
 worm:
@@ -23,4 +23,4 @@ sensors:
   active: ["current_field", "adjacent_binary"]
 
 decisionmaking:
-  version: prio_food
+  version: adjacent_food #prio_food

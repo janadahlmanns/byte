@@ -10,14 +10,11 @@ def perceive_current_field(world: World, worm):
 
 
 def perceive_adjacent_binary(world: World, worm):
-    """
-    Binary food presence on the four adjacent tiles (N/E/S/W).
-    Assumes current tile is handled separately.
-    """
+    """Binary food presence on the four adjacent tiles (N/E/S/W)."""
     y, x = worm.y, worm.x
     h, w = world.height, world.width
 
-    north = ((y - 1) % h, x)
+    north = ((y - 1) % h, x) # modulo for wrapping when Byte is on the edge
     south = ((y + 1) % h, x)
     west  = (y, (x - 1) % w)
     east  = (y, (x + 1) % w)
