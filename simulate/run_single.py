@@ -1,12 +1,17 @@
+# run single
+# run one single simulation of Byte with the specified parameters
+# visualization is optional and specified in pamaeter YAML
+# no data is recorded
+
 import argparse
 import yaml
 import numpy as np
 import importlib
 
-from .world import World, WorldConfig
-from .feeding import FeedingConfig, seed_food
-from .worm import Worm, WormConfig
-from .render_mpl import MPLRenderer
+from mvb.world import World, WorldConfig
+from mvb.feeding import FeedingConfig, seed_food
+from mvb.worm import Worm, WormConfig
+from mvb.render_mpl import MPLRenderer
 
 
 # -------------------------
