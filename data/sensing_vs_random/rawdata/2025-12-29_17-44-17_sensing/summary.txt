@@ -1,8 +1,0 @@
-simulation_name: sensing
-config: configs/sensing.yaml
-lifetime_ticks: 28
-foods_eaten: 3
-distance: 0
-final_energy: 11
-alive_at_end: True
-max_ticks_cap: 1000

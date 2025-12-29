@@ -13,6 +13,7 @@ def do_move(world, worm, pos, *args):   # <— fixed: world first!
     ny, nx = pos
     worm.y, worm.x = ny, nx
     worm.energy = max(0, worm.energy - 1)  # movement cost
+    worm.distance += 1
 
 def do_eat(world, worm, *args):
     if on_eat(world, world.feeding_cfg, worm.y, worm.x):
