@@ -106,6 +106,7 @@ def main():
             else:
                 # stop
                 running = False
+                renderer.running = False
 
         paused = renderer.paused
 
