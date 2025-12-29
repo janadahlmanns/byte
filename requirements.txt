@@ -1,3 +1,6 @@
 numpy
 matplotlib
 pyyaml
+pandas
+seaborn
+scipy

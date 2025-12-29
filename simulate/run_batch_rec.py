@@ -23,11 +23,11 @@ from mvb.worm import Worm, WormConfig
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/sensing_vs_random/rawdata/"
-SIMULATION_NAME   = "non_sensing"
+SIMULATION_NAME   = "test"
 
 CONFIG_PATH = "configs/non_sensing.yaml"
 MAX_TICKS   = 1000
-N_RUNS      = 1000
+N_RUNS      = 2
 
 
 # ============================================================
@@ -176,7 +176,8 @@ def main():
 
         print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats}")
 
-    (run_dir / "summary.csv").write_text(
+    summary_name = f"summary_{SIMULATION_NAME}.csv"
+    (run_dir / summary_name).write_text(
         "\n".join(summary_lines) + "\n", encoding="utf-8"
     )
 
