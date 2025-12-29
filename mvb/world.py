@@ -22,20 +22,22 @@ class World:
     def reset_food(self):
         self.food.fill(0)
 
-    def in_bounds(self, y: int, x: int) -> bool:
-        return 0 <= x < self.width and 0 <= y < self.height
-
     def has_food(self, y: int, x: int) -> bool:
         return self.food[y, x] > 0
 
     def valid_moves_from(self, y: int, x: int):
-        # edges are hard; only return in-bounds moves
-        moves = []
-        if self.in_bounds(y - 1, x): moves.append(("up", (y - 1, x)))
-        if self.in_bounds(y + 1, x): moves.append(("down", (y + 1, x)))
-        if self.in_bounds(y, x - 1): moves.append(("left", (y, x - 1)))
-        if self.in_bounds(y, x + 1): moves.append(("right", (y, x + 1)))
-        return moves
+        """
+        Return all four moves with toroidal (wrap-around) topology.
+        """
+        h, w = self.height, self.width
+
+        return [
+            ("up",    ((y - 1) % h, x)),
+            ("down",  ((y + 1) % h, x)),
+            ("left",  (y, (x - 1) % w)),
+            ("right", (y, (x + 1) % w)),
+        ]
+
 
     def step(self):
         self.ticks += 1
