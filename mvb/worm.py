@@ -26,6 +26,8 @@ class Worm:
         self.eats = 0
         self.distance = 0
         self.ticks = 0
+        self.action = None
+
 
     def death_gate(self) -> bool:
         """If energy is 0 at START of tick, die immediately."""
@@ -38,22 +40,23 @@ class Worm:
         if not self.alive:
             return
 
-        # 1) Baseline metabolism
+        # 1) Act (using action decided last tick)
+        if self.action is not None:
+            act(self.world, self, self.action)
+
+        # 2) Sense (from NEW situation)
+        self.sensory_information = perceive(self.world, self)
+
+        # 3) Decide (store for NEXT tick)
+        self.action = self.brain.decide(self.world, self, rng, self.sensory_information)
+
+        # 4) Metabolism
         self.energy = max(0, self.energy - self.cfg.metabolic_rate)
 
-        # 2) Death gate
+        # 5) Death gate 
         if self.energy <= 0:
             self.alive = False
             return
-
-        # 3) Sense
-        sensory_information = perceive(self.world, self)
-
-        # 4) Decide
-        action = self.brain.decide(self.world, self, rng, sensory_information)
-
-        # 5) Act
-        act(self.world, self, action)
 
         # 6) Advance time
         self.ticks += 1
