@@ -22,12 +22,12 @@ from mvb.worm import Worm, WormConfig
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/sensing_vs_random/rawdata/"
-SIMULATION_NAME   = "test"
+EXPERIMENT_FOLDER = "data/algo_vs_neuro/rawdata/"
+SIMULATION_NAME   = "algo"
 
-CONFIG_PATH = "configs/non_sensing.yaml"
+CONFIG_PATH = "configs/sensing.yaml"
 MAX_TICKS   = 1000
-N_RUNS      = 2
+N_RUNS      = 1000
 
 
 # ============================================================
