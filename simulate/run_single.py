@@ -109,6 +109,8 @@ def main():
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
     worm.brain = load_brain_module(make_decision_cfg(cfg))
+    if hasattr(worm.brain, "init"):
+        worm.brain.init(worm, rng, cfg)
 
     reset_sim(world, feeding_cfg, rng, worm)
 
