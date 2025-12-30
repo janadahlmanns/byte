@@ -151,6 +151,8 @@ def main():
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
     worm.brain = load_brain_module(make_decision_cfg(cfg))
+    if hasattr(worm.brain, "init"):
+        worm.brain.init(worm, rng, cfg)
 
     reset_sim(world, feeding_cfg, rng, worm)
 
@@ -159,7 +161,7 @@ def main():
     print(f"[run_single_rec] Writing data to: {run_dir}")
 
     # save config snapshot
-    (run_dir / "config_used.yaml").write_text(
+    (run_dir / f"config_used_{SIMULATION_NAME}.yaml").write_text(
         yaml.safe_dump(cfg, sort_keys=False),
         encoding="utf-8",
     )
@@ -248,7 +250,10 @@ def main():
         f"alive_at_end: {worm.alive}",
         f"max_ticks_cap: {MAX_TICKS}",
     ]
-    (run_dir / "summary.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
+    (run_dir / f"summary_{SIMULATION_NAME}.txt").write_text(
+        "\n".join(summary) + "\n",
+        encoding="utf-8",
+    )
 
     # final draw if visualized
     if renderer:

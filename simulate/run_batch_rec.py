@@ -138,7 +138,7 @@ def main():
     print(f"[batch] writing to {run_dir}")
 
     # snapshot config
-    (run_dir / "config_used.yaml").write_text(
+    (run_dir / f"config_used_{SIMULATION_NAME}.yaml").write_text(
         yaml.safe_dump(cfg, sort_keys=False),
         encoding="utf-8",
     )
@@ -156,6 +156,8 @@ def main():
         worm = make_worm(world, cfg)
         worm.active_sensors = make_sensor_cfg(cfg)
         worm.brain = brain
+        if hasattr(worm.brain, "init"):
+            worm.brain.init(worm, rng, cfg)
 
         reset_sim(world, feeding_cfg, rng, worm)
 
