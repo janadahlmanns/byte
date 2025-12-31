@@ -7,9 +7,9 @@ world:
   rng_seed: 47
 viz:
   enabled: true
-  fps: 0.5
+  fps: 4
   brain_enabled: true
-  brain_fps: 0.5
+  brain_fps: 30
 food:
   feeding_paradigm:
     initial: true
@@ -28,4 +28,3 @@ decisionmaking:
   version: neuronal_algorithm
   brain:
     init: prio_food
-
