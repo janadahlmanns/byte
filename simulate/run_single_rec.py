@@ -22,7 +22,7 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/sensing_vs_random/rawdata/"
+EXPERIMENT_FOLDER = "data/temp/rawdata/"
 SIMULATION_NAME   = "sensing_neurons"
 
 CONFIG_PATH = "configs/sensing_neurons.yaml"
@@ -235,7 +235,7 @@ def main():
             return True
         return False
     worm.set_simulation_gate(may_advance)
-    
+
     # --------------------------------------------------------
     # simulation loop
     # --------------------------------------------------------
