@@ -1,0 +1,8 @@
+simulation_name: sensing_neurons
+config: configs/sensing_neurons.yaml
+lifetime_ticks: 15
+foods_eaten: 0
+distance: 15
+final_energy: 0
+alive_at_end: False
+max_ticks_cap: 1000

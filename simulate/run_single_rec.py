@@ -15,7 +15,7 @@ import numpy as np
 from mvb.world import World, WorldConfig
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
-from mvb.render_mpl import MPLRenderer
+from mvb.world_renderer_qt import QtRenderer
 
 
 # ============================================================
@@ -23,9 +23,9 @@ from mvb.render_mpl import MPLRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/sensing_vs_random/rawdata/"
-SIMULATION_NAME   = "sensing"
+SIMULATION_NAME   = "sensing_neurons"
 
-CONFIG_PATH = "configs/sensing.yaml"
+CONFIG_PATH = "configs/sensing_neurons.yaml"
 MAX_TICKS   = 1000
 
 
@@ -172,9 +172,7 @@ def main():
 
     renderer = None
     if viz_enabled:
-        renderer = MPLRenderer(
-            world, worm, fps=int(viz_cfg.get("fps", 10))
-        )
+        renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
 
     paused = False
     running = True
@@ -202,39 +200,47 @@ def main():
     # -------------------------
     # simulation loop
     # -------------------------
-
     while running:
-        if renderer:
-            check_controls()
-
-        if reset_requested:
-            reset_sim(world, feeding_cfg, rng, worm)
-            rec = MetricsRecorder.empty()
-            rec.record(worm)
+            # FIRST: Draw current state (so user sees it before we check controls)
             if renderer:
-                renderer.paused = False
-                renderer.single_step = False
-                renderer.stop_flag = False
-                renderer.running = True
-            reset_requested = False
-
-        if (not paused) or (renderer and renderer.single_step):
-            world.step()
-            worm.step(rng)
-
-            rec.record(worm)
-
+                renderer.draw()
+            
+            # THEN: Check controls and update flags
             if renderer:
-                renderer.single_step = False
+                check_controls()
 
-            if (not worm.alive) or (worm.ticks >= MAX_TICKS):
-                running = False
+            # Handle reset request
+            if reset_requested:
+                reset_sim(world, feeding_cfg, rng, worm)
+                rec = MetricsRecorder.empty()
+                rec.record(worm)
                 if renderer:
-                    renderer.running = False
+                    renderer.paused = False
+                    renderer.single_step = False
+                    renderer.stop_flag = False
+                    renderer.running = True
+                reset_requested = False
+                continue  # Skip to next iteration to show reset state
 
-        if renderer:
-            renderer.draw()
-            renderer.wait_frame()
+            # Run simulation step if not paused (or if single-stepping)
+            if (not paused) or (renderer and renderer.single_step):
+                world.step()
+                worm.step(rng)
+
+                rec.record(worm)
+
+                if renderer:
+                    renderer.single_step = False
+
+                # Check end conditions
+                if (not worm.alive) or (worm.ticks >= MAX_TICKS):
+                    running = False
+                    if renderer:
+                        renderer.running = False
+
+            # Wait for next frame
+            if renderer:
+                renderer.wait_frame()
 
     # save metrics
     rec.save_csv(run_dir / "metrics.csv")
@@ -255,11 +261,16 @@ def main():
         encoding="utf-8",
     )
 
-    # final draw if visualized
+    # Final draw to show end state
     if renderer:
         renderer.draw()
-        import matplotlib.pyplot as plt
-        plt.show()
+        # Keep window open until user closes it
+        print("Simulation complete. Close the window to exit.")
+        import time
+        while renderer.isVisible():
+            renderer.app.processEvents()
+            time.sleep(0.1)
+        renderer.close()
 
 
 if __name__ == "__main__":
