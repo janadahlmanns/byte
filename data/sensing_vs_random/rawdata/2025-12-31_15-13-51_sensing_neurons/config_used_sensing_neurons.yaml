@@ -28,4 +28,3 @@ decisionmaking:
   version: neuronal_algorithm
   brain:
     init: prio_food
-

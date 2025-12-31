@@ -1,6 +1,6 @@
 # ------------------------------------------------------------
 # run one single simulation of Byte with the specified parameters
-# visualization is optional and specified in pamaeter YAML
+# visualization is optional and specified in parameter YAML
 # data are recorded into specified folder
 # ------------------------------------------------------------
 
@@ -94,10 +94,6 @@ def reset_sim(world, feeding_cfg, rng, worm):
 # ============================================================
 
 def make_run_dir(experiment_folder: str, simulation_name: str) -> Path:
-    """
-    Creates:
-      <experiment_folder>/<YYYY-MM-DD_HH-MM-SS>_<simulation_name>/
-    """
     base = Path(experiment_folder)
     base.mkdir(parents=True, exist_ok=True)
 
@@ -139,11 +135,15 @@ class MetricsRecorder:
 # ============================================================
 
 def main():
+    # --------------------------------------------------------
     # load config
+    # --------------------------------------------------------
     cfg = load_config(CONFIG_PATH)
     rng = build_rng(cfg["world"]["rng_seed"])
 
+    # --------------------------------------------------------
     # build simulation objects
+    # --------------------------------------------------------
     world = make_world(cfg, rng)
     feeding_cfg = make_feeding_cfg(cfg)
     world.feeding_cfg = feeding_cfg
@@ -153,20 +153,23 @@ def main():
     worm.brain = load_brain_module(make_decision_cfg(cfg))
     if hasattr(worm.brain, "init"):
         worm.brain.init(worm, rng, cfg)
-
+    
     reset_sim(world, feeding_cfg, rng, worm)
 
+    # --------------------------------------------------------
     # output folder
+    # --------------------------------------------------------
     run_dir = make_run_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
     print(f"[run_single_rec] Writing data to: {run_dir}")
 
-    # save config snapshot
     (run_dir / f"config_used_{SIMULATION_NAME}.yaml").write_text(
         yaml.safe_dump(cfg, sort_keys=False),
         encoding="utf-8",
     )
 
+    # --------------------------------------------------------
     # visualization (optional)
+    # --------------------------------------------------------
     viz_cfg = cfg.get("viz", {})
     viz_enabled = bool(viz_cfg.get("enabled", True))
 
@@ -174,78 +177,123 @@ def main():
     if viz_enabled:
         renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
 
-    paused = False
-    running = True
+    # --------------------------------------------------------
+    # GLOBAL EXPERIMENTER-LEVEL SIMULATION CONTROL
+    # --------------------------------------------------------
+    sim_status = "RUNNING"   # RUNNING | PAUSED | STOPPED
+    step_once = False
     reset_requested = False
 
+    # --------------------------------------------------------
     # metrics
+    # --------------------------------------------------------
     rec = MetricsRecorder.empty()
-    rec.record(worm)  # record initial state (tick 0)
+    rec.record(worm)  # initial state (day 0)
 
+    # --------------------------------------------------------
+    # control handling (renderer -> experimenter semantics)
+    # --------------------------------------------------------
     def check_controls():
-        nonlocal running, paused, reset_requested
+        nonlocal sim_status, step_once, reset_requested
+
         if renderer is None:
             return
 
+        # cancel simulation completely
         if renderer.stop_flag:
-            if renderer.paused:
-                reset_requested = True
-                renderer.stop_flag = False
-            else:
-                running = False
-                renderer.running = False
+            sim_status = "STOPPED"
+            renderer.running = False
+            return
 
-        paused = renderer.paused
+        # reset simulation
+        if renderer.paused and renderer.stop_flag:
+            reset_requested = True
+            renderer.stop_flag = False
+            return
 
-    # -------------------------
+        # pause / resume
+        if renderer.paused:
+            sim_status = "PAUSED"
+        else:
+            sim_status = "RUNNING"
+
+        # single step (one advancement, whatever that is)
+        if renderer.single_step:
+            step_once = True
+            sim_status = "PAUSED"
+            renderer.single_step = False
+
+    # --------------------------------------------------------
+    # global advancement gate
+    # --------------------------------------------------------
+    def may_advance():
+        nonlocal step_once
+        if sim_status == "RUNNING":
+            return True
+        if sim_status == "PAUSED" and step_once:
+            step_once = False
+            return True
+        return False
+    worm.set_simulation_gate(may_advance)
+    
+    # --------------------------------------------------------
     # simulation loop
-    # -------------------------
-    while running:
-            # FIRST: Draw current state (so user sees it before we check controls)
-            if renderer:
-                renderer.draw()
-            
-            # THEN: Check controls and update flags
-            if renderer:
-                check_controls()
+    # --------------------------------------------------------
+    while sim_status != "STOPPED":
 
-            # Handle reset request
-            if reset_requested:
-                reset_sim(world, feeding_cfg, rng, worm)
-                rec = MetricsRecorder.empty()
-                rec.record(worm)
+        # Draw current world state
+        if renderer:
+            renderer.draw()
+
+        # Read user controls
+        if renderer:
+            check_controls()
+
+        # Handle reset request
+        if reset_requested:
+            reset_sim(world, feeding_cfg, rng, worm)
+            rec = MetricsRecorder.empty()
+            rec.record(worm)
+            if renderer:
+                renderer.paused = False
+                renderer.single_step = False
+                renderer.stop_flag = False
+                renderer.running = True
+            reset_requested = False
+            continue
+
+        # ----------------------------------------------------
+        # ONE advancement (if permitted)
+        # ----------------------------------------------------
+        if may_advance():
+
+            # 1) Advance world by one day
+            world.step()
+
+            # 2) Let Byte live through one full day
+            worm.step_day(rng)
+
+            # 3) Advance simulation time by one day
+            worm.ticks += 1
+
+            # 4) Record metrics
+            rec.record(worm)
+
+            # 5) End conditions
+            if (not worm.alive) or (worm.ticks >= MAX_TICKS):
+                sim_status = "STOPPED"
                 if renderer:
-                    renderer.paused = False
-                    renderer.single_step = False
-                    renderer.stop_flag = False
-                    renderer.running = True
-                reset_requested = False
-                continue  # Skip to next iteration to show reset state
+                    renderer.running = False
 
-            # Run simulation step if not paused (or if single-stepping)
-            if (not paused) or (renderer and renderer.single_step):
-                world.step()
-                worm.step(rng)
+        # Frame pacing
+        if renderer:
+            renderer.wait_frame()
 
-                rec.record(worm)
-
-                if renderer:
-                    renderer.single_step = False
-
-                # Check end conditions
-                if (not worm.alive) or (worm.ticks >= MAX_TICKS):
-                    running = False
-                    if renderer:
-                        renderer.running = False
-
-            # Wait for next frame
-            if renderer:
-                renderer.wait_frame()
-
-    # save metrics
+    # --------------------------------------------------------
+    # save outputs
+    # --------------------------------------------------------
     rec.save_csv(run_dir / "metrics.csv")
 
-    # summary
     summary = [
         f"simulation_name: {SIMULATION_NAME}",
         f"config: {CONFIG_PATH}",
@@ -261,10 +309,11 @@ def main():
         encoding="utf-8",
     )
 
-    # Final draw to show end state
+    # --------------------------------------------------------
+    # keep window open at end
+    # --------------------------------------------------------
     if renderer:
         renderer.draw()
-        # Keep window open until user closes it
         print("Simulation complete. Close the window to exit.")
         import time
         while renderer.isVisible():
