@@ -2,6 +2,23 @@ import numpy as np
 import importlib
 from ..world import World
 
+try:
+    from simulate.pause_manager import get_pause_manager, PauseManagerExit
+except ImportError:
+    # Fallback: create a dummy pause manager that never pauses
+    class DummyPauseManager:
+        def check_pause(self):
+            pass  # Do nothing
+        def should_exit(self):
+            return False
+    
+    class PauseManagerExit(Exception):
+        pass
+    
+    _dummy_pm = DummyPauseManager()
+    def get_pause_manager():
+        return _dummy_pm
+
 
 # ============================================================
 # Module-level persistent state
@@ -160,35 +177,44 @@ def decide(world: World, worm, rng, inputs: dict):
         src.update(inputs)
 
     max_ticks = 10
-    for tick in range(max_ticks):
+    try:
+        for tick in range(max_ticks):
 
-        # ---------------- Visualization ----------------
-        if _brain_renderer is not None:
-            sense = getattr(worm, "sensory_information", None) or inputs or {}
-            _brain_renderer.draw(
-                state,
-                brain_tick=tick,
-                decision_status=f"THINKING ({tick+1}/{max_ticks})",
-                sense=sense,
-            )
-        _brain_renderer.wait_frame()
-
-        # ---------------- Actual brain beat ----------------
-        for neuron in state.neurons:
-            neuron.update(rng)
-        for neuron in state.neurons:
-            neuron.commit()
-
-        decision = check_outputs(state, world, worm, rng)
-        if decision is not None:
+            # ---------------- Visualization ----------------
             if _brain_renderer is not None:
+                sense = getattr(worm, "sensory_information", None) or inputs or {}
                 _brain_renderer.draw(
                     state,
                     brain_tick=tick,
-                    decision_status=f"DECISION MADE: {decision}",
+                    decision_status=f"THINKING ({tick+1}/{max_ticks})",
                     sense=sense,
                 )
-            return decision
+            _brain_renderer.wait_frame()
+
+            # ---------------- Actual brain beat ----------------
+            for neuron in state.neurons:
+                neuron.update(rng)
+            for neuron in state.neurons:
+                neuron.commit()
+
+            decision = check_outputs(state, world, worm, rng)
+            if decision is not None:
+                if _brain_renderer is not None:
+                    _brain_renderer.draw(
+                        state,
+                        brain_tick=tick,
+                        decision_status=f"DECISION MADE: {decision}",
+                        sense=sense,
+                    )
+                return decision
+            
+            # CHECKPOINT 2: At end of each brain tick iteration
+            pause_mgr = get_pause_manager()
+            pause_mgr.check_pause()
+    
+    except PauseManagerExit:
+        # User exited - return a safe default
+        return ("stay",)
 
     return ("stay",)
 
