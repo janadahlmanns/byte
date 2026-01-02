@@ -20,19 +20,17 @@ GOAL
 - Avoid working on stale or deleted branches
 - Prevent accidental commits to the wrong place
 
-1) Check current state
-   git status
-
-   Look for:
-   - Which branch am I on?
-   - Any uncommitted changes?
-   - Any warnings about upstream being gone?
-
-2) Go to main
+1) Go to main
    git checkout main
 
-3) Update main
+2) Update main
    git pull
+
+3) get rid of old stuff
+   git fetch --prune
+
+4) see if theres an active branch I should be working on
+   git branch -a   
 
 You are now:
 - On clean, up-to-date main
@@ -72,62 +70,21 @@ BASIC WORKFLOW (NEW FEATURE)
 
 
 --------------------------------------------------------
-WORKING ON AN EXISTING BRANCH (SAME COMPUTER)
+WORKING ON AN EXISTING BRANCH
 --------------------------------------------------------
 
 1) Switch to the branch
-   git checkout feature/my-feature-name
+   1. find out if branch already exists, if so it must be listet here
+      git branch
+   2. if it is listed:
+      git checkout feature/my-feature-name
+      if not instead use: 
+      git checkout -b feature/my-feature-name origin/feature/my-feature-name
 
 2) Get latest version
    git pull
 
 3) Work, commit, push like normal
-
-
---------------------------------------------------------
-WORKING ON A BRANCH FROM A DIFFERENT COMPUTER
---------------------------------------------------------
-
-SCENARIO: You sit down at computer B.
-
-1) Get latest main
-   git checkout main
-   git pull
-
-2) See which branches exist (local + remote)
-   git branch          (local only)
-   git branch -a       (local + remote)
-
-   Remote branches look like:
-   remotes/origin/feature/my-feature-name
-
-3) If you remember the branch name:
-   git checkout feature/my-feature-name
-   git pull
-
-4) If the branch does NOT exist locally yet:
-   git checkout -b feature/my-feature-name origin/feature/my-feature-name
-
-   (This creates a local copy tracking the remote branch)
-
-5) Now work normally
-   git add .
-   git commit -m "More progress"
-   git push
-
-
---------------------------------------------------------
-WHEN YOU DON’T REMEMBER THE BRANCH NAME
---------------------------------------------------------
-
-1) List all remote branches
-   git branch -a
-
-2) Look for something like:
-   remotes/origin/feature/...
-
-3) Pick the right one and check it out:
-   git checkout -b feature/the-right-name origin/feature/the-right-name
 
 
 --------------------------------------------------------
@@ -179,25 +136,7 @@ STEP-BY-STEP (FROM ANY COMPUTER)
 7) (Recommended) Delete branch when prompted
    - Click "Delete branch" on the website
 
---------------------------------------------------------
-AFTER A PULL REQUEST IS MERGED
---------------------------------------------------------
-
-ON ALL COMPUTERS:
-
-1) Switch to main
-   git checkout main
-
-2) Pull the updated main
-   git pull
-
-3) Delete the local feature branch (if present)
-   git branch -d feature/my-feature-name
-
-IMPORTANT:
-- Never keep working on a branch after it was merged
-- A merged branch is considered DEAD
-- Any new work starts from main on a NEW branch
+8) ALWAYS start a new work session after merging to clear deleted branches!
 
 --------------------------------------------------------
 VERY IMPORTANT: COMMON DANGEROUS SCENARIO
@@ -207,17 +146,7 @@ SCENARIO:
 - You merged feature/my-feature-name into main on computer A
 - On computer B you still have that branch checked out
 
-DO THIS IMMEDIATELY:
-
-1) Switch away from the old branch
-   git checkout main
-   git pull
-
-2) Delete the old branch locally
-   git branch -d feature/my-feature-name
-
-3) NEVER keep committing to a branch after it was merged
-   (That work will be lost or cause chaos)
+ALWAYS START A NEW WORK SESSION AFTER MERGING!!
 
 
 --------------------------------------------------------
