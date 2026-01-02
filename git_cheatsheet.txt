@@ -1,0 +1,232 @@
+========================================================
+GIT BRANCHING CHEAT SHEET (SAFE & SANITY-PRESERVING)
+========================================================
+
+MENTAL MODEL
+------------
+- main        = sacred, always runnable, clean slate
+- feature/*  = playground for ONE idea
+- Never work directly on main
+- When feature is done -> Pull Request -> merge into main
+- After merge, branch is dead (do not keep working on it)
+
+--------------------------------------------------------
+STARTING A WORK SESSION (DO THIS EVERY TIME)
+--------------------------------------------------------
+
+GOAL
+----
+- Know exactly where you are
+- Avoid working on stale or deleted branches
+- Prevent accidental commits to the wrong place
+
+1) Check current state
+   git status
+
+   Look for:
+   - Which branch am I on?
+   - Any uncommitted changes?
+   - Any warnings about upstream being gone?
+
+2) Go to main
+   git checkout main
+
+3) Update main
+   git pull
+
+You are now:
+- On clean, up-to-date main
+- Safe to create a new branch or intentionally switch
+
+WARNING SIGNS (STOP IMMEDIATELY)
+--------------------------------
+
+If you see messages like:
+- "upstream is gone"
+- "no such ref"
+- pull fails unexpectedly
+
+--------------------------------------------------------
+BASIC WORKFLOW (NEW FEATURE)
+--------------------------------------------------------
+
+1) Make sure main is up to date
+   git checkout main
+   git pull
+
+2) Create and switch to a new branch
+   git checkout -b feature/my-feature-name
+
+3) Work like normal
+   (edit files)
+
+   git status
+   git add .
+   git commit -m "Describe what you did"
+
+4) Push branch (first time only)
+   git push -u origin feature/my-feature-name
+
+   After that:
+   git push
+
+
+--------------------------------------------------------
+WORKING ON AN EXISTING BRANCH (SAME COMPUTER)
+--------------------------------------------------------
+
+1) Switch to the branch
+   git checkout feature/my-feature-name
+
+2) Get latest version
+   git pull
+
+3) Work, commit, push like normal
+
+
+--------------------------------------------------------
+WORKING ON A BRANCH FROM A DIFFERENT COMPUTER
+--------------------------------------------------------
+
+SCENARIO: You sit down at computer B.
+
+1) Get latest main
+   git checkout main
+   git pull
+
+2) See which branches exist (local + remote)
+   git branch          (local only)
+   git branch -a       (local + remote)
+
+   Remote branches look like:
+   remotes/origin/feature/my-feature-name
+
+3) If you remember the branch name:
+   git checkout feature/my-feature-name
+   git pull
+
+4) If the branch does NOT exist locally yet:
+   git checkout -b feature/my-feature-name origin/feature/my-feature-name
+
+   (This creates a local copy tracking the remote branch)
+
+5) Now work normally
+   git add .
+   git commit -m "More progress"
+   git push
+
+
+--------------------------------------------------------
+WHEN YOU DON’T REMEMBER THE BRANCH NAME
+--------------------------------------------------------
+
+1) List all remote branches
+   git branch -a
+
+2) Look for something like:
+   remotes/origin/feature/...
+
+3) Pick the right one and check it out:
+   git checkout -b feature/the-right-name origin/feature/the-right-name
+
+
+--------------------------------------------------------
+CREATING A PULL REQUEST
+--------------------------------------------------------
+
+PRINCIPLE
+---------
+- You NEVER merge locally
+- Merging happens on GitHub / GitLab via Pull Request
+- This is the ONLY way features enter main
+
+
+STEP-BY-STEP (FROM ANY COMPUTER)
+--------------------------------
+
+1) Make sure your feature branch is pushed
+   git status
+   git push
+
+   (If git says "Everything up to date", you're good)
+
+2) Go to the repository website (GitHub / GitLab)
+
+3) You will usually see a banner:
+   "feature/my-feature-name had recent pushes"
+   → Click "Compare & Pull Request"
+
+   If you DON'T see that banner:
+   - Go to "Pull Requests"
+   - Click "New Pull Request"
+   - Base: main
+   - Compare: feature/my-feature-name
+
+4) Check the Pull Request carefully
+   - Base branch = main
+   - Compare branch = feature/my-feature-name
+   - Scan the diff briefly (sanity check)
+
+5) Create Pull Request
+   - Title: short and factual (e.g. "Add simulation pause controller")
+   - Description: optional but helpful
+
+6) Merge the Pull Request
+   - Use "Merge Pull Request"
+   - NOT "Rebase" unless you explicitly want that
+   - Confirm merge
+
+7) (Recommended) Delete branch when prompted
+   - Click "Delete branch" on the website
+
+--------------------------------------------------------
+AFTER A PULL REQUEST IS MERGED
+--------------------------------------------------------
+
+ON ALL COMPUTERS:
+
+1) Switch to main
+   git checkout main
+
+2) Pull the updated main
+   git pull
+
+3) Delete the local feature branch (if present)
+   git branch -d feature/my-feature-name
+
+IMPORTANT:
+- Never keep working on a branch after it was merged
+- A merged branch is considered DEAD
+- Any new work starts from main on a NEW branch
+
+--------------------------------------------------------
+VERY IMPORTANT: COMMON DANGEROUS SCENARIO
+--------------------------------------------------------
+
+SCENARIO:
+- You merged feature/my-feature-name into main on computer A
+- On computer B you still have that branch checked out
+
+DO THIS IMMEDIATELY:
+
+1) Switch away from the old branch
+   git checkout main
+   git pull
+
+2) Delete the old branch locally
+   git branch -d feature/my-feature-name
+
+3) NEVER keep committing to a branch after it was merged
+   (That work will be lost or cause chaos)
+
+
+--------------------------------------------------------
+RULES TO LIVE BY
+--------------------------------------------------------
+
+- One feature = one branch
+- main must always run
+- If a branch feels wrong -> delete it, no guilt
+- If confused -> git branch -a first
+- If in doubt -> go back to main
+
