@@ -40,8 +40,13 @@ def load_config(path: str):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def build_rng(seed: int):
-    return np.random.default_rng(int(seed))
+def build_rng_streams(seed: int, has_brain: bool):
+    """Build separate RNG streams for different aspects of simulation."""
+    seed = int(seed)
+    rng_food = np.random.default_rng(seed)
+    rng_decision = np.random.default_rng(seed)
+    rng_neuron_noise = np.random.default_rng(seed) if has_brain else None
+    return rng_food, rng_decision, rng_neuron_noise
 
 def load_brain_module(version: str):
     module_name = f"mvb.brains.decisionmaking_{version}"
@@ -50,7 +55,7 @@ def load_brain_module(version: str):
         raise AttributeError(f"{module_name} has no decide()")
     return module
 
-def make_world(cfg_yaml, rng):
+def make_world(cfg_yaml):
     return World(
         WorldConfig(
             grid_width=int(cfg_yaml["world"]["grid_width"]),
@@ -58,7 +63,6 @@ def make_world(cfg_yaml, rng):
             start_pos=tuple(cfg_yaml["world"]["start_pos"]),
             rng_seed=int(cfg_yaml["world"]["rng_seed"]),
         ),
-        rng,
     )
 
 def make_feeding_cfg(cfg_yaml):
@@ -86,9 +90,9 @@ def make_sensor_cfg(cfg_yaml):
 def make_decision_cfg(cfg_yaml):
     return str(cfg_yaml["decisionmaking"]["version"])
 
-def reset_sim(world, feeding_cfg, rng, worm):
+def reset_sim(world, feeding_cfg, rng_food, worm):
     world.reset_food()
-    seed_food(world, feeding_cfg, rng)
+    seed_food(world, feeding_cfg, rng_food)
     worm.reset()
 
 
@@ -165,9 +169,12 @@ def main():
     try:
         for run_id in range(N_RUNS):
             seed = cfg["world"]["rng_seed"] + run_id
-            rng = build_rng(seed)
+            
+            # Build RNG streams for this run
+            has_brain = "brain" in cfg.get("decisionmaking", {})
+            rng_food, rng_decision, rng_neuron_noise = build_rng_streams(seed, has_brain)
 
-            world = make_world(cfg, rng)
+            world = make_world(cfg)
             feeding_cfg = make_feeding_cfg(cfg)
             world.feeding_cfg = feeding_cfg
 
@@ -175,9 +182,9 @@ def main():
             worm.active_sensors = make_sensor_cfg(cfg)
             worm.brain = brain
             if hasattr(worm.brain, "init"):
-                worm.brain.init(worm, rng, cfg)
+                worm.brain.init(worm, cfg, rng_neuron_noise)
 
-            reset_sim(world, feeding_cfg, rng, worm)
+            reset_sim(world, feeding_cfg, rng_food, worm)
 
             rec = MetricsRecorder.empty()
             rec.record(worm)
@@ -187,7 +194,7 @@ def main():
                 pause_mgr.check_pause()
 
                 world.step()
-                worm.step_day(rng)
+                worm.step_day(rng_decision)
                 worm.ticks += 1
                 rec.record(worm)
 

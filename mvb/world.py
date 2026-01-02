@@ -10,9 +10,8 @@ class WorldConfig:
     rng_seed: int
 
 class World:
-    def __init__(self, cfg: WorldConfig, rng: np.random.Generator):
+    def __init__(self, cfg: WorldConfig):
         self.cfg = cfg
-        self.rng = rng
         self.width = cfg.grid_width
         self.height = cfg.grid_height
         self.ticks = 0

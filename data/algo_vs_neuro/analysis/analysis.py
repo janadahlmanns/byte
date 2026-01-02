@@ -11,8 +11,8 @@ BASE_DIR = Path(__file__).resolve().parents[1] / "rawdata"
 GROUP1_NAME = "Algorithmic Byte"
 GROUP2_NAME = "Neuronal Byte"
 
-group1_dir = BASE_DIR / "2025-12-30_21-59-39_algo"
-group2_dir = BASE_DIR / "2025-12-30_21-59-20_neuro"
+group1_dir = BASE_DIR / "2026-01-02_21-43-52_algo"
+group2_dir = BASE_DIR / "2026-01-02_21-44-12_neuro"
 
 
 print("BASE_DIR =", BASE_DIR)
