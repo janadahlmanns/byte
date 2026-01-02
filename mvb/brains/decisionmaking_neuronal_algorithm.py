@@ -203,7 +203,7 @@ def decide(world: World, worm, rng, inputs: dict):
                     _brain_renderer.draw(
                         state,
                         brain_tick=tick,
-                        decision_status=f"DECISION MADE: {decision}",
+                        decision_status=f"DECISION MADE: {_format_decision_display(decision)}",
                         sense=sense,
                     )
                 return decision
@@ -217,6 +217,33 @@ def decide(world: World, worm, rng, inputs: dict):
         return ("stay",)
 
     return ("stay",)
+
+
+# ============================================================
+# Helper: Format decision for display
+# ============================================================
+
+def _format_decision_display(decision: tuple) -> str:
+    """
+    Convert decision tuple to human-readable cardinal direction.
+    
+    - ("stay",) -> "STAY"
+    - ("move", (ny, nx), direction) -> "MOVE N/S/E/W"
+    """
+    if decision[0] == "stay":
+        return "STAY"
+    
+    if decision[0] == "move" and len(decision) > 2:
+        direction = decision[2]
+        direction_map = {
+            "north": "N",
+            "south": "S",
+            "east": "E",
+            "west": "W",
+        }
+        return f"MOVE {direction_map.get(direction, '?')}"
+    
+    return str(decision)
 
 
 # ============================================================
@@ -253,4 +280,4 @@ def check_outputs(state: BrainState, world: World, worm, rng):
     ny = (y + dy) % world.height
     nx = (x + dx) % world.width
 
-    return ("move", (ny, nx))
+    return ("move", (ny, nx), direction)
