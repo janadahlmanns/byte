@@ -14,8 +14,10 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
+from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
+from mvb.world_renderer_qt import QtRenderer
 
 
 # ============================================================
@@ -143,40 +145,53 @@ def main():
         encoding="utf-8",
     )
 
+    # Initialize pause manager
+    pause_mgr = init_pause_manager()
+
     summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy"]
 
-    for run_id in range(N_RUNS):
-        seed = cfg["world"]["rng_seed"] + run_id
-        rng = build_rng(seed)
+    try:
+        for run_id in range(N_RUNS):
+            seed = cfg["world"]["rng_seed"] + run_id
+            rng = build_rng(seed)
 
-        world = make_world(cfg, rng)
-        feeding_cfg = make_feeding_cfg(cfg)
-        world.feeding_cfg = feeding_cfg
+            world = make_world(cfg, rng)
+            feeding_cfg = make_feeding_cfg(cfg)
+            world.feeding_cfg = feeding_cfg
 
-        worm = make_worm(world, cfg)
-        worm.active_sensors = make_sensor_cfg(cfg)
-        worm.brain = brain
-        if hasattr(worm.brain, "init"):
-            worm.brain.init(worm, rng, cfg)
+            worm = make_worm(world, cfg)
+            worm.active_sensors = make_sensor_cfg(cfg)
+            worm.brain = brain
+            if hasattr(worm.brain, "init"):
+                worm.brain.init(worm, rng, cfg)
 
-        reset_sim(world, feeding_cfg, rng, worm)
+            reset_sim(world, feeding_cfg, rng, worm)
 
-        rec = MetricsRecorder.empty()
-        rec.record(worm)
-
-        while worm.alive and worm.ticks < MAX_TICKS:
-            world.step()
-            worm.step(rng)
+            rec = MetricsRecorder.empty()
             rec.record(worm)
 
-        run_file = run_dir / "runs" / f"run_{run_id:04d}.csv"
-        rec.save_csv(run_file)
+            while worm.alive and worm.ticks < MAX_TICKS:
+                # CHECKPOINT: Check for pause/exit
+                pause_mgr.check_pause()
 
-        summary_lines.append(
-            f"{run_id},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy}"
-        )
+                world.step()
+                worm.step_day(rng)
+                worm.ticks += 1
+                rec.record(worm)
 
-        print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats}")
+            run_file = run_dir / "runs" / f"run_{run_id:04d}.csv"
+            rec.save_csv(run_file)
+
+            summary_lines.append(
+                f"{run_id},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy}"
+            )
+
+            print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats}")
+
+    except PauseManagerExit:
+        print("[EXIT] Batch simulation stopped by user.")
+    finally:
+        cleanup_pause_manager()
 
     summary_name = f"summary_{SIMULATION_NAME}.csv"
     (run_dir / summary_name).write_text(
