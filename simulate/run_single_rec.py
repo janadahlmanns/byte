@@ -175,6 +175,9 @@ def main():
     if viz_enabled:
         renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
 
+    # Pass renderer to worm so it can draw at the right moment
+    worm.renderer = renderer
+
     # metrics
     rec = MetricsRecorder.empty()
     rec.record(worm)  # initial state (day 0)
@@ -185,15 +188,11 @@ def main():
             # CHECKPOINT 1: Before incrementing worm ticks
             pause_mgr.check_pause()
 
-            # Draw current world state
-            if renderer:
-                renderer.draw()
-
             # ----------------------------------------------------
             # ONE day advancement
             # ----------------------------------------------------
             world.step()            # 1) World dynamics
-            worm.step_day(rng)      # 2) Byte lives one day
+            worm.step_day(rng)      # 2) Byte lives one day (includes world draw after sense)
             worm.ticks += 1         # 3) Advance simulation time
 
             rec.record(worm)        # 4) Record metrics
