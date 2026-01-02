@@ -25,9 +25,9 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/algo_vs_neuro/rawdata/"
-SIMULATION_NAME   = "algo"
+SIMULATION_NAME   = "neuro"
 
-CONFIG_PATH = "configs/sensing.yaml"
+CONFIG_PATH = "configs/sensing_neurons.yaml"
 MAX_TICKS   = 1000
 N_RUNS      = 1000
 
@@ -145,15 +145,17 @@ def main():
         encoding="utf-8",
     )
 
-    # Save brain config file
-    brain_init_name = cfg["decisionmaking"]["brain"]["init"]
-    brain_config_path = Path(f"configs/brain_init_{brain_init_name}.py")
-    if brain_config_path.exists():
-        brain_config_content = brain_config_path.read_text(encoding="utf-8")
-        (run_dir / f"brain_used_{SIMULATION_NAME}.py").write_text(
-            brain_config_content,
-            encoding="utf-8",
-        )
+    # Save brain config file (if brain is specified in config)
+    if "brain" in cfg.get("decisionmaking", {}):
+        brain_init_name = cfg["decisionmaking"]["brain"].get("init")
+        if brain_init_name:
+            brain_config_path = Path(f"configs/brain_init_{brain_init_name}.py")
+            if brain_config_path.exists():
+                brain_config_content = brain_config_path.read_text(encoding="utf-8")
+                (run_dir / f"brain_used_{SIMULATION_NAME}.py").write_text(
+                    brain_config_content,
+                    encoding="utf-8",
+                )
 
     # Initialize pause manager
     pause_mgr = init_pause_manager()
