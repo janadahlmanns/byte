@@ -15,6 +15,7 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
+from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
@@ -137,6 +138,10 @@ class MetricsRecorder:
 # ============================================================
 
 def main():
+    # Initialize pause manager
+    pause_mgr = init_pause_manager()
+    print("[PAUSE MANAGER] Initialized. Press 'p' to pause, 'c' to cancel, 'n' to step.")
+    
     cfg = load_config(CONFIG_PATH)
     rng = build_rng(cfg["world"]["rng_seed"])
 
@@ -175,30 +180,36 @@ def main():
     rec.record(worm)  # initial state (day 0)
 
     # simulation loop
-    while worm.ticks < MAX_TICKS:
+    try:
+        while worm.ticks < MAX_TICKS:
+            # CHECKPOINT 1: Before incrementing worm ticks
+            pause_mgr.check_pause()
 
-        # Draw current world state
-        if renderer:
-            renderer.draw()
+            # Draw current world state
+            if renderer:
+                renderer.draw()
 
-        # ----------------------------------------------------
-        # ONE day advancement
-        # ----------------------------------------------------
-        world.step()            # 1) World dynamics
-        worm.step_day(rng)      # 2) Byte lives one day
-        worm.ticks += 1         # 3) Advance simulation time
+            # ----------------------------------------------------
+            # ONE day advancement
+            # ----------------------------------------------------
+            world.step()            # 1) World dynamics
+            worm.step_day(rng)      # 2) Byte lives one day
+            worm.ticks += 1         # 3) Advance simulation time
 
-        rec.record(worm)        # 4) Record metrics
+            rec.record(worm)        # 4) Record metrics
 
-        # Stop experiment if Byte is dead
-        if not worm.alive:
-            break
+            # Stop experiment if Byte is dead
+            if not worm.alive:
+                break
 
-        # Frame pacing
-        if renderer:
-            renderer.wait_frame()
-        else: 
-            time.sleep(0.001) # avoid busy loop if headless
+            # Frame pacing
+            if renderer:
+                renderer.wait_frame()
+            else: 
+                time.sleep(0.001) # avoid busy loop if headless
+    except PauseManagerExit:
+        print("[EXIT] Simulation stopped by user.")
+        pass
 
 
     # save outputs
@@ -227,6 +238,9 @@ def main():
             renderer.app.processEvents()
             time.sleep(0.1)
         renderer.close()
+    
+    # Clean up pause manager
+    cleanup_pause_manager()
 
 
 if __name__ == "__main__":
