@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 import yaml
 import numpy as np
@@ -30,101 +30,7 @@ SIMULATION_NAME   = "sensing_neurons"
 CONFIG_PATH = "configs/sensing_neurons.yaml"
 MAX_TICKS   = 1000
 
-
-# ============================================================
-# Universal simulation status / gate
-# ============================================================
-
-class SimulationClock:
-    """
-    Single source of truth for RUNNING/PAUSED/STEP/STOP/RESET.
-
-    Renderers may set their own local flags internally, but we treat them as
-    *input devices* only: we read & translate their flags into this clock.
-    """
-
-    def __init__(self):
-        self.paused: bool = False
-        self._step_once: bool = False
-        self.stopped: bool = False
-        self.reset_requested: bool = False
-
-        self._renderers: List[object] = []
-
-    def attach_renderer(self, renderer: object):
-        if renderer is not None and renderer not in self._renderers:
-            self._renderers.append(renderer)
-
-    def _process_renderer_flags(self):
-        """
-        Pull flags from any attached renderer(s) and translate to clock requests.
-        This is the *only* place where renderer flags are interpreted.
-        """
-        for r in list(self._renderers):
-            # Stop/cancel
-            if getattr(r, "stop_flag", False):
-                # Reset = stop_flag while paused
-                if getattr(r, "paused", False):
-                    self.reset_requested = True
-                    # consume the renderer stop flag so it doesn't retrigger
-                    r.stop_flag = False
-                else:
-                    self.stopped = True
-                    # let renderer show stopped state
-                    if hasattr(r, "running"):
-                        r.running = False
-                    return
-
-            # Pause state is authoritative from UI perspective:
-            # if ANY renderer is paused -> paused.
-            if getattr(r, "paused", False):
-                self.paused = True
-
-            # Single step: consume request and convert to ONE global step token
-            if getattr(r, "single_step", False):
-                self.paused = True
-                self._step_once = True
-                r.single_step = False  # consume renderer request
-
-    def pump_ui(self):
-        """
-        Call often. Keeps Qt responsive and imports user intent into the clock.
-        """
-        # Let every renderer process Qt events (so key presses get registered)
-        for r in self._renderers:
-            app = getattr(r, "app", None)
-            if app is not None:
-                app.processEvents()
-
-        # Then read & translate their flags
-        self._process_renderer_flags()
-
-    def request_resume(self):
-        """Optional helper if you later add a direct 'resume' action."""
-        self.paused = False
-
-    def may_advance_once(self) -> bool:
-        """
-        Non-blocking permission query:
-        - RUNNING -> True
-        - PAUSED  -> True only if a step token exists (then consumes it)
-        """
-        # always pump UI before answering
-        self.pump_ui()
-
-        if self.stopped:
-            return False
-
-        if not self.paused:
-            return True
-
-        if self._step_once:
-            self._step_once = False
-            return True
-
-        return False
-
-
+   
 # ============================================================
 # helpers
 # ============================================================
@@ -264,80 +170,36 @@ def main():
     if viz_enabled:
         renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
 
-    # --------------------------------------------------------
-    # Universal simulation clock
-    # --------------------------------------------------------
-    clock = SimulationClock()
-    if renderer:
-        clock.attach_renderer(renderer)
-
-    # Inject the universal gate into the worm/brain
-    # (brain currently expects a callable returning True once per allowed step)
-    worm.set_simulation_gate(clock.may_advance_once)
-
     # metrics
     rec = MetricsRecorder.empty()
     rec.record(worm)  # initial state (day 0)
 
     # simulation loop
-    while not clock.stopped:
-
-        # keep UI responsive + pull key intents into clock
-        clock.pump_ui()
+    while worm.ticks < MAX_TICKS:
 
         # Draw current world state
         if renderer:
             renderer.draw()
 
-        # Handle reset request
-        if clock.reset_requested:
-            reset_sim(world, feeding_cfg, rng, worm)
-            rec = MetricsRecorder.empty()
-            rec.record(worm)
-
-            # clear clock + renderer UI state
-            clock.reset_requested = False
-            clock.paused = False
-            clock._step_once = False  # internal token reset
-            clock.stopped = False
-
-            if renderer:
-                renderer.paused = False
-                renderer.single_step = False
-                renderer.stop_flag = False
-                renderer.running = True
-
-            continue
-
         # ----------------------------------------------------
-        # ONE day advancement (if permitted)
+        # ONE day advancement
         # ----------------------------------------------------
-        if clock.may_advance_once():
+        world.step()            # 1) World dynamics
+        worm.step_day(rng)      # 2) Byte lives one day
+        worm.ticks += 1         # 3) Advance simulation time
 
-            # 1) Advance world by one day
-            world.step()
+        rec.record(worm)        # 4) Record metrics
 
-            # 2) Let Byte live through one full day (may internally do beats)
-            worm.step_day(rng)
-
-            # 3) Advance simulation time by one day
-            worm.ticks += 1
-
-            # 4) Record metrics
-            rec.record(worm)
-
-            # 5) End conditions
-            if (not worm.alive) or (worm.ticks >= MAX_TICKS):
-                clock.stopped = True
-                if renderer:
-                    renderer.running = False
+        # Stop experiment if Byte is dead
+        if not worm.alive:
+            break
 
         # Frame pacing
         if renderer:
             renderer.wait_frame()
-        else:
-            # avoid busy loop if headless
-            time.sleep(0.001)
+        else: 
+            time.sleep(0.001) # avoid busy loop if headless
+
 
     # save outputs
     rec.save_csv(run_dir / "metrics.csv")

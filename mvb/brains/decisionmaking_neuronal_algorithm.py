@@ -9,28 +9,12 @@ from ..world import World
 
 _brain_state = None
 
-# ============================================================
-# Global simulation gate (injected by runner)
-# ============================================================
-
-_may_advance = None
-
-def set_simulation_gate(may_advance_callable):
-    """
-    Injected by the runner.
-    Must return True exactly once per allowed time advancement.
-    """
-    global _may_advance
-    _may_advance = may_advance_callable
-
 
 # ============================================================
 # Optional brain visualization (Qt)
 # ============================================================
 
 _brain_renderer = None
-_last_init_args = None  # (worm, rng, cfg)
-
 
 # ============================================================
 # Hardware primitives
@@ -155,8 +139,6 @@ def init(worm, rng, cfg):
 
     _brain_state = BrainState(neurons, connections, input_sources)
 
-    _last_init_args = (worm, rng, cfg)
-
     viz_cfg = cfg.get("viz", {})
     if viz_cfg.get("brain_enabled", False):
         from mvb.brain_renderer_qt import BrainQtRenderer
@@ -190,14 +172,6 @@ def decide(world: World, worm, rng, inputs: dict):
                 sense=sense,
             )
         _brain_renderer.wait_frame()
-
-        # ---------------- Global simulation gate ----------------
-        if _may_advance is not None:
-            if not _may_advance():
-                # Not allowed to advance a beat right now.
-                # Yield control back to caller without progressing.
-                return None
-
 
         # ---------------- Actual brain beat ----------------
         for neuron in state.neurons:

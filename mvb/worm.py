@@ -36,13 +36,6 @@ class Worm:
             return True
         return False
     
-    def set_simulation_gate(self, may_advance_callable):
-        """
-        Inject experimenter-level simulation gate.
-        The worm decides how to forward this to its brain.
-        """
-        if hasattr(self.brain, "set_simulation_gate"):
-            self.brain.set_simulation_gate(may_advance_callable)
 
     def step_day(self, rng):
         """
