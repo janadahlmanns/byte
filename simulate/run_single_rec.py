@@ -5,9 +5,11 @@
 # ------------------------------------------------------------
 
 import importlib
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, List
 
 import yaml
 import numpy as np
@@ -27,6 +29,100 @@ SIMULATION_NAME   = "sensing_neurons"
 
 CONFIG_PATH = "configs/sensing_neurons.yaml"
 MAX_TICKS   = 1000
+
+
+# ============================================================
+# Universal simulation status / gate
+# ============================================================
+
+class SimulationClock:
+    """
+    Single source of truth for RUNNING/PAUSED/STEP/STOP/RESET.
+
+    Renderers may set their own local flags internally, but we treat them as
+    *input devices* only: we read & translate their flags into this clock.
+    """
+
+    def __init__(self):
+        self.paused: bool = False
+        self._step_once: bool = False
+        self.stopped: bool = False
+        self.reset_requested: bool = False
+
+        self._renderers: List[object] = []
+
+    def attach_renderer(self, renderer: object):
+        if renderer is not None and renderer not in self._renderers:
+            self._renderers.append(renderer)
+
+    def _process_renderer_flags(self):
+        """
+        Pull flags from any attached renderer(s) and translate to clock requests.
+        This is the *only* place where renderer flags are interpreted.
+        """
+        for r in list(self._renderers):
+            # Stop/cancel
+            if getattr(r, "stop_flag", False):
+                # Reset = stop_flag while paused
+                if getattr(r, "paused", False):
+                    self.reset_requested = True
+                    # consume the renderer stop flag so it doesn't retrigger
+                    r.stop_flag = False
+                else:
+                    self.stopped = True
+                    # let renderer show stopped state
+                    if hasattr(r, "running"):
+                        r.running = False
+                    return
+
+            # Pause state is authoritative from UI perspective:
+            # if ANY renderer is paused -> paused.
+            if getattr(r, "paused", False):
+                self.paused = True
+
+            # Single step: consume request and convert to ONE global step token
+            if getattr(r, "single_step", False):
+                self.paused = True
+                self._step_once = True
+                r.single_step = False  # consume renderer request
+
+    def pump_ui(self):
+        """
+        Call often. Keeps Qt responsive and imports user intent into the clock.
+        """
+        # Let every renderer process Qt events (so key presses get registered)
+        for r in self._renderers:
+            app = getattr(r, "app", None)
+            if app is not None:
+                app.processEvents()
+
+        # Then read & translate their flags
+        self._process_renderer_flags()
+
+    def request_resume(self):
+        """Optional helper if you later add a direct 'resume' action."""
+        self.paused = False
+
+    def may_advance_once(self) -> bool:
+        """
+        Non-blocking permission query:
+        - RUNNING -> True
+        - PAUSED  -> True only if a step token exists (then consumes it)
+        """
+        # always pump UI before answering
+        self.pump_ui()
+
+        if self.stopped:
+            return False
+
+        if not self.paused:
+            return True
+
+        if self._step_once:
+            self._step_once = False
+            return True
+
+        return False
 
 
 # ============================================================
@@ -135,15 +231,10 @@ class MetricsRecorder:
 # ============================================================
 
 def main():
-    # --------------------------------------------------------
-    # load config
-    # --------------------------------------------------------
     cfg = load_config(CONFIG_PATH)
     rng = build_rng(cfg["world"]["rng_seed"])
 
-    # --------------------------------------------------------
     # build simulation objects
-    # --------------------------------------------------------
     world = make_world(cfg, rng)
     feeding_cfg = make_feeding_cfg(cfg)
     world.feeding_cfg = feeding_cfg
@@ -153,12 +244,10 @@ def main():
     worm.brain = load_brain_module(make_decision_cfg(cfg))
     if hasattr(worm.brain, "init"):
         worm.brain.init(worm, rng, cfg)
-    
+
     reset_sim(world, feeding_cfg, rng, worm)
 
-    # --------------------------------------------------------
     # output folder
-    # --------------------------------------------------------
     run_dir = make_run_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
     print(f"[run_single_rec] Writing data to: {run_dir}")
 
@@ -167,110 +256,68 @@ def main():
         encoding="utf-8",
     )
 
-    # --------------------------------------------------------
     # visualization (optional)
-    # --------------------------------------------------------
     viz_cfg = cfg.get("viz", {})
     viz_enabled = bool(viz_cfg.get("enabled", True))
 
-    renderer = None
+    renderer: Optional[QtRenderer] = None
     if viz_enabled:
         renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
 
     # --------------------------------------------------------
-    # GLOBAL EXPERIMENTER-LEVEL SIMULATION CONTROL
+    # Universal simulation clock
     # --------------------------------------------------------
-    sim_status = "RUNNING"   # RUNNING | PAUSED | STOPPED
-    step_once = False
-    reset_requested = False
+    clock = SimulationClock()
+    if renderer:
+        clock.attach_renderer(renderer)
 
-    # --------------------------------------------------------
+    # Inject the universal gate into the worm/brain
+    # (brain currently expects a callable returning True once per allowed step)
+    worm.set_simulation_gate(clock.may_advance_once)
+
     # metrics
-    # --------------------------------------------------------
     rec = MetricsRecorder.empty()
     rec.record(worm)  # initial state (day 0)
 
-    # --------------------------------------------------------
-    # control handling (renderer -> experimenter semantics)
-    # --------------------------------------------------------
-    def check_controls():
-        nonlocal sim_status, step_once, reset_requested
-
-        if renderer is None:
-            return
-
-        # cancel simulation completely
-        if renderer.stop_flag:
-            sim_status = "STOPPED"
-            renderer.running = False
-            return
-
-        # reset simulation
-        if renderer.paused and renderer.stop_flag:
-            reset_requested = True
-            renderer.stop_flag = False
-            return
-
-        # pause / resume
-        if renderer.paused:
-            sim_status = "PAUSED"
-        else:
-            sim_status = "RUNNING"
-
-        # single step (one advancement, whatever that is)
-        if renderer.single_step:
-            step_once = True
-            sim_status = "PAUSED"
-            renderer.single_step = False
-
-    # --------------------------------------------------------
-    # global advancement gate
-    # --------------------------------------------------------
-    def may_advance():
-        nonlocal step_once
-        if sim_status == "RUNNING":
-            return True
-        if sim_status == "PAUSED" and step_once:
-            step_once = False
-            return True
-        return False
-    worm.set_simulation_gate(may_advance)
-
-    # --------------------------------------------------------
     # simulation loop
-    # --------------------------------------------------------
-    while sim_status != "STOPPED":
+    while not clock.stopped:
+
+        # keep UI responsive + pull key intents into clock
+        clock.pump_ui()
 
         # Draw current world state
         if renderer:
             renderer.draw()
 
-        # Read user controls
-        if renderer:
-            check_controls()
-
         # Handle reset request
-        if reset_requested:
+        if clock.reset_requested:
             reset_sim(world, feeding_cfg, rng, worm)
             rec = MetricsRecorder.empty()
             rec.record(worm)
+
+            # clear clock + renderer UI state
+            clock.reset_requested = False
+            clock.paused = False
+            clock._step_once = False  # internal token reset
+            clock.stopped = False
+
             if renderer:
                 renderer.paused = False
                 renderer.single_step = False
                 renderer.stop_flag = False
                 renderer.running = True
-            reset_requested = False
+
             continue
 
         # ----------------------------------------------------
-        # ONE advancement (if permitted)
+        # ONE day advancement (if permitted)
         # ----------------------------------------------------
-        if may_advance():
+        if clock.may_advance_once():
 
             # 1) Advance world by one day
             world.step()
 
-            # 2) Let Byte live through one full day
+            # 2) Let Byte live through one full day (may internally do beats)
             worm.step_day(rng)
 
             # 3) Advance simulation time by one day
@@ -281,17 +328,18 @@ def main():
 
             # 5) End conditions
             if (not worm.alive) or (worm.ticks >= MAX_TICKS):
-                sim_status = "STOPPED"
+                clock.stopped = True
                 if renderer:
                     renderer.running = False
 
         # Frame pacing
         if renderer:
             renderer.wait_frame()
+        else:
+            # avoid busy loop if headless
+            time.sleep(0.001)
 
-    # --------------------------------------------------------
     # save outputs
-    # --------------------------------------------------------
     rec.save_csv(run_dir / "metrics.csv")
 
     summary = [
@@ -309,13 +357,10 @@ def main():
         encoding="utf-8",
     )
 
-    # --------------------------------------------------------
     # keep window open at end
-    # --------------------------------------------------------
     if renderer:
         renderer.draw()
         print("Simulation complete. Close the window to exit.")
-        import time
         while renderer.isVisible():
             renderer.app.processEvents()
             time.sleep(0.1)

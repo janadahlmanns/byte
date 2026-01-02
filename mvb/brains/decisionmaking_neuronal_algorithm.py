@@ -193,9 +193,11 @@ def decide(world: World, worm, rng, inputs: dict):
 
         # ---------------- Global simulation gate ----------------
         if _may_advance is not None:
-            while not _may_advance():
-                if _brain_renderer is not None:
-                    _brain_renderer.wait_frame()
+            if not _may_advance():
+                # Not allowed to advance a beat right now.
+                # Yield control back to caller without progressing.
+                return None
+
 
         # ---------------- Actual brain beat ----------------
         for neuron in state.neurons:
