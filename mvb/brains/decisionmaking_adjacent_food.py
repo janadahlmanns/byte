@@ -2,17 +2,17 @@ import numpy as np
 from ..world import World
 
 
-def random_valid_move(world: World, pos: tuple[int, int], rng: np.random.Generator):
+def random_valid_move(world: World, pos: tuple[int, int], rng_decision: np.random.Generator):
     """Pick a random valid neighboring cell."""
     y, x = pos
     moves = world.valid_moves_from(y, x)
     if not moves:
         return None
-    choice = rng.integers(0, len(moves))
+    choice = rng_decision.integers(0, len(moves))
     return moves[choice]
 
 
-def decide(world: World, worm, rng: np.random.Generator, inputs: dict):
+def decide(world: World, worm, rng_decision: np.random.Generator, inputs: dict):
     """
     Decision policy:
     1) Eat if on food
@@ -36,7 +36,7 @@ def decide(world: World, worm, rng: np.random.Generator, inputs: dict):
 
     if food_dirs:
         # choose one food direction (random if multiple)
-        direction = food_dirs[rng.integers(0, len(food_dirs))]
+        direction = food_dirs[rng_decision.integers(0, len(food_dirs))]
         y, x = worm.y, worm.x
 
         move_map = {
@@ -53,7 +53,7 @@ def decide(world: World, worm, rng: np.random.Generator, inputs: dict):
         return ("move", (ny, nx))
 
     # --- 3) Otherwise: roam ---
-    move = random_valid_move(world, (worm.y, worm.x), rng)
+    move = random_valid_move(world, (worm.y, worm.x), rng_decision)
     if move is None:
         return ("stay",)
     return ("move", move[1])

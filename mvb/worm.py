@@ -38,7 +38,7 @@ class Worm:
         return False
     
 
-    def step_day(self, rng):
+    def step_day(self, rng_decision):
         """
         Execute exactly one biological day.
         Brain thinking may internally span multiple beats.
@@ -71,7 +71,7 @@ class Worm:
         self.action = self.brain.decide(
             self.world,
             self,
-            rng,
+            rng_decision,
             self.sensory_information,
         )
 
