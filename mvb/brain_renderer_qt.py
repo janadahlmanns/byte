@@ -24,11 +24,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Brand colors (from Jana)
-ACTIVE_BG = "#0B3D2E"    # dark green
-INACTIVE_BG = "#D4AF37"  # gold
-ACTIVE_FG = "#FFFFFF"
-INACTIVE_FG = "#000000"
+# Brand colors
+INACTIVE_BG = "#0B3D2E"   # dark green
+ACTIVE_BG = "#D4AF37"     # gold
+INACTIVE_FG = "#FFFFFF"   # white
+ACTIVE_FG = "#000000"     # black
 BORDER = "#000000"
 
 
@@ -44,6 +44,78 @@ def _source_label(src: Any) -> str:
     if hasattr(src, "id"):
         return f"n{int(getattr(src, 'id'))}"
     return src.__class__.__name__
+
+
+class InputBox(QFrame):
+    """
+    Input source "box" widget for sensory inputs.
+    """
+    def __init__(self, input_key: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.input_key = str(input_key)
+
+        self.setFrameShape(QFrame.Box)
+        self.setLineWidth(1)
+        self.setStyleSheet(f"border: 1px solid {BORDER};")
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.font_title = QFont("Monospace", 10)
+        self.font_body = QFont("Monospace", 9)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
+
+        self.lbl_title = QLabel(f"Input: {self.input_key}")
+        self.lbl_title.setFont(self.font_title)
+        self.lbl_title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.lbl_title)
+
+        self.lbl_activity = QLabel("activity=?")
+        self.lbl_activity.setFont(self.font_body)
+        self.lbl_activity.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.lbl_activity)
+
+        # Start inactive styling
+        self._set_active(False)
+
+    def _set_active(self, active: bool):
+        if active:
+            bg, fg = ACTIVE_BG, ACTIVE_FG
+        else:
+            bg, fg = INACTIVE_BG, INACTIVE_FG
+
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {bg};
+                color: {fg};
+                border: 1px solid {BORDER};
+                border-radius: 2px;
+            }}
+            """
+        )
+
+    @staticmethod
+    def _fmt_float(x: Any, nd: int = 3) -> str:
+        try:
+            return f"{float(x):.{nd}f}"
+        except Exception:
+            return str(x)
+
+    def update_from_input(self, input_source: Any):
+        """Update visuals from an InputSource object."""
+        activity = getattr(input_source, "activity", "?")
+        self.lbl_activity.setText(f"activity={self._fmt_float(activity)}")
+
+        is_active = False
+        try:
+            is_active = float(activity) > 0.0
+        except Exception:
+            is_active = bool(activity)
+
+        self._set_active(is_active)
 
 
 class NeuronBox(QFrame):
@@ -189,6 +261,7 @@ class BrainQtRenderer(QMainWindow):
         self.setWindowTitle("Byte Brain")
 
         self._boxes: Dict[int, NeuronBox] = {}
+        self._input_boxes: Dict[str, InputBox] = {}
 
         self._setup_ui()
 
@@ -200,6 +273,10 @@ class BrainQtRenderer(QMainWindow):
     def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
+        
+        # Set window and central widget background to inactive green
+        central.setStyleSheet(f"background-color: {INACTIVE_BG};")
+        
         root = QVBoxLayout(central)
         root.setSpacing(6)
         root.setContentsMargins(10, 10, 10, 10)
@@ -210,35 +287,47 @@ class BrainQtRenderer(QMainWindow):
         grid.setSpacing(6)
         grid.setContentsMargins(0, 0, 0, 0)
 
-        # Create 11 boxes and place them in the requested layout:
-        # Row 0: 0-4
+        # Row 0: Input sources (5 sensory inputs)
+        input_keys = [
+            "on_food",
+            "food_north",
+            "food_east",
+            "food_south",
+            "food_west",
+        ]
+        for col, key in enumerate(input_keys):
+            box = InputBox(key)
+            self._input_boxes[key] = box
+            grid.addWidget(box, 0, col)
+
+        # Row 1: neurons 0-4 (sensory input neurons)
         for i, col in zip(range(0, 5), range(0, 5)):
             box = NeuronBox(i)
             self._boxes[i] = box
-            grid.addWidget(box, 0, col)
+            grid.addWidget(box, 1, col)
 
-        # Row 1: neuron 10 centered under col 2
+        # Row 2: neuron 10 (interneuron) centered under col 2
         box10 = NeuronBox(10)
         self._boxes[10] = box10
-        grid.addWidget(box10, 1, 2)
+        grid.addWidget(box10, 2, 2)
 
-        # Row 2: 5-9
+        # Row 3: neurons 5-9 (output neurons)
         for i, col in zip(range(5, 10), range(0, 5)):
             box = NeuronBox(i)
             self._boxes[i] = box
-            grid.addWidget(box, 2, col)
+            grid.addWidget(box, 3, col)
 
         root.addWidget(grid_wrap)
 
         # Bottom status rows
         self.sense_label = QLabel("SENSE | initializing...")
         self.sense_label.setFont(QFont("Monospace", 10))
-        self.sense_label.setStyleSheet("background-color: #f0f0f0; padding: 6px;")
+        self.sense_label.setStyleSheet(f"background-color: {INACTIVE_BG}; color: {INACTIVE_FG}; padding: 6px; border: 1px solid {BORDER};")
         root.addWidget(self.sense_label)
 
         self.decision_label = QLabel("DECISION | initializing...")
         self.decision_label.setFont(QFont("Monospace", 10))
-        self.decision_label.setStyleSheet("background-color: #f0f0f0; padding: 6px;")
+        self.decision_label.setStyleSheet(f"background-color: {INACTIVE_BG}; color: {INACTIVE_FG}; padding: 6px; border: 1px solid {BORDER};")
         root.addWidget(self.decision_label)
 
         self.resize(1050, 850)
@@ -256,6 +345,20 @@ class BrainQtRenderer(QMainWindow):
         Pure render: reads state, never mutates.
         """
         self.app.processEvents()
+
+        # Update all input source boxes
+        input_sources = getattr(state, "input_sources", []) or []
+        by_key = {}
+        for inp in input_sources:
+            try:
+                by_key[str(getattr(inp, "key"))] = inp
+            except Exception:
+                continue
+
+        for key, box in self._input_boxes.items():
+            inp = by_key.get(key, None)
+            if inp is not None:
+                box.update_from_input(inp)
 
         # Update all neuron boxes (if ids match)
         neurons = getattr(state, "neurons", []) or []
