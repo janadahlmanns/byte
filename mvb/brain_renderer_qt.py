@@ -4,7 +4,6 @@
 #
 # This renderer is a "dumb display" that:
 # - Shows the current brain state when draw() is called
-# - Listens for keyboard shortcuts and sets flags
 # - Does NOT mutate brain/world/worm state (ever)
 # ------------------------------------------------------------
 
@@ -177,21 +176,9 @@ class BrainQtRenderer(QMainWindow):
     """
     Dumb brain visualizer. Reads state when draw() is called.
 
-    Keyboard shortcuts (flags only):
-    - p: toggle pause
-    - n: single step (forces pause + one step request)
-    - r: reset request (pause + stop_flag)
-    - c: cancel request (stop_flag without pausing)
-    """
-
+"""
     def __init__(self, fps: int = 30):
         self.fps = max(1, int(fps))
-
-        # Control flags (simulation/brain code reads these)
-        self.paused = False
-        self.single_step = False
-        self.stop_flag = False
-        self.running = True
 
         # Qt app singleton
         self.app = QApplication.instance()
@@ -199,7 +186,7 @@ class BrainQtRenderer(QMainWindow):
             self.app = QApplication(sys.argv)
 
         super().__init__()
-        self.setWindowTitle("Byte Brain — p:pause | n:step | r:reset | c:cancel")
+        self.setWindowTitle("Byte Brain")
 
         self._boxes: Dict[int, NeuronBox] = {}
 
@@ -216,12 +203,6 @@ class BrainQtRenderer(QMainWindow):
         root = QVBoxLayout(central)
         root.setSpacing(6)
         root.setContentsMargins(10, 10, 10, 10)
-
-        # Top shortcuts bar
-        self.shortcuts = QLabel("Byte Brain — p:pause | n:step | r:reset | c:cancel")
-        self.shortcuts.setFont(QFont("Monospace", 10))
-        self.shortcuts.setStyleSheet("background-color: #f0f0f0; padding: 6px;")
-        root.addWidget(self.shortcuts)
 
         # Grid area
         grid_wrap = QWidget()
@@ -262,26 +243,7 @@ class BrainQtRenderer(QMainWindow):
 
         self.resize(1050, 850)
 
-    def keyPressEvent(self, event):
-        key = event.key()
-
-        if key == Qt.Key_P:
-            self.paused = not self.paused
-
-        elif key == Qt.Key_N:
-            self.single_step = True
-            self.paused = True
-
-        elif key == Qt.Key_R:
-            self.paused = True
-            self.stop_flag = True
-
-        elif key == Qt.Key_C:
-            self.stop_flag = True
-
-        else:
-            super().keyPressEvent(event)
-
+    
     def draw(
         self,
         state: Any,
