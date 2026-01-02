@@ -277,7 +277,7 @@ def decide(world: World, worm, rng, inputs: dict):
                     decision_status=decision_status,
                     sense=sense,
                 )
-            _brain_renderer.wait_frame()
+                _brain_renderer.wait_frame()
             
             for neuron in state.neurons:
                 neuron.commit()
