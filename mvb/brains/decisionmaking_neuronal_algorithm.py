@@ -54,16 +54,16 @@ class Neuron:
         self.activity = 0.0
         self.next_activity = 0.0
 
-    def compute_input(self, rng=None):
+    def compute_input(self, rng_neuron_noise=None):
         total = self.tonic_level
         for conn in self.incoming:
             total += conn.propagate()
-        if self.noise_level > 0.0 and rng is not None:
-            total += rng.normal(0.0, self.noise_level)
+        if self.noise_level > 0.0 and rng_neuron_noise is not None:
+            total += rng_neuron_noise.normal(0.0, self.noise_level)
         return total
 
-    def update(self, rng=None):
-        total_input = self.compute_input(rng)
+    def update(self, rng_neuron_noise=None):
+        total_input = self.compute_input(rng_neuron_noise)
         self.next_activity = 1.0 if total_input >= self.threshold else 0.0
 
     def commit(self):
@@ -128,7 +128,7 @@ def _calculate_warmup_and_max_ticks(state: BrainState) -> tuple:
     return warmup_ticks, max_ticks
 
 
-def init(worm, rng, cfg):
+def init(worm, cfg, rng_neuron_noise):
     global _brain_state, _brain_renderer, _last_init_args
 
     brain_cfg = cfg["decisionmaking"]["brain"]
@@ -138,7 +138,7 @@ def init(worm, rng, cfg):
         f"configs.brain_init_{init_name}"
     )
 
-    neuron_params, conn_matrix, sensory_mapping = init_module.build_brain_spec(rng)
+    neuron_params, conn_matrix, sensory_mapping = init_module.build_brain_spec()
     n_neurons = neuron_params.shape[0]
 
     neurons = [
@@ -203,20 +203,23 @@ def init(worm, rng, cfg):
     warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(_brain_state)
     _brain_state.warmup_ticks = warmup_ticks
     _brain_state.max_ticks = max_ticks
+    
+    # Store the neuron noise RNG stream
+    _brain_state.rng_neuron_noise = rng_neuron_noise
 
-    # Print actual neuron wiring
-    print("\n" + "="*70)
-    print("NEURAL CIRCUIT WIRING (Actual connections after initialization)")
-    print("="*70)
-    for neuron in neurons:
-        if neuron.incoming:
-            print(f"\nNeuron {neuron.id}:")
-            for conn in neuron.incoming:
-                source_name = conn.source.key if isinstance(conn.source, InputSource) else f"Neuron {conn.source.id}"
-                print(f"  ← {source_name:20s} (weight={conn.weight:+.1f}, reliability={conn.reliability:.2f})")
-        else:
-            print(f"\nNeuron {neuron.id}: (no incoming connections)")
-    print("="*70 + "\n")
+    # DEBUG OUTPUT (commented out - uncomment to see circuit details)
+    # print("\n" + "="*70)
+    # print("NEURAL CIRCUIT WIRING (Actual connections after initialization)")
+    # print("="*70)
+    # for neuron in neurons:
+    #     if neuron.incoming:
+    #         print(f"\nNeuron {neuron.id}:")
+    #         for conn in neuron.incoming:
+    #             source_name = conn.source.key if isinstance(conn.source, InputSource) else f"Neuron {conn.source.id}"
+    #             print(f"  ← {source_name:20s} (weight={conn.weight:+.1f}, reliability={conn.reliability:.2f})")
+    #     else:
+    #         print(f"\nNeuron {neuron.id}: (no incoming connections)")
+    # print("="*70 + "\n")
 
     viz_cfg = cfg.get("viz", {})
     if viz_cfg.get("brain_enabled", False):
@@ -231,7 +234,7 @@ def init(worm, rng, cfg):
 # Decision process
 # ============================================================
 
-def decide(world: World, worm, rng, inputs: dict):
+def decide(world: World, worm, rng_decision, inputs: dict):
     state = _brain_state
 
     # load sensory inputs
@@ -251,13 +254,13 @@ def decide(world: World, worm, rng, inputs: dict):
 
             # ---------------- Actual brain beat ----------------
             for neuron in state.neurons:
-                neuron.update(rng)
+                neuron.update(state.rng_neuron_noise)
             
             # Get current output state (without converting to decision yet)
             current_output = _get_output_state(state)
             
             # Compute decision once from this output state (to ensure consistency)
-            current_decision = _output_to_decision(current_output, state, world, worm, rng)
+            current_decision = _output_to_decision(current_output, state, world, worm, rng_decision)
             
             # Build decision status message for visualization
             if tick < warmup_ticks:
@@ -304,7 +307,7 @@ def decide(world: World, worm, rng, inputs: dict):
         return ("stay",)
 
     # Fallback: return decision based on final output state
-    final_output = _output_to_decision(output_history[-1] if output_history else None, state, world, worm, rng)
+    final_output = _output_to_decision(output_history[-1] if output_history else None, state, world, worm, rng_decision)
     return final_output if final_output is not None else ("stay",)
 
 
@@ -342,7 +345,7 @@ def _is_output_stable(output_history: list) -> bool:
     return False
 
 
-def _output_to_decision(output_state: tuple, state: BrainState, world: World, worm, rng) -> tuple:
+def _output_to_decision(output_state: tuple, state: BrainState, world: World, worm, rng_decision) -> tuple:
     """
     Convert output state tuple to a decision.
     """
@@ -371,7 +374,7 @@ def _output_to_decision(output_state: tuple, state: BrainState, world: World, wo
         return None
 
     # Pick random active movement neuron
-    idx, direction = active[rng.integers(len(active))]
+    idx, direction = active[rng_decision.integers(len(active))]
 
     y, x = worm.y, worm.x
     dy, dx = {
