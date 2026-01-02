@@ -85,6 +85,8 @@ WORKING ON AN EXISTING BRANCH
    git pull
 
 3) Work, commit, push like normal
+   first time push:
+   git push -u origin feature/my-feature-name
 
 
 --------------------------------------------------------
