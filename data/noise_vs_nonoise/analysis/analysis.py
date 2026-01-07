@@ -15,11 +15,11 @@ GROUP1_DIR = "2026-01-07_12-43-42_no_noise"
 GROUP2_NAME = "Noise = 0.1"
 GROUP2_DIR = "2026-01-07_12-43-09_noise_0_1"
 
-GROUP3_NAME = ""  # Leave empty to disable
-GROUP3_DIR = ""
+GROUP3_NAME = "Noise = 0.5"
+GROUP3_DIR = "2026-01-07_13-37-40_noise_0_5"
 
-GROUP4_NAME = ""  # Leave empty to disable
-GROUP4_DIR = ""
+GROUP4_NAME = "Noise = 1.0"
+GROUP4_DIR = "2026-01-07_13-38-29_noise_1_0"
 
 # Color palette: green, gold, cool steel, dark wine
 PALETTE_COLORS = {
