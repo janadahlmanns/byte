@@ -20,6 +20,9 @@ def build_brain_spec():
     
     sensory_mapping : dict
         Maps sensory input keys to (target_neuron_id, weight, reliability)
+    
+    max_decision_delay : float
+        Maximum decision delay in ticks for the neural circuit
     """
 
     n_neurons = 11
@@ -121,6 +124,6 @@ def build_brain_spec():
     # for sense_key, (neuron_id, weight, reliability) in sensory_mapping.items():
     #     print(f"{sense_key:>15} -> neuron {neuron_id}  (w={weight}, r={reliability})")
 
-    return neuron_params, connections, sensory_mapping
+    return neuron_params, connections, sensory_mapping, 2.0
 
 build_brain_spec()
