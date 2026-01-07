@@ -25,10 +25,10 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/noise_vs_nonoise/rawdata/"
-SIMULATION_NAME   = "no_noise"
+SIMULATION_NAME   = "noise_1_0"
 
 CONFIG_PATH = "configs/sensing_neurons.yaml"
-BRAIN_INIT  = "none"  # Set to brain init name (e.g., "prio_food") or "none" to disable
+BRAIN_INIT  = "prio_food_noise"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 1000
 N_RUNS      = 1000
 
