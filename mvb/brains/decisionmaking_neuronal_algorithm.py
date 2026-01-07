@@ -128,17 +128,35 @@ def _calculate_warmup_and_max_ticks(state: BrainState) -> tuple:
     return warmup_ticks, max_ticks
 
 
-def init(worm, cfg, rng_neuron_noise):
+def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
     global _brain_state, _brain_renderer, _last_init_args
 
-    brain_cfg = cfg["decisionmaking"]["brain"]
-    init_name = brain_cfg["init"]
+    # Load brain spec (either from parameter or from config)
+    if brain_init_spec is not None:
+        # brain_init_spec is a tuple: (neuron_params, conn_matrix, sensory_mapping, max_decision_delay)
+        if len(brain_init_spec) == 4:
+            neuron_params, conn_matrix, sensory_mapping, max_decision_delay = brain_init_spec
+        else:
+            # Backwards compatibility: if only 3 values, use default max_decision_delay
+            neuron_params, conn_matrix, sensory_mapping = brain_init_spec
+            max_decision_delay = 2.0
+    else:
+        # Load from config (backwards compatibility)
+        brain_cfg = cfg["decisionmaking"]["brain"]
+        init_name = brain_cfg["init"]
 
-    init_module = importlib.import_module(
-        f"configs.brain_init_{init_name}"
-    )
+        init_module = importlib.import_module(
+            f"configs.brain_init_{init_name}"
+        )
 
-    neuron_params, conn_matrix, sensory_mapping = init_module.build_brain_spec()
+        spec = init_module.build_brain_spec()
+        if len(spec) == 4:
+            neuron_params, conn_matrix, sensory_mapping, max_decision_delay = spec
+        else:
+            # Backwards compatibility
+            neuron_params, conn_matrix, sensory_mapping = spec
+            max_decision_delay = 2.0
+
     n_neurons = neuron_params.shape[0]
 
     neurons = [
@@ -195,8 +213,7 @@ def init(worm, cfg, rng_neuron_noise):
 
     _brain_state = BrainState(neurons, connections, input_sources)
 
-    # Read max_decision_delay from config, default 2.0
-    max_decision_delay = cfg.get("decisionmaking", {}).get("brain", {}).get("max_decision_delay", 2.0)
+    # Use max_decision_delay from brain_init_spec (already set above)
     _brain_state.max_decision_delay = max_decision_delay
 
     # Calculate warmup and max ticks based on circuit topology

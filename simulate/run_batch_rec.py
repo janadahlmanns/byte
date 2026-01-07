@@ -24,10 +24,11 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/algo_vs_neuro/rawdata/"
-SIMULATION_NAME   = "neuro"
+EXPERIMENT_FOLDER = "data/noise_vs_nonoise/rawdata/"
+SIMULATION_NAME   = "no_noise"
 
 CONFIG_PATH = "configs/sensing_neurons.yaml"
+BRAIN_INIT  = "none"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 1000
 N_RUNS      = 1000
 
@@ -54,6 +55,19 @@ def load_brain_module(version: str):
     if not hasattr(module, "decide"):
         raise AttributeError(f"{module_name} has no decide()")
     return module
+
+def load_brain_init(brain_init_name: str):
+    """Load brain initialization config. Returns (neuron_params, connections, sensory_mapping, max_decision_delay) or None."""
+    if brain_init_name.lower() == "none" or not brain_init_name:
+        return None
+    module_name = f"configs.brain_init_{brain_init_name}"
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        raise ImportError(f"Could not find brain init module '{module_name}'.")
+    if not hasattr(module, "build_brain_spec"):
+        raise AttributeError(f"Brain init module '{module_name}' has no 'build_brain_spec' function.")
+    return module.build_brain_spec()
 
 def make_world(cfg_yaml):
     return World(
@@ -138,6 +152,17 @@ class MetricsRecorder:
 
 def main():
     cfg = load_config(CONFIG_PATH)
+    
+    # Check for brain_init vs config consistency
+    has_brain_config = "brain" in cfg.get("decisionmaking", {})
+    brain_init_spec = load_brain_init(BRAIN_INIT)
+    
+    if brain_init_spec is not None and not has_brain_config:
+        print(f"[WARNING] BRAIN_INIT='{BRAIN_INIT}' specified but config has no neuronal decision making. Ignoring brain_init.")
+    
+    if brain_init_spec is None and has_brain_config:
+        raise ValueError(f"Config requires a neuronal brain but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
+    
     brain = load_brain_module(make_decision_cfg(cfg))
 
     run_dir = make_experiment_dir()
@@ -149,17 +174,15 @@ def main():
         encoding="utf-8",
     )
 
-    # Save brain config file (if brain is specified in config)
-    if "brain" in cfg.get("decisionmaking", {}):
-        brain_init_name = cfg["decisionmaking"]["brain"].get("init")
-        if brain_init_name:
-            brain_config_path = Path(f"configs/brain_init_{brain_init_name}.py")
-            if brain_config_path.exists():
-                brain_config_content = brain_config_path.read_text(encoding="utf-8")
-                (run_dir / f"brain_used_{SIMULATION_NAME}.py").write_text(
-                    brain_config_content,
-                    encoding="utf-8",
-                )
+    # Save brain init file (if brain init is specified)
+    if brain_init_spec is not None:
+        brain_init_path = Path(f"configs/brain_init_{BRAIN_INIT}.py")
+        if brain_init_path.exists():
+            brain_init_content = brain_init_path.read_text(encoding="utf-8")
+            (run_dir / f"brain_used_{SIMULATION_NAME}.py").write_text(
+                brain_init_content,
+                encoding="utf-8",
+            )
 
     # Initialize pause manager
     pause_mgr = init_pause_manager()
@@ -171,8 +194,7 @@ def main():
             seed = cfg["world"]["rng_seed"] + run_id
             
             # Build RNG streams for this run
-            has_brain = "brain" in cfg.get("decisionmaking", {})
-            rng_food, rng_decision, rng_neuron_noise = build_rng_streams(seed, has_brain)
+            rng_food, rng_decision, rng_neuron_noise = build_rng_streams(seed, has_brain_config)
 
             world = make_world(cfg)
             feeding_cfg = make_feeding_cfg(cfg)
@@ -182,7 +204,10 @@ def main():
             worm.active_sensors = make_sensor_cfg(cfg)
             worm.brain = brain
             if hasattr(worm.brain, "init"):
-                worm.brain.init(worm, cfg, rng_neuron_noise)
+                if brain_init_spec is not None:
+                    worm.brain.init(worm, cfg, rng_neuron_noise, brain_init_spec=brain_init_spec)
+                else:
+                    worm.brain.init(worm, cfg, rng_neuron_noise)
 
             reset_sim(world, feeding_cfg, rng_food, worm)
 
