@@ -26,5 +26,5 @@ sensors:
   - adjacent_binary
 decisionmaking:
   version: neuronal_algorithm
-  brain: {}
+  brain: true
 

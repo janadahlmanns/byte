@@ -1,5 +1,8 @@
 import pandas as pd
 from pathlib import Path
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 
 # =====================================================================
 # CONFIGURATION: GROUP DEFINITIONS
@@ -8,18 +11,20 @@ from pathlib import Path
 # Supports 2, 3, or 4 groups
 
 BASE_DIR = Path(__file__).resolve().parents[1] / "rawdata"
+EXPERIMENT_NAME = "Noise vs No Noise"
 
 GROUP1_NAME = "No noise"
 GROUP1_DIR = "2026-01-07_12-43-42_no_noise"
 
-GROUP2_NAME = "Noise = 0.1"
-GROUP2_DIR = "2026-01-07_12-43-09_noise_0_1"
+GROUP2_NAME = "Noise = 0.5"
+GROUP2_DIR = "2026-01-07_13-37-40_noise_0_5"
 
-GROUP3_NAME = "Noise = 0.5"
-GROUP3_DIR = "2026-01-07_13-37-40_noise_0_5"
+GROUP3_NAME = "Noise = 1.0"
+GROUP3_DIR = "2026-01-07_13-38-29_noise_1_0"
 
-GROUP4_NAME = "Noise = 1.0"
-GROUP4_DIR = "2026-01-07_13-38-29_noise_1_0"
+GROUP4_NAME = "Random"
+GROUP4_DIR = "2026-01-08_17-37-19_random"
+
 
 # Color palette: green, gold, cool steel, dark wine
 PALETTE_COLORS = {
@@ -119,8 +124,14 @@ palette = {name: PALETTE_COLORS[name] for name, _ in GROUPS}
 plt.ion()
 
 
+# Store figures for report generation
+fig_paths = []
+ks_test_results = []
+FIGURES_DIR = Path(__file__).resolve().parent / "figures"
+FIGURES_DIR.mkdir(exist_ok=True)
+
 # --- energy over time
-plt.figure(figsize=(8, 5))
+fig = plt.figure(figsize=(8, 5))
 
 for condition, df_c in df_runs.groupby("condition"):
     for _, df_r in df_c.groupby("run_id"):
@@ -143,11 +154,17 @@ legend_elements = [
 
 plt.legend(handles=legend_elements, frameon=False)
 plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "01_energy_dynamics.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Energy dynamics per run", fig_path))
+
 plt.show()
 
 
 # --- food over time
-plt.figure(figsize=(8, 5))
+fig = plt.figure(figsize=(8, 5))
 
 for condition, df_c in df_runs.groupby("condition"):
     for _, df_r in df_c.groupby("run_id"):
@@ -165,11 +182,17 @@ plt.title("Food accumulation per run")
 
 plt.legend(handles=legend_elements, frameon=False)
 plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "02_food_accumulation.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Food accumulation per run", fig_path))
+
 plt.show()
 
 
 # --- distance over time
-plt.figure(figsize=(8, 5))
+fig = plt.figure(figsize=(8, 5))
 
 for condition, df_c in df_runs.groupby("condition"):
     for _, df_r in df_c.groupby("run_id"):
@@ -187,11 +210,17 @@ plt.title("Distance accumulation per run")
 
 plt.legend(handles=legend_elements, frameon=False)
 plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "03_distance_accumulation.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Distance accumulation per run", fig_path))
+
 plt.show()
 
 
 # --- survival race plot
-plt.figure(figsize=(8, 5))
+fig = plt.figure(figsize=(8, 5))
 
 for condition, df_c in df_summary.groupby("condition"):
     survival_times = df_c["lifetime_ticks"].values
@@ -215,6 +244,12 @@ plt.title("Survival race of Byte simulations")
 
 plt.legend(frameon=False)
 plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "04_survival_race.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Survival race", fig_path))
+
 plt.show()
 
 
@@ -237,12 +272,13 @@ for i, name1 in enumerate(group_names):
         print(f"\n{name1} vs {name2}:")
         print(f"  KS statistic: {ks_stat:.4f}")
         print(f"  p-value: {p_value:.4e}")
+        ks_test_results.append((name1, name2, ks_stat, p_value))
 
 
 # --- log-log CCDF
 import numpy as np
 
-plt.figure(figsize=(8, 5))
+fig = plt.figure(figsize=(8, 5))
 
 for condition, df_c in df_summary.groupby("condition"):
     lifetimes = np.sort(df_c["lifetime_ticks"].values)
@@ -268,8 +304,65 @@ plt.title("Survival CCDF (log–log)")
 
 plt.legend(frameon=False)
 plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "05_survival_ccdf_loglog.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Survival CCDF (log-log)", fig_path))
+
 plt.show()
 
+
+# =====================================================================
+# Generate Report Document
+# =====================================================================
+
+doc = Document()
+
+# Title
+title = doc.add_paragraph()
+title_run = title.add_run(f"Analysis Report: {EXPERIMENT_NAME}")
+title_run.font.size = Pt(18)
+title_run.bold = True
+title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+# Data folders section
+doc.add_paragraph("Data Folders Used", style="Heading 2")
+for group_name, group_dir in GROUPS:
+    doc.add_paragraph(f"{group_name}: {group_dir}", style="List Bullet")
+
+# KS test results section
+doc.add_paragraph("Kolmogorov-Smirnov Test Results", style="Heading 2")
+for name1, name2, ks_stat, p_value in ks_test_results:
+    doc.add_paragraph(f"{name1} vs {name2}", style="Heading 3")
+    table = doc.add_table(rows=3, cols=2)
+    table.style = "Light Grid Accent 1"
+    
+    cells = table.rows[0].cells
+    cells[0].text = "Metric"
+    cells[1].text = "Value"
+    
+    cells = table.rows[1].cells
+    cells[0].text = "KS statistic"
+    cells[1].text = f"{ks_stat:.4f}"
+    
+    cells = table.rows[2].cells
+    cells[0].text = "p-value"
+    cells[1].text = f"{p_value:.4e}"
+
+# Figures section
+doc.add_paragraph("Figures", style="Heading 2")
+for fig_title, fig_path in fig_paths:
+    doc.add_paragraph(fig_title, style="Heading 3")
+    doc.add_picture(str(fig_path), width=Inches(6))
+    # Add some space after figure
+    doc.add_paragraph()
+
+# Save document
+report_path = Path(__file__).resolve().parent / f"Report_{EXPERIMENT_NAME.replace(' ', '_')}.docx"
+doc.save(report_path)
+print(f"\nReport saved to: {report_path}")
+print(f"Figures saved to: {FIGURES_DIR}")
 
 input("Press Enter to close all figures...")
 plt.ioff()

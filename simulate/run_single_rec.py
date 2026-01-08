@@ -164,14 +164,14 @@ def main():
     cfg = load_config(CONFIG_PATH)
     
     # Check for brain_init vs config consistency
-    has_brain_config = "brain" in cfg.get("decisionmaking", {})
+    has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     brain_init_spec = load_brain_init(BRAIN_INIT)
     
     if brain_init_spec is not None and not has_brain_config:
-        print(f"[WARNING] BRAIN_INIT='{BRAIN_INIT}' specified but config has no neuronal decision making. Ignoring brain_init.")
+        print(f"[WARNING] BRAIN_INIT='{BRAIN_INIT}' specified but config has brain: false. Ignoring brain_init.")
     
     if brain_init_spec is None and has_brain_config:
-        raise ValueError(f"Config requires a neuronal brain but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
+        raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
     
     # Build RNG streams (before creating world/worm)
     rng_food, rng_decision, rng_neuron_noise = build_rng_streams(cfg["world"]["rng_seed"], has_brain_config)
