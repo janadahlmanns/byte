@@ -3,36 +3,42 @@ from pathlib import Path
 from docx import Document
 from docx.shared import Inches, Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+import numpy as np
 
 # =====================================================================
 # CONFIGURATION: GROUP DEFINITIONS
 # =====================================================================
-# Leave group name as "" (empty string) to disable that group
-# Supports 2, 3, or 4 groups
+# Define groups as a list of (NAME, DIRECTORY) tuples
+# N_GROUPS will be automatically determined from the length of this list
+# Add or remove groups as needed
 
 BASE_DIR = Path(__file__).resolve().parents[1] / "rawdata"
 EXPERIMENT_NAME = "Noise vs No Noise"
 
-GROUP1_NAME = "No noise"
-GROUP1_DIR = "2026-01-07_12-43-42_no_noise"
+GROUPS_CONFIG = [
+    ("No noise", "2026-01-07_12-43-42_no_noise"),
+    ("N = 0.1, W = 1.0", "2026-01-07_12-43-09_noise_0_1"),
+    ("N = 0.5, W = 1.0", "2026-01-07_13-37-40_noise_0_5"),
+    ("N = 1.0, W = 1.0", "2026-01-07_13-38-29_noise_1_0"),
+    ("Random", "2026-01-08_17-37-19_random"),
+    ("N = 0.1, W = 0.6", "2026-01-08_19-45-52_weights_0_6"),
+    # Add more groups here as needed
+    # ("Group 5", "folder_5"),
+    # ("Group 6", "folder_6"),
+]
 
-GROUP2_NAME = "Noise = 0.5"
-GROUP2_DIR = "2026-01-07_13-37-40_noise_0_5"
+# Automatically determine number of groups
+N_GROUPS = len(GROUPS_CONFIG)
 
-GROUP3_NAME = "Noise = 1.0"
-GROUP3_DIR = "2026-01-07_13-38-29_noise_1_0"
-
-GROUP4_NAME = "Random"
-GROUP4_DIR = "2026-01-08_17-37-19_random"
-
-
-# Color palette: green, gold, cool steel, dark wine
-PALETTE_COLORS = {
-    GROUP1_NAME: "#0B3D2E",   # dark green
-    GROUP2_NAME: "#D4AF37",   # gold
-    GROUP3_NAME: "#88A0A8",   # cool steel
-    GROUP4_NAME: "#721817",   # dark wine
-}
+# Base color palette: green, gold, cool steel, dark wine, brown, dark purple
+BASE_COLORS = [
+    "#0B3D2E",   # dark green
+    "#D4AF37",   # gold
+    "#88A0A8",   # cool steel
+    "#721817",   # dark wine
+    "#654236",   # brown
+    "#331832",   # dark purple
+]
 
 print("BASE_DIR =", BASE_DIR)
 print("Exists:", BASE_DIR.exists())
@@ -40,19 +46,26 @@ print("Contents:", list(BASE_DIR.iterdir()))
 
 
 # =====================================================================
-# Build active groups list
+# Build active groups list and assign colors
 # =====================================================================
 GROUPS = []
-for name, dir_name in [
-    (GROUP1_NAME, GROUP1_DIR),
-    (GROUP2_NAME, GROUP2_DIR),
-    (GROUP3_NAME, GROUP3_DIR),
-    (GROUP4_NAME, GROUP4_DIR),
-]:
+PALETTE_COLORS = {}
+
+for i in range(min(N_GROUPS, len(GROUPS_CONFIG))):
+    name, dir_name = GROUPS_CONFIG[i]
     if name.strip():  # Skip empty group names
         GROUPS.append((name, BASE_DIR / dir_name))
+        
+        # Assign color from base palette or random if exhausted
+        if i < len(BASE_COLORS):
+            PALETTE_COLORS[name] = BASE_COLORS[i]
+        else:
+            # Generate random color for additional groups
+            random_color = "#{:06x}".format(np.random.randint(0, 0xFFFFFF))
+            PALETTE_COLORS[name] = random_color
 
 print(f"\nActive groups: {[g[0] for g in GROUPS]}")
+print(f"Colors assigned: {PALETTE_COLORS}")
 
 
 # =====================================================================
@@ -133,12 +146,13 @@ FIGURES_DIR.mkdir(exist_ok=True)
 # --- energy over time
 fig = plt.figure(figsize=(8, 5))
 
-for condition, df_c in df_runs.groupby("condition"):
-    for _, df_r in df_c.groupby("run_id"):
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    for _, df_r in df_runs[df_runs["condition"] == group_name].groupby("run_id"):
         plt.plot(
             df_r["tick"],
             df_r["energy"],
-            color=palette[condition],
+            color=palette[group_name],
             alpha=0.4,
             linewidth=1
         )
@@ -166,12 +180,13 @@ plt.show()
 # --- food over time
 fig = plt.figure(figsize=(8, 5))
 
-for condition, df_c in df_runs.groupby("condition"):
-    for _, df_r in df_c.groupby("run_id"):
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    for _, df_r in df_runs[df_runs["condition"] == group_name].groupby("run_id"):
         plt.plot(
             df_r["tick"],
             df_r["eats"],
-            color=palette[condition],
+            color=palette[group_name],
             alpha=0.4,
             linewidth=1
         )
@@ -194,12 +209,13 @@ plt.show()
 # --- distance over time
 fig = plt.figure(figsize=(8, 5))
 
-for condition, df_c in df_runs.groupby("condition"):
-    for _, df_r in df_c.groupby("run_id"):
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    for _, df_r in df_runs[df_runs["condition"] == group_name].groupby("run_id"):
         plt.plot(
             df_r["tick"],
             df_r["distance"],
-            color=palette[condition],
+            color=palette[group_name],
             alpha=0.4,
             linewidth=1
         )
@@ -222,7 +238,9 @@ plt.show()
 # --- survival race plot
 fig = plt.figure(figsize=(8, 5))
 
-for condition, df_c in df_summary.groupby("condition"):
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    df_c = df_summary[df_summary["condition"] == group_name]
     survival_times = df_c["lifetime_ticks"].values
 
     max_t = survival_times.max()
@@ -233,9 +251,9 @@ for condition, df_c in df_summary.groupby("condition"):
     plt.plot(
         ticks,
         alive,
-        color=palette[condition],
+        color=palette[group_name],
         linewidth=3,
-        label=condition
+        label=group_name
     )
 
 plt.xlabel("Tick")
@@ -280,7 +298,9 @@ import numpy as np
 
 fig = plt.figure(figsize=(8, 5))
 
-for condition, df_c in df_summary.groupby("condition"):
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    df_c = df_summary[df_summary["condition"] == group_name]
     lifetimes = np.sort(df_c["lifetime_ticks"].values)
     unique_t = np.unique(lifetimes)
     ccdf = [(lifetimes >= t).mean() for t in unique_t]
@@ -292,8 +312,8 @@ for condition, df_c in df_summary.groupby("condition"):
         linestyle="none",
         markersize=4,
         alpha=0.7,
-        color=palette[condition],
-        label=condition
+        color=palette[group_name],
+        label=group_name
     )
 
 plt.xscale("log")
