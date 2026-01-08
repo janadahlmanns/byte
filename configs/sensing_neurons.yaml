@@ -26,7 +26,5 @@ sensors:
   - adjacent_binary
 decisionmaking:
   version: neuronal_algorithm
-  brain:
-    init: prio_food
-    max_delay_decision: 2.0
+  brain: true
 
