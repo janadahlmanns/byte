@@ -25,10 +25,10 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/noise_vs_nonoise/rawdata/"
-SIMULATION_NAME   = "noise_1_0"
+SIMULATION_NAME   = "random"
 
-CONFIG_PATH = "configs/sensing_neurons.yaml"
-BRAIN_INIT  = "prio_food_noise"  # Set to brain init name (e.g., "prio_food") or "none" to disable
+CONFIG_PATH = "configs/random.yaml"
+BRAIN_INIT  = "none"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 1000
 N_RUNS      = 1000
 
@@ -154,14 +154,14 @@ def main():
     cfg = load_config(CONFIG_PATH)
     
     # Check for brain_init vs config consistency
-    has_brain_config = "brain" in cfg.get("decisionmaking", {})
+    has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     brain_init_spec = load_brain_init(BRAIN_INIT)
     
     if brain_init_spec is not None and not has_brain_config:
-        print(f"[WARNING] BRAIN_INIT='{BRAIN_INIT}' specified but config has no neuronal decision making. Ignoring brain_init.")
+        print(f"[WARNING] BRAIN_INIT='{BRAIN_INIT}' specified but config has brain: false. Ignoring brain_init.")
     
     if brain_init_spec is None and has_brain_config:
-        raise ValueError(f"Config requires a neuronal brain but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
+        raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
     
     brain = load_brain_module(make_decision_cfg(cfg))
 
