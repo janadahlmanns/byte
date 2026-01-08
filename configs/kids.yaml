@@ -25,3 +25,4 @@ sensors:
 
 decisionmaking:
   version: adjacent_food #prio_food
+  brain: false
