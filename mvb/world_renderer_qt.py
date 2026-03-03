@@ -83,16 +83,20 @@ class QtRenderer(QMainWindow):
         # Sensory info
         self.sense_label = QLabel("SENSE | initializing...")
         self.sense_label.setFont(QFont("Monospace", 10))
-        self.sense_label.setStyleSheet("background-color: #f0f0f0; padding: 5px;")
+        self.sense_label.setStyleSheet("background-color: #f0f0f0; color: #000000; padding: 5px;")
         layout.addWidget(self.sense_label)
 
         # Status info
         self.status_label = QLabel("tick=0 energy=0 eats=0 dist=0")
         self.status_label.setFont(QFont("Monospace", 10))
-        self.status_label.setStyleSheet("background-color: #f0f0f0; padding: 5px;")
+        self.status_label.setStyleSheet("background-color: #f0f0f0; color: #000000; padding: 5px;")
         layout.addWidget(self.status_label)
 
         self.resize(650, 750)
+
+        # Position on left side of screen
+        screen = self.app.primaryScreen().availableGeometry()
+        self.move(50, 50)
 
     # ------------------------------------------------------------
     # Rendering helpers
