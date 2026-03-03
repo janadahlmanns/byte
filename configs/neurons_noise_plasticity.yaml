@@ -6,16 +6,16 @@ world:
   - 26
   rng_seed: 47
 viz:
-  enabled: true
+  enabled: false
   fps: 4.0
-  brain_enabled: true
+  brain_enabled: false
   brain_fps: 4.0
 food:
   feeding_paradigm:
     initial: true
     regrow: true
-  initial_fraction_per_cell: 0.1
-  regrow_time: 30
+  initial_fraction_per_cell: 0.3
+  regrow_time: 10
 worm:
   speed: 1
   energy_capacity: 30

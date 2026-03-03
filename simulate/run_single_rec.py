@@ -157,10 +157,6 @@ class MetricsRecorder:
 # ============================================================
 
 def main():
-    # Initialize pause manager
-    pause_mgr = init_pause_manager()
-    print("[PAUSE MANAGER] Initialized. Press 'p' to pause, 'c' to cancel, 'n' to step.")
-    
     cfg = load_config(CONFIG_PATH)
     
     # Check for brain_init vs config consistency
@@ -216,8 +212,12 @@ def main():
     viz_enabled = bool(viz_cfg.get("enabled", True))
 
     renderer: Optional[QtRenderer] = None
+    pause_mgr = None
     if viz_enabled:
         renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
+        # Initialize pause manager only if visualization is enabled
+        pause_mgr = init_pause_manager()
+        print("[PAUSE MANAGER] Initialized. Press 'p' to pause, 'c' to cancel, 'n' to step.")
 
     # Pass renderer to worm so it can draw at the right moment
     worm.renderer = renderer
@@ -230,7 +230,8 @@ def main():
     try:
         while worm.ticks < MAX_TICKS:
             # CHECKPOINT 1: Before incrementing worm ticks
-            pause_mgr.check_pause()
+            if pause_mgr:
+                pause_mgr.check_pause()
 
             # ----------------------------------------------------
             # ONE day advancement
@@ -283,7 +284,8 @@ def main():
         renderer.close()
     
     # Clean up pause manager
-    cleanup_pause_manager()
+    if pause_mgr:
+        cleanup_pause_manager()
 
 
 if __name__ == "__main__":
