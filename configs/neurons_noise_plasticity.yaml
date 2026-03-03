@@ -25,6 +25,6 @@ sensors:
   - current_field
   - adjacent_binary
 decisionmaking:
-  version: neuronal_algorithm
+  version: plasticity
   brain: true
 
