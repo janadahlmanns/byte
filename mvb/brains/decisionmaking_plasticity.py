@@ -377,8 +377,12 @@ def decide(world: World, worm, rng_decision, inputs: dict):
                         return current_decision
             
             # CHECKPOINT 2: At end of each brain tick iteration
-            pause_mgr = get_pause_manager()
-            pause_mgr.check_pause()
+            try:
+                pause_mgr = get_pause_manager()
+                pause_mgr.check_pause()
+            except RuntimeError:
+                # Pause manager not initialized (visualization disabled)
+                pass
     
     except PauseManagerExit:
         # User exited - return a safe default
