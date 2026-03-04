@@ -103,16 +103,26 @@ class Connection:
             # No plasticity or no modulators
             self.next_weight = self.weight
             return
-        
+                
         modulation_sum = sum(mod_weight * neuron.activity 
                             for neuron, mod_weight in self.modulating_inputs)
         
-        if modulation_sum == 0.0:
-            # No modulation happening - keep weight unchanged
-            self.next_weight = self.weight
+        # DEBUG: Log all update calls for conn_id=7
+        if self.connection_id == 7:
+            if modulation_sum == 0.0:
+                print(f"[UPDATE conn_id=7] eta={eta}, modulation_sum={modulation_sum:.6f} -> weight unchanged: old_weight={self.weight:.6f}, next_weight={self.weight:.6f}")
+                self.next_weight = self.weight
+            else:
+                result_in_tanh = self.weight + eta * modulation_sum
+                self.next_weight = np.tanh(result_in_tanh)
+                print(f"[UPDATE conn_id=7] eta={eta}, modulation_sum={modulation_sum:.6f} -> update weight: old_weight={self.weight:.6f}, result_within_tanh={result_in_tanh:.6f}, new_weight={self.next_weight:.6f}")
         else:
-            # Apply plasticity with tanh clamping
-            self.next_weight = np.tanh(self.weight + eta * modulation_sum)
+            if modulation_sum == 0.0:
+                # No modulation happening - keep weight unchanged
+                self.next_weight = self.weight
+            else:
+                # Apply plasticity with tanh clamping
+                self.next_weight = np.tanh(self.weight + eta * modulation_sum)
     
     def commit(self):
         """Apply the computed weight change."""
