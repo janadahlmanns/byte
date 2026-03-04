@@ -25,12 +25,12 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/plasticity_test/rawdata/"
-SIMULATION_NAME   = "test"
+SIMULATION_NAME   = "plastcity_start_0_1_eta_0_1"
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
-MAX_TICKS   = 2000
-N_RUNS      = 100 
+MAX_TICKS   = 40
+N_RUNS      = 1  # DEBUG: test with 1 run 
 
 
 # ============================================================
@@ -282,6 +282,11 @@ def main():
                     worm.brain.init(worm, cfg, rng_neuron_noise)
 
             reset_sim(world, feeding_cfg, rng_food, worm)
+            
+            # DEBUG: Check initial connection weight on first run
+            if run_id == 0:
+                initial_weight = get_connection_weight(worm.brain, 1, 6)
+                print(f"[DEBUG run 0] Initial connection weight (1 to 6): {initial_weight:.6f}")
 
             # Setup world visualization (if enabled)
             renderer = None
