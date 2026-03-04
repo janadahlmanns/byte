@@ -25,12 +25,12 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/plasticity_test/rawdata/"
-SIMULATION_NAME   = "less_food_static_w_1"  # descriptive name for this batch of runs, used in output folder and file names
+SIMULATION_NAME   = "plastic_w_0_1_eta_0_025_mod_0_1"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 2000
-N_RUNS      = 100  
+N_RUNS      = 1000  
 
 
 # ============================================================

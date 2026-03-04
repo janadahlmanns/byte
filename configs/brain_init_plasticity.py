@@ -81,7 +81,7 @@ def build_brain_spec():
 
     # Plasticity test: weaken neuron 1 → neuron 6 connection
     # This should strengthen over time through modulation
-    connections[1, 6, 0] = 1.0  # initial weight for plasticity test
+    connections[1, 6, 0] = 0.1  # initial weight for plasticity test
 
     # interneuron 10 excites output neurons 6-9 (but not 5 which is "stay")
     for i in range(6, 10):
@@ -90,7 +90,7 @@ def build_brain_spec():
     # ---------------------------------
     # plasticity parameters
     # ---------------------------------
-    eta = 0.0  # Global plasticity factor
+    eta = 0.025  # Global plasticity factor
     
     # TEST SETUP: Connection from neuron 1 (food_north sensor) to neuron 6 (move_north output)
     # should receive modulatory input from neuron 1 itself with mod_weight = +1.0
