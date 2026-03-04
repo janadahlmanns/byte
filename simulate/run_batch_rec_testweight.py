@@ -25,12 +25,12 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/plasticity_test/rawdata/"
-SIMULATION_NAME   = "plastcity_start_0_1_eta_0_1"
+SIMULATION_NAME   = "less_food_static_w_1"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
-MAX_TICKS   = 40
-N_RUNS      = 1  # DEBUG: test with 1 run 
+MAX_TICKS   = 2000
+N_RUNS      = 100  
 
 
 # ============================================================
@@ -318,11 +318,14 @@ def main():
             run_file = run_dir / "runs" / f"run_{run_id:04d}.csv"
             rec.save_csv(run_file)
 
+            # Count how many times food was sensed exclusively north
+            food_north_only_count = sum(1 for row in rec.rows if row[5])  # row[5] is food_north_only
+
             summary_lines.append(
                 f"{run_id},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy}"
             )
 
-            print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats}")
+            print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats} food_north_only={food_north_only_count}")
 
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")

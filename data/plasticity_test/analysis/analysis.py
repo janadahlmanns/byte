@@ -16,8 +16,12 @@ BASE_DIR = Path(__file__).resolve().parents[1] / "rawdata"
 EXPERIMENT_NAME = "Static vs Plasticity"
 
 GROUPS_CONFIG = [
-    ("Static", "2026-03-03_16-19-45_static"),
-    ("Plasticity", "2026-03-03_16-47-57_plastcity_start_0_1_eta_0_1"),
+    ("Static w=0.1", "2026-03-04_12-26-54_static_w_0_1"),
+    ("Static w=0.6", "2026-03-04_12-05-02_no_plasticity"),
+    ("Static w=1.0", "2026-03-04_12-23-50_static_w_1"),
+    ("Plasticity, eta=0.05, w_0=0.1, mod=1.0", "2026-03-04_12-09-54_plasticity_eta_0_05_start_0_1"),
+    ("Plasticity, eta=0.025, w_0=0.1, mod=1.0", "2026-03-04_12-25-27_plasticity_eta_0_025_start_0_1"),
+    ("Plasticity, eta=0.025, w_0=0.1, mod=0.1", "2026-03-04_12-32-41_plasticity_eta_0_025_w_0_1_mod_0_1"),
     # Add more groups here as needed
     # ("Group 5", "folder_5"),
     # ("Group 6", "folder_6"),
@@ -340,6 +344,45 @@ plt.tight_layout()
 fig_path = FIGURES_DIR / "05_survival_race.png"
 fig.savefig(fig_path, dpi=150, bbox_inches="tight")
 fig_paths.append(("Survival race", fig_path))
+
+plt.show()
+
+
+# --- survival time histogram
+fig = plt.figure(figsize=(12, 6))
+
+# Iterate through groups in defined order
+for group_name, _ in GROUPS:
+    df_c = df_summary[df_summary["condition"] == group_name]
+    survival_times = df_c["lifetime_ticks"].values
+    
+    # Create histogram bins
+    counts, bin_edges = np.histogram(survival_times, bins=40)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    
+    # Plot as dot plot with lines connecting the dots
+    plt.plot(
+        bin_centers,
+        counts,
+        marker='o',
+        markersize=8,
+        linewidth=2.5,
+        color=palette[group_name],
+        label=group_name,
+        alpha=0.8
+    )
+
+plt.xlabel("Survival Time (ticks)", fontsize=12)
+plt.ylabel("Frequency (number of bytes)", fontsize=12)
+plt.title("Distribution of survival times across all runs", fontsize=14)
+plt.legend(frameon=False, fontsize=11)
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+
+# Save figure for report
+fig_path = FIGURES_DIR / "05b_survival_histogram.png"
+fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+fig_paths.append(("Survival time distribution", fig_path))
 
 plt.show()
 
