@@ -16,12 +16,9 @@ BASE_DIR = Path(__file__).resolve().parents[1] / "rawdata"
 EXPERIMENT_NAME = "Static vs Plasticity"
 
 GROUPS_CONFIG = [
-    ("Static w=0.1", "2026-03-04_12-26-54_static_w_0_1"),
-    ("Static w=0.6", "2026-03-04_12-05-02_no_plasticity"),
-    ("Static w=1.0", "2026-03-04_12-23-50_static_w_1"),
-    ("Plasticity, eta=0.05, w_0=0.1, mod=1.0", "2026-03-04_12-09-54_plasticity_eta_0_05_start_0_1"),
-    ("Plasticity, eta=0.025, w_0=0.1, mod=1.0", "2026-03-04_12-25-27_plasticity_eta_0_025_start_0_1"),
-    ("Plasticity, eta=0.025, w_0=0.1, mod=0.1", "2026-03-04_12-32-41_plasticity_eta_0_025_w_0_1_mod_0_1"),
+    ("Static w=0.1", "2026-03-04_13-21-15_static_w_0_1"),
+    ("Static w=1.0", "2026-03-04_13-19-06_static_w_1"),
+    ("Plastic w=0.1, eta=0.025, mod=0.1", "2026-03-04_13-24-36_plastic_w_0_1_eta_0_025_mod_0_1"),
     # Add more groups here as needed
     # ("Group 5", "folder_5"),
     # ("Group 6", "folder_6"),
