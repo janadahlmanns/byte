@@ -90,7 +90,7 @@ def build_brain_spec():
     # ---------------------------------
     # plasticity parameters
     # ---------------------------------
-    eta = 0.01  # Global plasticity factor
+    eta = 0.0  # Global plasticity factor
     
     # TEST SETUP: Connection from neuron 1 (food_north sensor) to neuron 6 (move_north output)
     # should receive modulatory input from neuron 1 itself with mod_weight = +1.0
@@ -99,7 +99,7 @@ def build_brain_spec():
     
     # Modulator specification: {(src_neuron_id, tgt_neuron_id): [(modulator_neuron_id, mod_weight), ...]}
     modulator_spec = {
-        (1, 6): [(1, 0.05)],  # neuron 1 modulates connection 1→6 with weight +0.1
+        (1, 6): [(1, -0.05)],  # neuron 1 modulates connection 1→6 with weight -0.05
     }
     
 

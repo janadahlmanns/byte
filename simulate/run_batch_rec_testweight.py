@@ -25,7 +25,7 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/plasticity_test/rawdata/"
-SIMULATION_NAME   = "plastic_w_0_1_eta_0_01_mod_0_05"  # descriptive name for this batch of runs, used in output folder and file names
+SIMULATION_NAME   = "plastic_w_0_1_eta_0_01_mod_neg_0_05"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
