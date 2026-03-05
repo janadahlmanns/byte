@@ -19,6 +19,11 @@ GROUPS_CONFIG = [
     ("Static w=0.1", "2026-03-04_13-21-15_static_w_0_1"),
     ("Static w=1.0", "2026-03-04_13-19-06_static_w_1"),
     ("Plastic w=0.1, eta=0.025, mod=0.1", "2026-03-04_13-24-36_plastic_w_0_1_eta_0_025_mod_0_1"),
+    ("Plastic w=0.1, eta=0.025, mod=0.05", "2026-03-05_15-29-04_plastic_w_0_1_eta_0_025_mod_0_05"),
+    ("Plastic w=0.1, eta=0.01, mod=0.1", "2026-03-05_15-20-01_plastic_w_0_1_eta_0_01_mod_0_1"),
+    ("Plastic w=0.1, eta=0.01, mod=0.05", "2026-03-05_15-41-21_plastic_w_0_1_eta_0_01_mod_0_05"),
+
+
     # Add more groups here as needed
     # ("Group 5", "folder_5"),
     # ("Group 6", "folder_6"),
