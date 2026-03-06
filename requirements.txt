@@ -6,3 +6,4 @@ seaborn
 scipy
 pynput
 python-docx
+PySide6

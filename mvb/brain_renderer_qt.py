@@ -332,6 +332,13 @@ class BrainQtRenderer(QMainWindow):
 
         self.resize(1050, 850)
 
+        # Position next to world window if screen is wide enough
+        screen = self.app.primaryScreen().availableGeometry()
+        if screen.width() >= 1800:  # Enough room for both windows side-by-side
+            self.move(750, 50)  # Position to right of world window (650px + margin)
+        else:
+            self.move(50, 50)  # Default position
+
     
     def draw(
         self,
