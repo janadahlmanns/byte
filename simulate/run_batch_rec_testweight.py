@@ -24,13 +24,13 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/5way_plasticity/rawdata/"
-SIMULATION_NAME   = "static_w_0_05"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/bidirectional_plasticity/rawdata/"
+SIMULATION_NAME   = "4dec_static_w_1_0"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "4way_plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 2000
-N_RUNS      = 1
+N_RUNS      = 500
 
 
 # ============================================================
@@ -158,7 +158,7 @@ def make_experiment_dir() -> Path:
 
 @dataclass
 class MetricsRecorder:
-    rows: list[tuple[int, int, int, int, float, bool, bool]]  # Added sensing and movement tracking
+    rows: list[tuple[int, int, int, int, float, float, float, float, bool, bool, bool, bool]]
     prev_y: int = 0  # Track previous position to detect movement direction
     prev_x: int = 0
 
@@ -167,31 +167,23 @@ class MetricsRecorder:
         return cls(rows=[], prev_y=worm.y, prev_x=worm.x)
 
     def record(self, worm: Worm):
-        # Get weight of connection 1→6 from brain state
-        weight_1_6 = get_connection_weight(worm.brain, 1, 6)
+        # Get weights of all 4 plastic direction connections
+        weight_1_6 = get_connection_weight(worm.brain, 1, 6)  # north
+        weight_2_7 = get_connection_weight(worm.brain, 2, 7)  # east
+        weight_3_8 = get_connection_weight(worm.brain, 3, 8)  # south
+        weight_4_9 = get_connection_weight(worm.brain, 4, 9)  # west
         
-        # Check if food was sensed ONLY to the north (not in other directions)
+        # Check if food was sensed in any direction (regardless of other directions)
         sense = getattr(worm, "sensory_information", {})
         food_north = sense.get("food_north", 0.0) > 0.0
         food_east = sense.get("food_east", 0.0) > 0.0
         food_south = sense.get("food_south", 0.0) > 0.0
         food_west = sense.get("food_west", 0.0) > 0.0
         
-        # Only flag if food is EXCLUSIVELY north
-        food_north_only = food_north and not (food_east or food_south or food_west)
-        
-        # Check if worm moved north (y decreased, with wrapping)
-        moved_north = False
-        if worm.y != self.prev_y or worm.x != self.prev_x:
-            # Movement occurred - check if it was north
-            world = worm.world
-            dy = (worm.y - self.prev_y) % world.height
-            # North is dy == -1 (or world.height - 1 when wrapped)
-            if dy == world.height - 1:  # Moved north
-                moved_north = True
-        
         self.rows.append(
-            (worm.ticks, worm.energy, worm.eats, worm.distance, weight_1_6, food_north_only, moved_north)
+            (worm.ticks, worm.energy, worm.eats, worm.distance, 
+             weight_1_6, weight_2_7, weight_3_8, weight_4_9,
+             food_north, food_east, food_south, food_west)
         )
         
         # Update previous position for next call
@@ -199,8 +191,9 @@ class MetricsRecorder:
         self.prev_x = worm.x
 
     def save_csv(self, path: Path):
-        lines = ["tick,energy,eats,distance,conn_1_6_weight,food_north_sensed,moved_north"]
-        lines += [f"{t},{e},{k},{d},{w:.6f},{int(fn)},{int(mn)}" for t, e, k, d, w, fn, mn in self.rows]
+        lines = ["tick,energy,eats,distance,conn_1_6_weight,conn_2_7_weight,conn_3_8_weight,conn_4_9_weight,food_north_sensed,food_east_sensed,food_south_sensed,food_west_sensed"]
+        lines += [f"{t},{e},{k},{d},{w16:.6f},{w27:.6f},{w38:.6f},{w49:.6f},{int(fn)},{int(fe)},{int(fs)},{int(fw)}" 
+                  for t, e, k, d, w16, w27, w38, w49, fn, fe, fs, fw in self.rows]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
