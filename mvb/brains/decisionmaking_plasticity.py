@@ -404,12 +404,16 @@ def decide(world: World, worm, rng_decision, inputs: dict):
                 pass
     
     except PauseManagerExit:
-        # User exited - return a safe default
-        return ("stay",)
+        # User exited - return a random decision to avoid getting stuck
+        return _get_random_decision(state, world, worm, rng_decision)
 
     # Fallback: return decision based on final output state
     final_output = _output_to_decision(output_history[-1] if output_history else None, state, world, worm, rng_decision)
-    return final_output if final_output is not None else ("stay",)
+    if final_output is not None:
+        return final_output
+    
+    # No decision reached within max_ticks - pick a random movement to avoid getting stuck
+    return _get_random_decision(state, world, worm, rng_decision)
 
 
 # ============================================================
@@ -489,6 +493,32 @@ def _output_to_decision(output_state: tuple, state: BrainState, world: World, wo
     nx = (x + dx) % world.width
 
     return ("move", (ny, nx), direction)
+
+
+def _get_random_decision(state: BrainState, world: World, worm, rng_decision) -> tuple:
+    """
+    Generate a random decision (stay or move in random direction).
+    Used as fallback when brain hits max_ticks without deciding.
+    """
+    choices = ["stay", "north", "east", "south", "west"]
+    choice = choices[rng_decision.integers(len(choices))]
+    
+    if choice == "stay":
+        return ("stay",)
+    
+    # Random movement
+    y, x = worm.y, worm.x
+    dy, dx = {
+        "north": (-1, 0),
+        "south": (1, 0),
+        "west": (0, -1),
+        "east": (0, 1),
+    }[choice]
+    
+    ny = (y + dy) % world.height
+    nx = (x + dx) % world.width
+    
+    return ("move", (ny, nx), choice)
 
 
 # ============================================================
