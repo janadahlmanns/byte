@@ -95,7 +95,7 @@ w_init = 0.1
 
 # Generate plots for each function
 for fn_name, (fn, formula) in functions.items():
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig, axes = plt.subplots(3, 3, figsize=(15, 12))
     fig.suptitle(f'Function {fn_name}: {formula}', fontsize=12, fontweight='bold')
     
     # Top row: w_init = 0.1
@@ -117,11 +117,30 @@ for fn_name, (fn, formula) in functions.items():
         final_w = weights[-1]
         print(f"Function {fn_name}, {label} (w_init=+0.1): converges to w ≈ {final_w:.6f}")
     
+    # Middle row: w_init = 0.0
+    for idx, (eta, inp, label) in enumerate(param_sets):
+        weights = run_iterations(fn, 0.0, eta, inp, num_iters=100)
+        
+        ax = axes[1, idx]
+        ax.plot(weights, linewidth=2, marker='o', markersize=3, alpha=0.7)
+        ax.set_xlabel('Iteration')
+        ax.set_ylabel('Weight')
+        ax.set_title(label + " (w_init=0.0)")
+        ax.grid(True, alpha=0.3)
+        ax.axhline(y=1.0, color='r', linestyle='--', alpha=0.3, label='w=1.0')
+        ax.axhline(y=-1.0, color='r', linestyle='--', alpha=0.3, label='w=-1.0')
+        ax.set_ylim([-1.2, 1.2])
+        ax.legend(fontsize=8)
+        
+        # Print convergence point
+        final_w = weights[-1]
+        print(f"Function {fn_name}, {label} (w_init=0.0): converges to w ≈ {final_w:.6f}")
+    
     # Bottom row: w_init = -0.1
     for idx, (eta, inp, label) in enumerate(param_sets):
         weights = run_iterations(fn, -0.1, eta, inp, num_iters=100)
         
-        ax = axes[1, idx]
+        ax = axes[2, idx]
         ax.plot(weights, linewidth=2, marker='o', markersize=3, alpha=0.7)
         ax.set_xlabel('Iteration')
         ax.set_ylabel('Weight')

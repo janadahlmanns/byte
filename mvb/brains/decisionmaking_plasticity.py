@@ -94,27 +94,44 @@ class Connection:
     def update(self, eta):
         """Compute next weight based on modulating inputs.
         
-        Uses Hebbian learning with weight decay: w_new = w + η * input * (1 - w²)
+        Uses plasticity rule K: w_new = sign(w)·max(0, |w|+η|w|(1-|w|)·modsum)
+        
+        Optimized for efficiency with early exits to avoid expensive operations.
         
         Parameters
         ----------
         eta : float
             Global plasticity factor (amplitude of weight changes)
         """
-        if eta == 0.0 or not self.modulating_inputs:
-            # No plasticity or no modulators
+        # Check eta first (cheapest)
+        if eta == 0.0:
             self.next_weight = self.weight
             return
-                
+        
+        # Check if weight is zero (very cheap, avoids expensive modulation_sum calculation)
+        # If w==0, then magnitude = 0 + 0 = 0, so result is always 0
+        if self.weight == 0:
+            self.next_weight = 0.0
+            return
+        
+        # Check modulators
+        if not self.modulating_inputs:
+            self.next_weight = self.weight
+            return
+        
+        # Calculate modulation (most expensive operation—now only done if w != 0)
         modulation_sum = sum(mod_weight * neuron.activity 
                             for neuron, mod_weight in self.modulating_inputs)
         
         if modulation_sum == 0.0:
-            # No modulation happening - keep weight unchanged
             self.next_weight = self.weight
-        else:
-            # Hebbian learning with weight decay (Formula C)
-            self.next_weight = self.weight + eta * modulation_sum * (1.0 - self.weight**2)
+            return
+        
+        # Formula K: w_new = sign(w)·max(0, |w|+η|w|(1-|w|)·modsum)
+        sign = np.sign(self.weight)
+        abs_w = abs(self.weight)
+        magnitude = abs_w + eta * abs_w * (1.0 - abs_w) * modulation_sum
+        self.next_weight = sign * max(0.0, magnitude)
     
     def commit(self):
         """Apply the computed weight change."""
