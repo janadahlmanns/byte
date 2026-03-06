@@ -16,8 +16,10 @@ BASE_DIR = Path(__file__).resolve().parents[2] / "rawdata"
 EXPERIMENT_NAME = r"Static vs Potentiation in 4 way plasticity"
 
 GROUPS_CONFIG = [
-    ("static w=0.0", "2026-03-06_16-55-16_static_w_0_0"),
-    ("static w=1.0", "2026-03-06_16-56-02_static_w_1_0"),
+    ("static w=0.05", "2026-03-06_17-42-59_static_w_0_05"),
+    ("static w=1.0", "2026-03-06_17-43-33_static_w_1_0"),
+    ("potentiation w=0.05 eta=0.01 mod=0.5", "2026-03-06_17-49-56_potentiation_w_0_05_eta_0_01_mod_0_5"),
+    ("potentiation w=0.05 eta=0.025 mod=0.5", "2026-03-06_18-01-08_potentiation_w_0_05_eta_0_025_mod_0_5"),
 
     # Add more groups here as needed
     # ("Group 5", "folder_5"),
