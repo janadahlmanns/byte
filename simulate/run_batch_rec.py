@@ -163,6 +163,18 @@ def main():
     if brain_init_spec is None and has_brain_config:
         raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
     
+    # Check visualization settings for batch runs
+    viz_cfg = cfg.get("viz", {})
+    viz_enabled = bool(viz_cfg.get("enabled", False))
+    
+    if N_RUNS > 2 and viz_enabled:
+        print(f"\n[WARNING] Visualization is enabled in config for {N_RUNS} runs.")
+        print("This will be VERY SLOW. Batch runs typically disable visualization.")
+        response = input("Continue with visualization? (y/n): ").strip().lower()
+        if response != 'y':
+            print("[INFO] Disabling visualization for this batch run.")
+            viz_enabled = False
+    
     brain = load_brain_module(make_decision_cfg(cfg))
 
     run_dir = make_experiment_dir()
@@ -184,8 +196,8 @@ def main():
                 encoding="utf-8",
             )
 
-    # Initialize pause manager
-    pause_mgr = init_pause_manager()
+    # Initialize pause manager only if visualization is enabled
+    pause_mgr = init_pause_manager() if viz_enabled else None
 
     summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy"]
 
@@ -211,17 +223,32 @@ def main():
 
             reset_sim(world, feeding_cfg, rng_food, worm)
 
+            # Setup world visualization (if enabled)
+            renderer = None
+            if viz_enabled:
+                renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
+            worm.renderer = renderer
+
             rec = MetricsRecorder.empty()
             rec.record(worm)
 
             while worm.alive and worm.ticks < MAX_TICKS:
                 # CHECKPOINT: Check for pause/exit
-                pause_mgr.check_pause()
+                if pause_mgr:
+                    pause_mgr.check_pause()
 
                 world.step()
                 worm.step_day(rng_decision)
                 worm.ticks += 1
                 rec.record(worm)
+                
+                # Frame pacing for visualization
+                if renderer:
+                    renderer.wait_frame()
+
+            # Clean up renderer for this run
+            if renderer:
+                renderer.close()
 
             run_file = run_dir / "runs" / f"run_{run_id:04d}.csv"
             rec.save_csv(run_file)
@@ -235,7 +262,8 @@ def main():
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
     finally:
-        cleanup_pause_manager()
+        if pause_mgr:
+            cleanup_pause_manager()
 
     summary_name = f"summary_{SIMULATION_NAME}.csv"
     (run_dir / summary_name).write_text(
