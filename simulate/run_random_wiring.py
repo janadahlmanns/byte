@@ -40,7 +40,7 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.1       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.05        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 500                             # Number of randomized wiring variants to generate
+N_VARIANTS = 100                             # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
