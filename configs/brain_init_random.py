@@ -2,31 +2,33 @@ import numpy as np
 
 
 def build_brain_spec(
-    wiring_seed=None,
-    connectivity_degree_excitatory=0.2,
-    connectivity_degree_inhibitory=0.4,
-    modulation_degree_potentiation=0.1,
-    modulation_degree_depression=0.05,
+    wiring_seed,
+    connectivity_degree_excitatory,
+    connectivity_degree_inhibitory,
+    modulation_degree_potentiation,
+    modulation_degree_depression,
 ):
     """
     Builds the initial brain specification with randomized wiring.
+    
+    All parameters are required (no defaults) to ensure reproducibility and prevent silent value overwrites.
 
     Parameters
     ----------
-    wiring_seed : int, optional
-        Seed for wiring randomization.
+    wiring_seed : int
+        Seed for wiring randomization. Required.
     
     connectivity_degree_excitatory : float
-        Fraction of all possible connections to be excitatory (0.2 = 20%)
+        Fraction of all possible connections to be excitatory (0.2 = 20%). Required.
     
     connectivity_degree_inhibitory : float
-        Fraction of all possible connections to be inhibitory (0.4 = 40%)
+        Fraction of all possible connections to be inhibitory (0.4 = 40%). Required.
     
     modulation_degree_potentiation : float
-        Fraction of connections to receive potentiation modulation (future)
+        Fraction of connections to receive potentiation modulation. Required.
     
     modulation_degree_depression : float
-        Fraction of connections to receive depression modulation (future)
+        Fraction of connections to receive depression modulation. Required.
 
     Returns
     -------
@@ -72,16 +74,13 @@ def build_brain_spec(
     # RNG STREAM SETUP
     # ============================================================
     # Split wiring seed into 4 independent streams for different randomization aspects
-    if wiring_seed is not None:
-        rng_exc = np.random.default_rng(wiring_seed)
-        rng_inh = np.random.default_rng(wiring_seed + 1)
-        rng_mod_pot = np.random.default_rng(wiring_seed + 2)
-        rng_mod_dep = np.random.default_rng(wiring_seed + 3)
-        
-        # Generate test number from first RNG for seed verification
-        wiring_test_number = int(rng_exc.integers(0, 2**31))
-    else:
-        raise ValueError("wiring_seed is required for randomized wiring generation")
+    rng_exc = np.random.default_rng(wiring_seed)
+    rng_inh = np.random.default_rng(wiring_seed + 1)
+    rng_mod_pot = np.random.default_rng(wiring_seed + 2)
+    rng_mod_dep = np.random.default_rng(wiring_seed + 3)
+    
+    # Generate test number from first RNG for seed verification
+    wiring_test_number = int(rng_exc.integers(0, 2**31))
     
     # ============================================================
     # NEURON PARAMETERS
