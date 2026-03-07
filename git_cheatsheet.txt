@@ -56,7 +56,7 @@ BASIC WORKFLOW (NEW FEATURE)
    git checkout -b feature/my-feature-name
 
 3) Work like normal
-   (edit files)
+   (edit files) 
 
    git status
    git add .
