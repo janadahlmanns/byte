@@ -39,14 +39,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.1       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.05        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 2                             # Number of randomized wiring variants to generate
+N_VARIANTS = 500                             # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS
 # ============================================================
 
-MAX_TICKS   = 100
-N_RUNS      = 5
+MAX_TICKS   = 1000
+N_RUNS      = 100
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 15                           # Time for food to regrow
 
@@ -373,7 +373,7 @@ def main():
     # ============================================================
     try:
         for variant_id in range(N_VARIANTS):
-            print(f"\n[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Starting...")
+            print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...")
             
             # Create randomized brain initialization for this variant
             wiring_seed = WIRING_RANDOMIZATION_SEED + variant_id
@@ -485,15 +485,11 @@ def main():
                     f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west}"
                 )
 
-                print(f"[variant {variant_id+1:02d}][run {run_id+1:02d}] ticks={worm.ticks} eats={worm.eats} moves(N/S/E/W)={rec.moves_north}/{rec.moves_south}/{rec.moves_east}/{rec.moves_west}")
-
             # Save summary for this variant
             summary_name = f"summary_{SIMULATION_NAME}.csv"
             (variant_dir / summary_name).write_text(
                 "\n".join(summary_lines) + "\n", encoding="utf-8"
             )
-            
-            print(f"[variant {variant_id+1:02d}] done.")
 
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
