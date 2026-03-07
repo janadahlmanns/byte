@@ -26,7 +26,7 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/random_wiring/rawdata/"
-SIMULATION_NAME   = "random_wiring_test"  # descriptive name for this batch of runs, used in output folder and file names
+SIMULATION_NAME   = "2026-03-07_21-08-07_random_wiring_exc20_inh40_pot_10_dep_5"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
 BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
@@ -40,7 +40,7 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.1       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.05        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 100                             # Number of randomized wiring variants to generate
+N_VARIANTS = 1000                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
@@ -211,6 +211,8 @@ class MetricsRecorder:
     food_sensed_east: int = 0
     food_sensed_south: int = 0
     food_sensed_west: int = 0
+    decisions: int = 0
+    correct_decisions: int = 0
 
     @classmethod
     def empty(cls, worm: Worm, brain_init_spec):
@@ -238,6 +240,8 @@ class MetricsRecorder:
             food_sensed_east=0,
             food_sensed_south=0,
             food_sensed_west=0,
+            decisions=0,
+            correct_decisions=0,
         )
 
     def record(self, worm: Worm):
@@ -282,6 +286,28 @@ class MetricsRecorder:
             self.food_sensed_south += 1
         if food_west:
             self.food_sensed_west += 1
+        
+        # Track decision-making accuracy
+        # A decision only happens if food was sensed AND worm is not on food
+        on_food = sense.get("on_food", 0) > 0
+        any_food_sensed = food_north or food_east or food_south or food_west
+        
+        if any_food_sensed and not on_food:
+            # A decision opportunity exists (food was sensed)
+            self.decisions += 1
+            
+            # Check if movement direction matches a sensed direction
+            moved_north = dy < 0
+            moved_south = dy > 0
+            moved_east = dx > 0
+            moved_west = dx < 0
+            
+            # Correct decision: movement is in one of the sensed directions
+            if (moved_north and food_north) or \
+               (moved_south and food_south) or \
+               (moved_east and food_east) or \
+               (moved_west and food_west):
+                self.correct_decisions += 1
         
         # Track all connection weights for this tick (if enabled)
         if ENABLE_WEIGHT_TRACKING:
@@ -513,7 +539,7 @@ def main():
                     modulation_lines.append(f"{target_src},{target_tgt},{mod_src},{mod_weight:.6f}")
             modulation_file.write_text("\n".join(modulation_lines) + "\n", encoding="utf-8")
             
-            summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west"]
+            summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west,decisions,correct_decisions"]
             
             # Collect final weights for all runs (to write all at once at the end)
             final_weights_all_runs = {}  # {run_id: {(src, tgt): weight}}
@@ -585,7 +611,7 @@ def main():
                 final_weights_all_runs[run_id+1] = final_weights_dict
 
                 summary_lines.append(
-                    f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west}"
+                    f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west},{rec.decisions},{rec.correct_decisions}"
                 )
 
             # ============================================================
