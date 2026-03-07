@@ -1,6 +1,0 @@
-run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west
-1,1,100,17,82,17,1,1,13,67
-2,2,100,11,87,23,2,5,14,66
-3,3,47,4,42,0,0,5,2,35
-4,4,56,6,49,0,2,7,3,37
-5,5,21,1,19,0,2,4,0,13
