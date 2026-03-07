@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yaml
 import numpy as np
+import pandas as pd
 
 from mvb.world import World, WorldConfig
 from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
@@ -42,7 +43,7 @@ WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
 N_VARIANTS = 500                             # Number of randomized wiring variants to generate
 
 # ============================================================
-# SIMULATION PARAMETERS
+# SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 1000
@@ -58,6 +59,12 @@ VIZ_ENABLED = False                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
 VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
+
+# ============================================================
+# DATA TRACKING PARAMETERS
+# ============================================================
+
+ENABLE_WEIGHT_TRACKING = True              # Enable per-tick connection weight tracking and CSV export
 
 # ============================================================
 # helpers
@@ -178,8 +185,15 @@ def make_experiment_dir() -> Path:
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = base / f"{ts}_{SIMULATION_NAME}"
     run_dir.mkdir()
-    (run_dir / "runs").mkdir()
     return run_dir
+
+
+def append_wiring_column_to_csv(wiring_file: Path, run_id: int, final_weights: dict):
+    """
+    DEPRECATED: This function is no longer used because it causes dataframe fragmentation.
+    Final weights are now collected in memory and written all at once per variant.
+    """
+    pass
 
 
 @dataclass
@@ -193,6 +207,10 @@ class MetricsRecorder:
     moves_south: int = 0
     moves_east: int = 0
     moves_west: int = 0
+    food_sensed_north: int = 0
+    food_sensed_east: int = 0
+    food_sensed_south: int = 0
+    food_sensed_west: int = 0
 
     @classmethod
     def empty(cls, worm: Worm, brain_init_spec):
@@ -216,9 +234,18 @@ class MetricsRecorder:
             moves_south=0,
             moves_east=0,
             moves_west=0,
+            food_sensed_north=0,
+            food_sensed_east=0,
+            food_sensed_south=0,
+            food_sensed_west=0,
         )
 
     def record(self, worm: Worm):
+        """
+        Record metrics for this tick.
+        - Always tracks: movement and food sensing (for summary statistics)
+        - Conditionally tracks: per-tick connection weights (controlled by ENABLE_WEIGHT_TRACKING)
+        """
         # Get weights of all 4 plastic direction connections
         weight_1_6 = get_connection_weight(worm.brain, 1, 6)  # north
         weight_2_7 = get_connection_weight(worm.brain, 2, 7)  # east
@@ -246,18 +273,23 @@ class MetricsRecorder:
         food_south = sense.get("food_south", 0.0) > 0.0
         food_west = sense.get("food_west", 0.0) > 0.0
         
-        self.rows.append(
-            (worm.ticks, worm.energy, worm.eats, worm.distance, 
-             weight_1_6, weight_2_7, weight_3_8, weight_4_9,
-             food_north, food_east, food_south, food_west)
-        )
+        # Count food sensing occurrences
+        if food_north:
+            self.food_sensed_north += 1
+        if food_east:
+            self.food_sensed_east += 1
+        if food_south:
+            self.food_sensed_south += 1
+        if food_west:
+            self.food_sensed_west += 1
         
-        # Track all connection weights for this tick
-        tick_weights = [worm.ticks]
-        for src, tgt in self.connections_to_track:
-            w = get_connection_weight(worm.brain, src, tgt)
-            tick_weights.append(w)
-        self.weight_rows.append(tuple(tick_weights))
+        # Track all connection weights for this tick (if enabled)
+        if ENABLE_WEIGHT_TRACKING:
+            tick_weights = [worm.ticks]
+            for src, tgt in self.connections_to_track:
+                w = get_connection_weight(worm.brain, src, tgt)
+                tick_weights.append(w)
+            self.weight_rows.append(tuple(tick_weights))
         
         # Update previous position for next call
         self.prev_y = worm.y
@@ -359,12 +391,6 @@ def main():
     run_dir = make_experiment_dir()
     print(f"[batch] writing to {run_dir}")
 
-    # snapshot config
-    (run_dir / f"config_used_{SIMULATION_NAME}.yaml").write_text(
-        yaml.safe_dump(cfg, sort_keys=False),
-        encoding="utf-8",
-    )
-
     # Initialize pause manager only if visualization is enabled
     pause_mgr = init_pause_manager() if viz_enabled else None
 
@@ -372,6 +398,80 @@ def main():
     # OUTER LOOP: Iterate over wiring variants
     # ============================================================
     try:
+        # Create one test variant to extract brain initialization parameters
+        wiring_seed_test = WIRING_RANDOMIZATION_SEED
+        brain_init_spec_test = load_brain_init(
+            BRAIN_INIT,
+            wiring_seed=wiring_seed_test,
+            connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
+            connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
+            modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
+            modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
+        )
+        
+        # Extract brain parameters from the spec
+        neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec_test
+        n_neurons = neuron_params.shape[0]
+        
+        # Count total connections
+        num_total_connections = int(np.count_nonzero(connections[:, :, 0]))
+        
+        # Infer weights from actual connections (take first one found)
+        excitatory_weight = None
+        inhibitory_weight = None
+        for src in range(n_neurons):
+            for tgt in range(n_neurons):
+                w = connections[src, tgt, 0]
+                if w > 0 and excitatory_weight is None:
+                    excitatory_weight = float(w)
+                elif w < 0 and inhibitory_weight is None:
+                    inhibitory_weight = float(w)
+        
+        # Build comprehensive config dict
+        comprehensive_config = {
+            "experiment_metadata": {
+                "experiment_folder": EXPERIMENT_FOLDER,
+                "simulation_name": SIMULATION_NAME,
+                "config_path": CONFIG_PATH,
+                "brain_init_type": BRAIN_INIT,
+            },
+            "wiring_randomization": {
+                "connectivity_degree_excitatory": CONNECTIVITY_DEGREE_EXCITATORY,
+                "connectivity_degree_inhibitory": CONNECTIVITY_DEGREE_INHIBITORY,
+                "modulation_degree_potentiation": MODULATION_DEGREE_POTENTIATION,
+                "modulation_degree_depression": MODULATION_DEGREE_DEPRESSION,
+                "wiring_randomization_seed_base": WIRING_RANDOMIZATION_SEED,
+                "n_variants": N_VARIANTS,
+            },
+            "simulation_parameters": {
+                "max_ticks": MAX_TICKS,
+                "n_runs": N_RUNS,
+                "initial_fraction_per_cell": INITIAL_FRACTION_PER_CELL,
+                "regrow_time": REGROW_TIME,
+            },
+            "data_tracking": {
+                "enable_weight_tracking": ENABLE_WEIGHT_TRACKING,
+            },
+            "brain_architecture": {
+                "n_neurons": int(n_neurons),
+                "max_decision_delay": float(max_decision_delay),
+                "eta": float(eta),
+                "excitatory_weight": excitatory_weight,
+                "inhibitory_weight": inhibitory_weight,
+                "n_input_neurons": 5,
+                "n_output_neurons": 5,
+                "n_always_on_neurons": 1,
+            },
+            "world_config": cfg,
+        }
+        
+        # Save comprehensive config as JSON
+        import json
+        config_json_path = run_dir / f"config_used_{SIMULATION_NAME}.json"
+        with open(config_json_path, 'w', encoding='utf-8') as f:
+            json.dump(comprehensive_config, f, indent=2)
+        print(f"[config] Saved comprehensive config to {config_json_path.name}")
+        
         for variant_id in range(N_VARIANTS):
             print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...")
             
@@ -395,15 +495,15 @@ def main():
             (variant_dir / "runs").mkdir()
             
             # Save initial wiring for this variant (same for all runs)
-            initial_wiring_file = variant_dir / "wiring_initial.csv"
+            wiring_file = variant_dir / "wiring.csv"
             neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
-            initial_lines = ["src,tgt,weight"]
+            wiring_lines = ["src,tgt,weight_initial"]
             for src in range(connections.shape[0]):
                 for tgt in range(connections.shape[1]):
                     if connections[src, tgt, 0] != 0.0:
                         weight = connections[src, tgt, 0]
-                        initial_lines.append(f"{src},{tgt},{weight:.6f}")
-            initial_wiring_file.write_text("\n".join(initial_lines) + "\n", encoding="utf-8")
+                        wiring_lines.append(f"{src},{tgt},{weight:.6f}")
+            wiring_file.write_text("\n".join(wiring_lines) + "\n", encoding="utf-8")
             
             # Save modulation spec for this variant
             modulation_file = variant_dir / "modulation.csv"
@@ -413,7 +513,10 @@ def main():
                     modulation_lines.append(f"{target_src},{target_tgt},{mod_src},{mod_weight:.6f}")
             modulation_file.write_text("\n".join(modulation_lines) + "\n", encoding="utf-8")
             
-            summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west"]
+            summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west"]
+            
+            # Collect final weights for all runs (to write all at once at the end)
+            final_weights_all_runs = {}  # {run_id: {(src, tgt): weight}}
 
             # ============================================================
             # INNER LOOP: Iterate over world seeds for this variant
@@ -466,24 +569,46 @@ def main():
                 if renderer:
                     renderer.close()
 
-                # Save metrics and tracking data for this run
-                run_file = variant_dir / "runs" / f"run_{run_id+1:04d}.csv"
-                rec.save_csv(run_file)
+                # ============================================================
+                # Per-tick tracking: conditional weight CSV saves
+                # ============================================================
+                # Save per-tick connection weights (if enabled)
+                if ENABLE_WEIGHT_TRACKING:
+                    weights_file = variant_dir / "runs" / f"run_{run_id+1:04d}_weights.csv"
+                    rec.save_weights_csv(weights_file)
                 
-                weights_file = variant_dir / "runs" / f"run_{run_id+1:04d}_weights.csv"
-                rec.save_weights_csv(weights_file)
-                
-                # Save final wiring for this run
-                final_wiring_file = variant_dir / "runs" / f"run_{run_id+1:04d}_wiring_final.csv"
-                final_lines = ["src,tgt,weight"]
+                # Collect final wiring for this run (to be written all at once per variant)
+                final_weights_dict = {}
                 for src, tgt in rec.connections_to_track:
                     w = get_connection_weight(worm.brain, src, tgt)
-                    final_lines.append(f"{src},{tgt},{w:.6f}")
-                final_wiring_file.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
+                    final_weights_dict[(src, tgt)] = w
+                final_weights_all_runs[run_id+1] = final_weights_dict
 
                 summary_lines.append(
-                    f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west}"
+                    f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west}"
                 )
+
+            # ============================================================
+            # Write all final weights to wiring file at once (avoid fragmentation)
+            # ============================================================
+            df_wiring = pd.read_csv(wiring_file)
+            
+            # Build all final weight columns at once before assigning
+            final_weights = {}
+            for run_id, weights_dict in final_weights_all_runs.items():
+                column_name = f"weight_final_run_{run_id:04d}"
+                weights_list = []
+                for _, row in df_wiring.iterrows():
+                    src = int(row['src'])
+                    tgt = int(row['tgt'])
+                    weight = weights_dict.get((src, tgt), 0.0)
+                    weights_list.append(weight)
+                final_weights[column_name] = weights_list
+            
+            # Create new DataFrame with all weight columns and concatenate
+            df_final_weights = pd.DataFrame(final_weights)
+            df_wiring = pd.concat([df_wiring, df_final_weights], axis=1)
+            df_wiring.to_csv(wiring_file, index=False)
 
             # Save summary for this variant
             summary_name = f"summary_{SIMULATION_NAME}.csv"
