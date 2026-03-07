@@ -178,9 +178,9 @@ def build_brain_spec(
     num_existing = len(existing_connections)
     
     # Calculate targets for modulation
-    # Possibility space: n_neurons * num_existing_connections
-    num_potentiation_target = int(modulation_degree_potentiation * n_neurons * num_existing)
-    num_depression_target = int(modulation_degree_depression * n_neurons * num_existing)
+    # Possibility space: n_neurons * num_existing_connections (for which neuron modulates which connection)
+    num_potentiation_target = int(modulation_degree_potentiation * num_existing)
+    num_depression_target = int(modulation_degree_depression * num_existing)
     
     # Initialize modulator_spec with empty lists for each connection
     modulator_spec = {}
