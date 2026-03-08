@@ -25,11 +25,11 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/random_wiring/rawdata/"
-SIMULATION_NAME   = "hardwired_lookup"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/random_no_regrow/rawdata/"
+SIMULATION_NAME   = "random_no_regrow_all_tracked"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
+BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
 
 # ============================================================
 # WIRING RANDOMIZATION PARAMETERS
@@ -37,19 +37,19 @@ BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
 
 CONNECTIVITY_DEGREE_EXCITATORY = 0.2       # Fraction of excitatory connections
 CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
-MODULATION_DEGREE_POTENTIATION = 0.1       # Fraction for potentiation modulation
-MODULATION_DEGREE_DEPRESSION = 0.05        # Fraction for depression modulation
+MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
+MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 2                            # Number of randomized wiring variants to generate
+N_VARIANTS = 1000                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
-MAX_TICKS   = 1000
+MAX_TICKS   = 2000
 N_RUNS      = 100
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
-REGROW_TIME = 15                           # Time for food to regrow
+REGROW_TIME = 3000                           # Time for food to regrow
 
 # ============================================================
 # VISUALIZATION PARAMETERS
@@ -64,8 +64,8 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_WEIGHT_TRACKING = True              # Enable per-tick connection weight tracking and CSV export
-
+ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
+ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 # ============================================================
 # helpers
 # ============================================================
@@ -199,10 +199,18 @@ def append_wiring_column_to_csv(wiring_file: Path, run_id: int, final_weights: d
 @dataclass
 class MetricsRecorder:
     rows: list[tuple]  # Main tracked data per tick
-    weight_rows: list[tuple]  # All connection weights per tick
+    per_tick_rows: list[tuple]  # Comprehensive per-tick tracking (if ENABLE_PER_TICK_TRACKING is True)
     connections_to_track: list[tuple]  # List of (src, tgt) pairs to track over time
+    start_y: int = 0  # Starting Y position for manhattan distance calculation
+    start_x: int = 0  # Starting X position for manhattan distance calculation
     prev_y: int = 0
     prev_x: int = 0
+    prev_eats: int = 0  # Track food consumption this tick
+    prev_action: tuple = None  # Track which movement happened
+    grid_height: int = 0  # World grid height for heatmap indexing
+    grid_width: int = 0  # World grid width for heatmap indexing
+    entering_heatmap: dict = None  # {(y, x): count} - field entry counts
+    staying_heatmap: dict = None  # {(y, x): count} - field ticks spent
     moves_north: int = 0
     moves_south: int = 0
     moves_east: int = 0
@@ -226,12 +234,35 @@ class MetricsRecorder:
                 if connections[src, tgt, 0] != 0.0:
                     connections_to_track.append((src, tgt))
         
+        # Initialize heatmaps
+        grid_height = worm.world.cfg.grid_height
+        grid_width = worm.world.cfg.grid_width
+        entering_heatmap = {}
+        staying_heatmap = {}
+        
+        # Initialize all grid positions with 0, then set start position to 1 for entering
+        for y in range(grid_height):
+            for x in range(grid_width):
+                entering_heatmap[(y, x)] = 0
+                staying_heatmap[(y, x)] = 0
+        
+        # Starting position gets 1 enter count
+        entering_heatmap[(worm.y, worm.x)] = 1
+        
         return cls(
             rows=[],
-            weight_rows=[],
+            per_tick_rows=[],
             connections_to_track=connections_to_track,
+            start_y=worm.y,
+            start_x=worm.x,
             prev_y=worm.y,
             prev_x=worm.x,
+            prev_eats=worm.eats,
+            prev_action=None,
+            grid_height=grid_height,
+            grid_width=grid_width,
+            entering_heatmap=entering_heatmap,
+            staying_heatmap=staying_heatmap,
             moves_north=0,
             moves_south=0,
             moves_east=0,
@@ -248,14 +279,8 @@ class MetricsRecorder:
         """
         Record metrics for this tick.
         - Always tracks: movement and food sensing (for summary statistics)
-        - Conditionally tracks: per-tick connection weights (controlled by ENABLE_WEIGHT_TRACKING)
+        - Conditionally tracks: comprehensive per-tick data (controlled by ENABLE_PER_TICK_TRACKING)
         """
-        # Get weights of all 4 plastic direction connections
-        weight_1_6 = get_connection_weight(worm.brain, 1, 6)  # north
-        weight_2_7 = get_connection_weight(worm.brain, 2, 7)  # east
-        weight_3_8 = get_connection_weight(worm.brain, 3, 8)  # south
-        weight_4_9 = get_connection_weight(worm.brain, 4, 9)  # west
-        
         # Track directional movement
         dy = worm.y - self.prev_y
         dx = worm.x - self.prev_x
@@ -309,17 +334,73 @@ class MetricsRecorder:
                (moved_west and food_west):
                 self.correct_decisions += 1
         
-        # Track all connection weights for this tick (if enabled)
-        if ENABLE_WEIGHT_TRACKING:
-            tick_weights = [worm.ticks]
+        # Track comprehensive per-tick data (if enabled)
+        if ENABLE_PER_TICK_TRACKING:
+            # Determine movement direction from previous action
+            movement_str = "stay"
+            if self.prev_action is not None:
+                if self.prev_action[0] == "move":
+                    move_y, move_x = self.prev_action[1]
+                    if move_y < self.prev_y:
+                        movement_str = "N"
+                    elif move_y > self.prev_y:
+                        movement_str = "S"
+                    elif move_x > self.prev_x:
+                        movement_str = "E"
+                    elif move_x < self.prev_x:
+                        movement_str = "W"
+            
+            # Check if food was consumed this tick
+            food_consumed = 1 if worm.eats > self.prev_eats else 0
+            
+            # Calculate manhattan distance from start position
+            manhattan_dist = abs(worm.y - self.start_y) + abs(worm.x - self.start_x)
+            
+            # Check if decision was made (action is not None)
+            decision_made = 1 if worm.action is not None else 0
+            
+            # Collect per-tick data
+            tick_data = [
+                worm.ticks,
+                int(food_north),
+                int(food_east),
+                int(food_south),
+                int(food_west),
+                movement_str,
+                food_consumed,
+                worm.energy,
+                manhattan_dist,
+                decision_made,
+            ]
+            
+            # Add all connection weights
             for src, tgt in self.connections_to_track:
                 w = get_connection_weight(worm.brain, src, tgt)
-                tick_weights.append(w)
-            self.weight_rows.append(tuple(tick_weights))
+                tick_data.append(w)
+            
+            self.per_tick_rows.append(tuple(tick_data))
         
-        # Update previous position for next call
+        # Track heatmaps (if enabled)
+        if ENABLE_HEAT_MAP_TRACKING:
+            # STAYING heatmap: increment for every tick on current field
+            self.staying_heatmap[(worm.y, worm.x)] += 1
+            
+            # ENTERING heatmap: increment only when entering a new field (not when staying to eat)
+            position_changed = (worm.y != self.prev_y) or (worm.x != self.prev_x)
+            food_consumed = worm.eats > self.prev_eats
+            stayed_to_eat = (self.prev_action is not None and 
+                            self.prev_action[0] == "stay" and 
+                            food_consumed)
+            
+            # Enter a new field incrementing (but NOT if we stayed in place to eat)
+            if position_changed and not stayed_to_eat:
+                self.entering_heatmap[(worm.y, worm.x)] += 1
+        
+        # Update previous position, eats count, and action for next call
         self.prev_y = worm.y
         self.prev_x = worm.x
+        self.prev_eats = worm.eats
+        self.prev_action = worm.action
 
     def save_csv(self, path: Path):
         lines = ["tick,energy,eats,distance,conn_1_6_weight,conn_2_7_weight,conn_3_8_weight,conn_4_9_weight,food_north_sensed,food_east_sensed,food_south_sensed,food_west_sensed"]
@@ -327,12 +408,32 @@ class MetricsRecorder:
                   for t, e, k, d, w16, w27, w38, w49, fn, fe, fs, fw in self.rows]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     
-    def save_weights_csv(self, path: Path):
-        """Save all tracked connection weights over time."""
-        header = ["tick"] + [f"conn_{src}_{tgt}" for src, tgt in self.connections_to_track]
+    def save_per_tick_csv(self, path: Path):
+        """Save comprehensive per-tick tracking data."""
+        header = ["tick", "food_sensed_N", "food_sensed_E", "food_sensed_S", "food_sensed_W",
+                  "movement", "food_consumed", "energy", "manhattan_dist", "decision_made"] + \
+                 [f"conn_{src}_{tgt}" for src, tgt in self.connections_to_track]
         lines = [",".join(header)]
-        lines += [",".join([f"{val:.6f}" if isinstance(val, float) else str(val) for val in row]) 
-                  for row in self.weight_rows]
+        for row in self.per_tick_rows:
+            # First 10 columns: tick, food_sensed (4x), movement, food_consumed, energy, manhattan_dist, decision_made
+            formatted_row = [str(row[0])] + [str(int(row[i])) for i in range(1, 5)] + [str(row[5]), str(row[6]), str(row[7]), str(row[8]), str(row[9])]
+            # Remaining columns: connection weights (floats)
+            formatted_row += [f"{val:.6f}" if isinstance(val, float) else str(val) for val in row[10:]]
+            lines.append(",".join(formatted_row))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    
+    def save_heatmaps_csv(self, path: Path):
+        """Save entering and staying heatmaps for all grid positions."""
+        header = ["field_y", "field_x", "entering_count", "staying_count"]
+        lines = [",".join(header)]
+        
+        # Sort by y, then x for consistent output
+        for y in range(self.grid_height):
+            for x in range(self.grid_width):
+                entering_count = self.entering_heatmap.get((y, x), 0)
+                staying_count = self.staying_heatmap.get((y, x), 0)
+                lines.append(f"{y},{x},{entering_count},{staying_count}")
+        
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     
     def save_wiring_snapshot(self, path: Path, brain_init_spec, label: str):
@@ -476,7 +577,8 @@ def main():
                 "regrow_time": REGROW_TIME,
             },
             "data_tracking": {
-                "enable_weight_tracking": ENABLE_WEIGHT_TRACKING,
+                "enable_per_tick_tracking": ENABLE_PER_TICK_TRACKING,
+                "enable_heat_map_tracking": ENABLE_HEAT_MAP_TRACKING,
             },
             "brain_architecture": {
                 "n_neurons": int(n_neurons),
@@ -539,19 +641,20 @@ def main():
                     modulation_lines.append(f"{target_src},{target_tgt},{mod_src},{mod_weight:.6f}")
             modulation_file.write_text("\n".join(modulation_lines) + "\n", encoding="utf-8")
             
-            summary_lines = ["run_id,seed,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west,decisions,correct_decisions"]
+            summary_lines = ["run_id,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west,decisions,correct_decisions"]
             
             # Collect final weights for all runs (to write all at once at the end)
             final_weights_all_runs = {}  # {run_id: {(src, tgt): weight}}
+            
+            # Collect heatmaps for all runs (to write all at once at the end)
+            heatmaps_all_runs = {}  # {run_id: (entering_heatmap, staying_heatmap)}
 
             # ============================================================
             # INNER LOOP: Iterate over world seeds for this variant
             # ============================================================
             for run_id in range(N_RUNS):
-                seed = cfg["world"]["rng_seed"] + run_id
-                
                 # Build RNG streams for this run
-                rng_food, rng_decision, rng_neuron_noise = build_rng_streams(seed, has_brain_config)
+                rng_food, rng_decision, rng_neuron_noise = build_rng_streams(cfg["world"]["rng_seed"] + run_id, has_brain_config)
 
                 world = make_world(cfg)
                 feeding_cfg = make_feeding_cfg(cfg)
@@ -596,12 +699,16 @@ def main():
                     renderer.close()
 
                 # ============================================================
-                # Per-tick tracking: conditional weight CSV saves
+                # Per-tick tracking: conditional per-tick CSV saves
                 # ============================================================
-                # Save per-tick connection weights (if enabled)
-                if ENABLE_WEIGHT_TRACKING:
-                    weights_file = variant_dir / "runs" / f"run_{run_id+1:04d}_weights.csv"
-                    rec.save_weights_csv(weights_file)
+                # Save comprehensive per-tick data (if enabled)
+                if ENABLE_PER_TICK_TRACKING:
+                    per_tick_file = variant_dir / "runs" / f"run_{run_id+1:04d}_per_tick.csv"
+                    rec.save_per_tick_csv(per_tick_file)
+                
+                # Collect heatmaps for this run (to write all at once per variant)
+                if ENABLE_HEAT_MAP_TRACKING:
+                    heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
                 
                 # Collect final wiring for this run (to be written all at once per variant)
                 final_weights_dict = {}
@@ -611,7 +718,7 @@ def main():
                 final_weights_all_runs[run_id+1] = final_weights_dict
 
                 summary_lines.append(
-                    f"{run_id+1},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west},{rec.decisions},{rec.correct_decisions}"
+                    f"{run_id+1},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west},{rec.decisions},{rec.correct_decisions}"
                 )
 
             # ============================================================
@@ -641,6 +748,38 @@ def main():
             (variant_dir / summary_name).write_text(
                 "\n".join(summary_lines) + "\n", encoding="utf-8"
             )
+            
+            # Save consolidated heatmaps for all runs in this variant
+            if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
+                # Get grid dimensions from first run's heatmap
+                first_entering = list(heatmaps_all_runs.values())[0][0]
+                grid_height = max(y for y, x in first_entering.keys()) + 1
+                grid_width = max(x for y, x in first_entering.keys()) + 1
+                
+                # Build header: field_y, field_x, then alternating entering/staying for each run
+                header = ["field_y", "field_x"]
+                for run_id in sorted(heatmaps_all_runs.keys()):
+                    header.append(f"entering_run_{run_id:04d}")
+                    header.append(f"staying_run_{run_id:04d}")
+                
+                # Build rows: linearize grid and collect data from all runs
+                lines = [",".join(header)]
+                for y in range(grid_height):
+                    for x in range(grid_width):
+                        row = [str(y), str(x)]
+                        for run_id in sorted(heatmaps_all_runs.keys()):
+                            entering_heatmap, staying_heatmap = heatmaps_all_runs[run_id]
+                            entering_count = entering_heatmap.get((y, x), 0)
+                            staying_count = staying_heatmap.get((y, x), 0)
+                            row.append(str(entering_count))
+                            row.append(str(staying_count))
+                        lines.append(",".join(row))
+                
+                # Write consolidated heatmaps file for this variant
+                heatmaps_name = f"heatmaps_{SIMULATION_NAME}.csv"
+                (variant_dir / heatmaps_name).write_text(
+                    "\n".join(lines) + "\n", encoding="utf-8"
+                )
 
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
