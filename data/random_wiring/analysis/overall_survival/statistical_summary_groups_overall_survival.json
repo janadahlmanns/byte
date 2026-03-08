@@ -1323,5 +1323,15 @@
       "median_survival": 16.0,
       "std_survival": 0.0
     }
-  ]
+  ],
+  "benchmarks": {
+    "2026-03-08_12-51-56_hardwired_lookup": {
+      "num_runs": 200,
+      "mean_survival": 371.7,
+      "median_survival": 30.0,
+      "std_survival": 461.1465602170312,
+      "min_survival": 24.0,
+      "max_survival": 1000.0
+    }
+  }
 }
