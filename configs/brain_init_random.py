@@ -61,7 +61,7 @@ def build_brain_spec(
     # Connection and modulation weights
     EXCITATORY_WEIGHT = 0.6
     INHIBITORY_WEIGHT = -0.6
-    POTENTIATION_WEIGHT = 1.0
+    POTENTIATION_WEIGHT = 0.5
     DEPRESSION_WEIGHT = -0.5
     HARD_CODED_CONNECTION_WEIGHT = 1.0
     

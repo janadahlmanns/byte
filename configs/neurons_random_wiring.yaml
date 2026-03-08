@@ -8,7 +8,7 @@ world:
 food:
   feeding_paradigm:
     initial: true
-    regrow: true
+    regrow: false
 worm:
   speed: 1
   energy_capacity: 30
