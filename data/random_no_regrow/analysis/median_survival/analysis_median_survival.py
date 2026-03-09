@@ -168,15 +168,37 @@ for variant_name in sorted(df_all["variant"].unique()):
 
 df_stats = pd.DataFrame(variant_stats)
 
-# Identify variants in top and bottom 10% of the median survival distribution
-median_90_pct_threshold = df_stats["median_survival"].quantile(0.90)
-median_10_pct_threshold = df_stats["median_survival"].quantile(0.10)
+# =====================================================================
+# Identify successful and unsuccessful variants using RANGE-BASED thresholds
+# =====================================================================
+# Rather than using percentile ranking (which would mix truly successful and 
+# mediocre variants), we define success based on ACTUAL PERFORMANCE ACHIEVEMENT:
+# 
+# Successful: median survival in top 10% of achievable performance range
+# Unsuccessful: median survival in bottom 10% of achievable performance range
+#
+# This means: if the best variant achieves 110 ticks and worst achieves 16 ticks,
+# the range is 94 ticks. Top 10% threshold = 110 - (0.10 * 94) = 101.6 ticks
+# Bottom 10% threshold = 16 + (0.10 * 94) = 25.4 ticks
+#
+# This approach:
+# - Captures true performance achievements, not just ranking
+# - If only 5 variants are truly excellent, only 5 are called successful
+# - More meaningful for understanding what strategies actually work well
 
-# Top 10%: variants above 90th percentile of median survival
-top_10_pct_variants = set(df_stats[df_stats["median_survival"] >= median_90_pct_threshold]["variant"].values)
+median_min = df_stats["median_survival"].min()
+median_max = df_stats["median_survival"].max()
+median_range = median_max - median_min
 
-# Bottom 10%: variants below 10th percentile of median survival
-bottom_10_pct_variants = set(df_stats[df_stats["median_survival"] <= median_10_pct_threshold]["variant"].values)
+# Successful: top 10% of performance range (max - 10% of range)
+median_successful_threshold = median_max - (0.10 * median_range)
+
+# Unsuccessful: bottom 10% of performance range (min + 10% of range)
+median_unsuccessful_threshold = median_min + (0.10 * median_range)
+
+# Identify variants in each group
+top_10_pct_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
+bottom_10_pct_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
 
 # =====================================================================
 # HELPER FUNCTION: Perform appropriate statistical test
@@ -305,13 +327,14 @@ plt.ylabel("Number of Bytes alive", fontsize=12)
 title_suffix = ""
 if df_benchmarks is not None:
     title_suffix = f" + {len(list(df_benchmarks['benchmark_group'].unique()))} Benchmark(s)"
-plt.title(f"Survival Race: All {len(variant_dirs)} Random Variants{title_suffix}\n(100 world seeds per variant)")
+runs_per_variant = len(df_all) // len(variant_dirs)
+plt.title(f"Survival Race: All {len(variant_dirs)} Random Variants{title_suffix}\n({runs_per_variant} world seeds per variant)")
 plt.grid(True, alpha=0.3)
 
 # Create custom legend
 legend_elements = [
-    Line2D([0], [0], color=green_color, linewidth=1.5, label=f"Random Top 10% (median ≥ {median_90_pct_threshold:.1f} ticks)"),
-    Line2D([0], [0], color=red_color, linewidth=1.5, label=f"Random Bottom 10% (median ≤ {median_10_pct_threshold:.1f} ticks)"),
+    Line2D([0], [0], color=green_color, linewidth=1.5, label=f"Random Top 10% (median ≥ {median_successful_threshold:.1f} ticks)"),
+    Line2D([0], [0], color=red_color, linewidth=1.5, label=f"Random Bottom 10% (median ≤ {median_unsuccessful_threshold:.1f} ticks)"),
     Line2D([0], [0], color="gray", linewidth=0.8, label="Random Middle 80%"),
 ]
 
@@ -355,13 +378,17 @@ summary_dict = {
         "across_variants_mean": float(df_stats['median_survival'].mean()),
         "across_variants_std": float(df_stats['median_survival'].std()),
     },
-    "percentile_ranking": {
+    "range_based_thresholds": {
         "metric": "median_survival",
-        "90th_percentile_threshold": float(median_90_pct_threshold),
-        "10th_percentile_threshold": float(median_10_pct_threshold),
+        "methodology": "top 10% and bottom 10% of achievable performance range",
+        "min_median_survival": float(median_min),
+        "max_median_survival": float(median_max),
+        "performance_range": float(median_range),
+        "successful_threshold": float(median_successful_threshold),
+        "unsuccessful_threshold": float(median_unsuccessful_threshold),
     },
-    "top_10_pct_variants": df_stats[df_stats["median_survival"] >= median_90_pct_threshold].sort_values("median_survival", ascending=False)[["variant", "median_survival", "std_survival"]].to_dict('records'),
-    "bottom_10_pct_variants": df_stats[df_stats["median_survival"] <= median_10_pct_threshold].sort_values("median_survival")[["variant", "median_survival", "std_survival"]].to_dict('records'),
+    "top_10_pct_variants": df_stats[df_stats["median_survival"] >= median_successful_threshold].sort_values("median_survival", ascending=False)[["variant", "median_survival", "std_survival"]].to_dict('records'),
+    "bottom_10_pct_variants": df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold].sort_values("median_survival")[["variant", "median_survival", "std_survival"]].to_dict('records'),
 }
 
 # Add benchmark information if available
@@ -406,26 +433,19 @@ print("\n" + "="*60)
 print("STATISTICAL SUMMARY ACROSS ALL VARIANTS")
 print("="*60)
 
-# =====================================================================
-# Print summary statistics
-# =====================================================================
+print(f"\nMedian survival time (ticks) - Range-Based Threshold Analysis:")
+print(f"  Minimum median (worst variant): {median_min:.1f} ticks")
+print(f"  Maximum median (best variant): {median_max:.1f} ticks")
+print(f"  Range: {median_range:.1f} ticks")
+print(f"  ")
+print(f"  Successful threshold (top 10% of range): >= {median_successful_threshold:.1f} ticks")
+print(f"  Unsuccessful threshold (bottom 10% of range): <= {median_unsuccessful_threshold:.1f} ticks")
 
-print("\n" + "="*60)
-print("STATISTICAL SUMMARY ACROSS ALL VARIANTS")
-print("="*60)
-print(f"\nMean survival time (ticks):")
-print(f"  Across variants - Mean: {df_stats['mean_survival'].mean():.1f}")
-print(f"  Across variants - Std:  {df_stats['mean_survival'].std():.1f}")
+print(f"\nVariants in TOP 10% of performance range (>= {median_successful_threshold:.1f} ticks):")
+print(df_stats[df_stats["median_survival"] >= median_successful_threshold].sort_values("median_survival", ascending=False)[["variant", "median_survival", "std_survival"]])
 
-print(f"\nMedian survival time (ticks):")
-print(f"  Across variants - Mean: {df_stats['median_survival'].mean():.1f}")
-print(f"  Across variants - Std:  {df_stats['median_survival'].std():.1f}")
-
-print(f"\nVariants in TOP 10% (90th percentile) of median survival (>= {median_90_pct_threshold:.1f} ticks):")
-print(df_stats[df_stats["median_survival"] >= median_90_pct_threshold].sort_values("median_survival", ascending=False)[["variant", "median_survival", "std_survival"]])
-
-print(f"\nVariants in BOTTOM 10% (10th percentile) of median survival (<= {median_10_pct_threshold:.1f} ticks):")
-print(df_stats[df_stats["median_survival"] <= median_10_pct_threshold].sort_values("median_survival")[["variant", "median_survival", "std_survival"]])
+print(f"\nVariants in BOTTOM 10% of performance range (<= {median_unsuccessful_threshold:.1f} ticks):")
+print(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold].sort_values("median_survival")[["variant", "median_survival", "std_survival"]])
 
 print("\nDone with survival race analysis!")
 
@@ -440,11 +460,11 @@ if df_benchmarks is not None:
 print("="*60)
 
 # Identify groups
-successful_variants = set(df_stats[df_stats["median_survival"] >= median_90_pct_threshold]["variant"].values)
-unsuccessful_variants = set(df_stats[df_stats["median_survival"] <= median_10_pct_threshold]["variant"].values)
+successful_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
+unsuccessful_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
 
-print(f"\nSuccessful variants (top 10%): {len(successful_variants)}")
-print(f"Unsuccessful variants (bottom 10%): {len(unsuccessful_variants)}")
+print(f"\nSuccessful variants (top 10% of range): {len(successful_variants)}")
+print(f"Unsuccessful variants (bottom 10% of range): {len(unsuccessful_variants)}")
 
 # Prepare data for jitter plot
 plot_data = []
@@ -632,7 +652,7 @@ if df_benchmarks is not None:
         print(f"\nDunn's Post-hoc Test Results (Survival Time, p_adjust='bonferroni'):")
         print(posthoc_survival.round(4))
 
-print(f"\nSuccessful variants (Median >= {median_90_pct_threshold:.1f} ticks):")
+print(f"\nSuccessful variants (Median >= {median_successful_threshold:.1f} ticks - Top 10% of range):")
 print(f"  N runs: {len(successful_times)}")
 print(f"  Mean: {successful_times.mean():.1f} ticks")
 print(f"  Median: {np.median(successful_times):.1f} ticks")
@@ -640,7 +660,7 @@ print(f"  Std: {successful_times.std():.1f} ticks")
 print(f"  Min: {successful_times.min():.1f} ticks")
 print(f"  Max: {successful_times.max():.1f} ticks")
 
-print(f"\nUnsuccessful variants (Median <= {median_10_pct_threshold:.1f} ticks):")
+print(f"\nUnsuccessful variants (Median <= {median_unsuccessful_threshold:.1f} ticks - Bottom 10% of range):")
 print(f"  N runs: {len(unsuccessful_times)}")
 print(f"  Mean: {unsuccessful_times.mean():.1f} ticks")
 print(f"  Median: {np.median(unsuccessful_times):.1f} ticks")
@@ -810,6 +830,9 @@ if not df_efficiency.empty:
                 edgecolor='black',
                 linewidth=1.5
             )
+        
+        # Add dashed line at y=1 to mark correct decision threshold
+        ax.axhline(y=1, color='black', linestyle='--', linewidth=1.5, alpha=0.6, label='Correct Decision (1:1)')
         
         ax.set_xlabel("Direction", fontsize=11)
         if col == 0:
@@ -1028,243 +1051,6 @@ if not df_accuracy.empty:
 else:
     print("No decision accuracy data found in summary files")
 
-# =====================================================================
-# DIAGNOSTIC: Decision Count vs Survival & Decision Patterns
-# =====================================================================
-
-print("\n" + "="*60)
-print("DECISION DIAGNOSTIC ANALYSIS")
-print("="*60)
-
-# Calculate decisions per tick for each run
-diagnostic_data = []
-for variant_name in df_all["variant"].unique():
-    df_variant = df_all[df_all["variant"] == variant_name]
-    for _, row in df_variant.iterrows():
-        lifetime = row["lifetime_ticks"]
-        total_decisions = row.get("decisions", 0)
-        decisions_per_tick = total_decisions / lifetime if lifetime > 0 else 0
-        
-        variant_group = None
-        if variant_name in successful_variants:
-            variant_group = "Successful"
-        elif variant_name in unsuccessful_variants:
-            variant_group = "Unsuccessful"
-        else:
-            variant_group = "Middle"
-        
-        diagnostic_data.append({
-            "group": variant_group,
-            "lifetime": lifetime,
-            "total_decisions": total_decisions,
-            "decisions_per_tick": decisions_per_tick
-        })
-
-df_diagnostic = pd.DataFrame(diagnostic_data)
-
-# Determine number of rows needed for the combined figure
-num_benchmarks = len(df_benchmarks['benchmark_group'].unique()) if df_benchmarks is not None else 0
-num_rows = 1 + num_benchmarks  # 1 for random variants, 1 per benchmark
-fig, axes = plt.subplots(num_rows, 3, figsize=(18, 5 * num_rows))
-
-# Handle single row case (axes is 1D) vs multiple rows (axes is 2D)
-if num_rows == 1:
-    axes = axes.reshape(1, -1)
-
-fig.suptitle("Decision Diagnostic Analysis", fontsize=16, fontweight='bold', y=0.995)
-
-# ====== ROW 0: Random Variants ======
-row_axes = axes[0]
-row_axes[0].text(0.5, 1.08, "Random Variants (Unsuccessful, Middle, Successful)", 
-                 transform=row_axes[0].transAxes, ha='center', fontsize=12, fontweight='bold')
-
-# Plot 1: Total decisions vs Lifetime
-for group, color in [("Middle", "gray"), ("Successful", green_color), ("Unsuccessful", red_color)]:
-    data = df_diagnostic[df_diagnostic["group"] == group]
-    row_axes[0].scatter(data["total_decisions"], data["lifetime"], alpha=0.4, s=20, color=color, label=group)
-
-row_axes[0].set_xlabel("Total Decisions Made", fontsize=11)
-row_axes[0].set_ylabel("Lifetime (ticks)", fontsize=11)
-row_axes[0].set_title("Decision Count vs Survival Time", fontsize=12, fontweight='bold')
-row_axes[0].legend(fontsize=9)
-row_axes[0].grid(alpha=0.3)
-
-# Plot 2: Decisions per tick vs Lifetime
-for group, color in [("Middle", "gray"), ("Successful", green_color), ("Unsuccessful", red_color)]:
-    data = df_diagnostic[df_diagnostic["group"] == group]
-    row_axes[1].scatter(data["decisions_per_tick"], data["lifetime"], alpha=0.4, s=20, color=color, label=group)
-
-row_axes[1].set_xlabel("Decisions per Tick", fontsize=11)
-row_axes[1].set_ylabel("Lifetime (ticks)", fontsize=11)
-row_axes[1].set_title("Decision Density vs Survival Time", fontsize=12, fontweight='bold')
-row_axes[1].legend(fontsize=9)
-row_axes[1].grid(alpha=0.3)
-
-# Plot 3: Box plot of decisions per tick by group
-diagnostic_data_for_box = []
-for group in ["Unsuccessful", "Successful"]:
-    data = df_diagnostic[df_diagnostic["group"] == group]
-    for val in data["decisions_per_tick"].values:
-        diagnostic_data_for_box.append({"group": group, "decisions_per_tick": val})
-
-df_diagnostic_box = pd.DataFrame(diagnostic_data_for_box)
-
-sns.stripplot(
-    data=df_diagnostic_box,
-    x="group",
-    y="decisions_per_tick",
-    hue="group",
-    palette={"Unsuccessful": red_color, "Successful": green_color},
-    size=4,
-    alpha=0.7,
-    jitter=True,
-    ax=row_axes[2],
-    dodge=False
-)
-
-sns.boxplot(
-    data=df_diagnostic_box,
-    x="group",
-    y="decisions_per_tick",
-    hue="group",
-    palette={"Unsuccessful": red_color, "Successful": green_color},
-    width=0.3,
-    ax=row_axes[2],
-    showcaps=True,
-    whiskerprops={'linewidth': 1.5},
-    boxprops={'linewidth': 1.5},
-    medianprops={'color': 'black', 'linewidth': 1.5},
-    fliersize=0,
-    legend=False
-)
-
-for patch in row_axes[2].patches:
-    patch.set_alpha(0.3)
-
-row_axes[2].set_xlabel("Variant Group", fontsize=11)
-row_axes[2].set_ylabel("Decisions per Tick", fontsize=11)
-row_axes[2].set_title("Decision Density Distribution", fontsize=12, fontweight='bold')
-if row_axes[2].get_legend() is not None:
-    row_axes[2].get_legend().remove()
-
-# ====== Additional ROWS: Benchmark Variants ======
-if df_benchmarks is not None:
-    for bench_idx, benchmark_name in enumerate(sorted(df_benchmarks['benchmark_group'].unique()), 1):
-        display_name = benchmark_names_map.get(benchmark_name, benchmark_name.replace("_", " ").title())
-        row_axes = axes[bench_idx]
-        
-        # Add benchmark name as subtitle for this row
-        row_axes[0].text(0.5, 1.08, f"Benchmark: {display_name}", 
-                        transform=row_axes[0].transAxes, ha='center', fontsize=12, fontweight='bold')
-        
-        # Calculate decisions for this benchmark
-        benchmark_diagnostic_data = []
-        for _, row in df_benchmarks[df_benchmarks['benchmark_group'] == benchmark_name].iterrows():
-            lifetime = row["lifetime_ticks"]
-            total_decisions = row.get("decisions", 0)
-            decisions_per_tick = total_decisions / lifetime if lifetime > 0 else 0
-            
-            benchmark_diagnostic_data.append({
-                "group": display_name,
-                "lifetime": lifetime,
-                "total_decisions": total_decisions,
-                "decisions_per_tick": decisions_per_tick
-            })
-        
-        if benchmark_diagnostic_data:
-            df_benchmark_diag = pd.DataFrame(benchmark_diagnostic_data)
-            
-            # Use benchmark color
-            bench_color = benchmark_colors_list[
-                list(sorted(df_benchmarks['benchmark_group'].unique())).index(benchmark_name) % len(benchmark_colors_list)
-            ]
-            
-            # Plot 1: Total decisions vs Lifetime
-            row_axes[0].scatter(df_benchmark_diag["total_decisions"], df_benchmark_diag["lifetime"], 
-                               alpha=0.6, s=30, color=bench_color, edgecolors='black', linewidth=1)
-            row_axes[0].set_xlabel("Total Decisions Made", fontsize=11)
-            row_axes[0].set_ylabel("Lifetime (ticks)", fontsize=11)
-            row_axes[0].set_title("Decision Count vs Survival Time", fontsize=12, fontweight='bold')
-            row_axes[0].grid(alpha=0.3)
-            
-            # Plot 2: Decisions per tick vs Lifetime
-            row_axes[1].scatter(df_benchmark_diag["decisions_per_tick"], df_benchmark_diag["lifetime"],
-                               alpha=0.6, s=30, color=bench_color, edgecolors='black', linewidth=1)
-            row_axes[1].set_xlabel("Decisions per Tick", fontsize=11)
-            row_axes[1].set_ylabel("Lifetime (ticks)", fontsize=11)
-            row_axes[1].set_title("Decision Density vs Survival Time", fontsize=12, fontweight='bold')
-            row_axes[1].grid(alpha=0.3)
-            
-            # Plot 3: Box plot of decisions per tick (CHANGED from histogram to boxplot)
-            diagnostic_data_for_bench_box = []
-            for val in df_benchmark_diag["decisions_per_tick"].values:
-                diagnostic_data_for_bench_box.append({"group": display_name, "decisions_per_tick": val})
-            
-            df_bench_box = pd.DataFrame(diagnostic_data_for_bench_box)
-            
-            sns.stripplot(
-                data=df_bench_box,
-                x="group",
-                y="decisions_per_tick",
-                color=bench_color,
-                size=6,
-                alpha=0.6,
-                jitter=True,
-                ax=row_axes[2]
-            )
-            
-            sns.boxplot(
-                data=df_bench_box,
-                x="group",
-                y="decisions_per_tick",
-                color=bench_color,
-                width=0.3,
-                ax=row_axes[2],
-                showcaps=True,
-                whiskerprops={'linewidth': 1.5},
-                boxprops={'linewidth': 1.5},
-                medianprops={'color': 'black', 'linewidth': 1.5},
-                fliersize=0
-            )
-            
-            for patch in row_axes[2].patches:
-                patch.set_alpha(0.4)
-            
-            row_axes[2].set_xlabel("", fontsize=11)
-            row_axes[2].set_ylabel("Decisions per Tick", fontsize=11)
-            row_axes[2].set_title("Decision Density Distribution", fontsize=12, fontweight='bold')
-            row_axes[2].set_xticklabels([])
-
-plt.tight_layout()
-
-fig_diagnostic_path = results_dir / f"decision_diagnostic_{EXPERIMENT_NAME}.png"
-fig.savefig(fig_diagnostic_path, dpi=150, bbox_inches="tight")
-print(f"\nSaved diagnostic plots: {fig_diagnostic_path}")
-fig_paths.append(("Decision Diagnostic Analysis", fig_diagnostic_path))
-
-# Print diagnostic summary
-print("\nDecision Statistics Summary:")
-print("\nUnsuccessful variants:")
-unsuccessful_diag = df_diagnostic[df_diagnostic["group"] == "Unsuccessful"]
-print(f"  Mean decisions/tick: {unsuccessful_diag['decisions_per_tick'].mean():.3f}")
-print(f"  Median decisions/tick: {unsuccessful_diag['decisions_per_tick'].median():.3f}")
-print(f"  Mean total decisions: {unsuccessful_diag['total_decisions'].mean():.1f}")
-
-print("\nSuccessful variants:")
-successful_diag = df_diagnostic[df_diagnostic["group"] == "Successful"]
-print(f"  Mean decisions/tick: {successful_diag['decisions_per_tick'].mean():.3f}")
-print(f"  Median decisions/tick: {successful_diag['decisions_per_tick'].median():.3f}")
-print(f"  Mean total decisions: {successful_diag['total_decisions'].mean():.1f}")
-
-print("\n** INTERPRETATION **")
-print("Unsuccessful variants have MORE decisions per tick because they encounter")
-print("more situations where they sense food but aren't on it. They're making")
-print("more food-directed corrections, but this strategy doesn't lead to long survival.")
-print("\nSuccessful variants make FEWER decisions per tick, suggesting they use a")
-print("different movement strategy that's less reliant on constant food-guided corrections.")
-
-plt.show()
-
 print("\n" + "="*60)
 print("MOVEMENT & FEEDING ANALYSIS")
 print("="*60)
@@ -1480,7 +1266,7 @@ doc.add_heading("1. Experiment Information", level=2)
 doc.add_paragraph("Random Wiring Variants:", style="Heading 3")
 doc.add_paragraph(f"Experiment folder: {EXPERIMENT_DIR.name}")
 doc.add_paragraph(f"Total random variants analyzed: {len(variant_dirs)}")
-doc.add_paragraph(f"Runs per variant: 100")
+doc.add_paragraph(f"Runs per variant: {len(df_all) // len(variant_dirs)}")
 doc.add_paragraph(f"Total data points (random): {len(df_all)}")
 
 if df_benchmarks is not None and len(df_benchmarks) > 0:
@@ -1508,46 +1294,167 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
 doc.add_heading("1.1. Summary Statistics - Random Wiring Variants", level=2)
 
 doc.add_paragraph(
-    "Summary of how long random wiring variants survive in the experimental environment. "
-    "We measure survival time in simulation ticks and compare the mean and median lifetimes across all 1000 variants to identify which wiring patterns lead to longer survival. "
-    "The percentile analysis identifies the successful variants with median survival in the top 10% and the least successful variants with median survival in the bottom 10%, "
-    "which are used for detailed comparisons in subsequent sections."
+    f"Summary of how long random wiring variants survive in the experimental environment. "
+    f"We measure survival time in simulation ticks across all {len(variant_dirs)} variants to identify which wiring patterns lead to longer survival. "
+    f"We identify successful and unsuccessful variants using range-based thresholds: success is defined as achieving in the top 10% of the achievable performance range. "
+    f"This approach captures true performance excellence even if achieved only by a small number of variants and is used for detailed comparisons in subsequent sections."
 )
 
 doc.add_paragraph("Overall Descriptive Statistics (Across All Variants):", style="Heading 3")
-table = doc.add_table(rows=5, cols=2)
+doc.add_paragraph(
+    f"Summary statistics computed across individual lifetime measurements from all {len(variant_dirs)} variants and {len(df_all) // len(variant_dirs):.0f} runs per variant. "
+)
+
+# Calculate comprehensive statistics on ALL raw lifetime data
+from scipy.stats import skew, kurtosis
+
+all_lifetimes = df_all["lifetime_ticks"].values  # All 50,000 measurements
+
+# Compute statistics on raw data
+overall_mean = all_lifetimes.mean()
+overall_median = np.median(all_lifetimes)
+overall_std = all_lifetimes.std()
+overall_min = all_lifetimes.min()
+overall_max = all_lifetimes.max()
+overall_range = overall_max - overall_min
+overall_iqr = np.percentile(all_lifetimes, 75) - np.percentile(all_lifetimes, 25)
+overall_p5 = np.percentile(all_lifetimes, 5)
+overall_p25 = np.percentile(all_lifetimes, 25)
+overall_p75 = np.percentile(all_lifetimes, 75)
+overall_p95 = np.percentile(all_lifetimes, 95)
+overall_skewness = skew(all_lifetimes)
+overall_kurtosis = kurtosis(all_lifetimes)
+overall_cv = (overall_std / overall_mean) * 100
+
+table = doc.add_table(rows=15, cols=2)
 table.style = "Light Grid Accent 1"
 cells = table.rows[0].cells
-cells[0].text = "Metric"
+cells[0].text = "Statistic"
 cells[1].text = "Value"
-cells = table.rows[1].cells
-cells[0].text = "Mean survival across variants (ticks)"
-cells[1].text = f"{df_stats['mean_survival'].mean():.1f}"
-cells = table.rows[2].cells
-cells[0].text = "Std Dev across variants"
-cells[1].text = f"{df_stats['mean_survival'].std():.1f}"
-cells = table.rows[3].cells
-cells[0].text = "Min variant mean"
-cells[1].text = f"{df_stats['mean_survival'].min():.1f}"
-cells = table.rows[4].cells
-cells[0].text = "Max variant mean"
-cells[1].text = f"{df_stats['mean_survival'].max():.1f}"
 
-doc.add_paragraph("Percentile Analysis:", style="Heading 3")
+metrics = [
+    ("Mean", f"{overall_mean:.2f} ticks"),
+    ("Median", f"{overall_median:.2f} ticks"),
+    ("Std Dev", f"{overall_std:.2f} ticks"),
+    ("Min", f"{overall_min:.2f} ticks"),
+    ("Max", f"{overall_max:.2f} ticks"),
+    ("Range", f"{overall_range:.2f} ticks"),
+    ("IQR (25th-75th percentile)", f"{overall_iqr:.2f} ticks"),
+    ("5th Percentile", f"{overall_p5:.2f} ticks"),
+    ("25th Percentile", f"{overall_p25:.2f} ticks"),
+    ("75th Percentile", f"{overall_p75:.2f} ticks"),
+    ("95th Percentile", f"{overall_p95:.2f} ticks"),
+    ("Skewness", f"{overall_skewness:.3f}"),
+    ("Kurtosis (excess)", f"{overall_kurtosis:.3f}"),
+    ("Coefficient of Variation", f"{overall_cv:.2f} %"),
+]
+
+for row_idx, (metric_name, value_str) in enumerate(metrics, 1):
+    cells = table.rows[row_idx].cells
+    cells[0].text = metric_name
+    cells[1].text = value_str
+
+doc.add_paragraph("Range-Based Performance Grouping:", style="Heading 3")
+doc.add_paragraph(
+    f"Success is measured based on median survival across {len(df_all) // len(variant_dirs):.0f} runs with different randomizer seeds. "
+    f"The {len(variant_dirs)} different wiring variants are split into successful and unsuccessful groups based on their performance. "
+    f"The achievable range of median liefetimes is split into percentiles. Variants in the 'successful' group had median lifetimes in the top 10% of that range, "
+    f"while variants in the 'unsuccessful' group had median lifetimes in the bottom 10% of that range. This approach respects natural performance gaps "
+    f"and identifies only the variants that truly solve the task well regardless of the number of variants that achieve this."
+)
+
 table = doc.add_table(rows=4, cols=2)
 table.style = "Light Grid Accent 1"
 cells = table.rows[0].cells
 cells[0].text = "Metric"
 cells[1].text = "Value (ticks)"
 cells = table.rows[1].cells
-cells[0].text = "90th percentile threshold (Successful)"
-cells[1].text = f"{median_90_pct_threshold:.1f}"
+cells[0].text = "Successful threshold (top 10% of range)"
+cells[1].text = f">= {median_successful_threshold:.1f}"
 cells = table.rows[2].cells
-cells[0].text = "10th percentile threshold (Unsuccessful)"
-cells[1].text = f"{median_10_pct_threshold:.1f}"
+cells[0].text = "Unsuccessful threshold (bottom 10% of range)"
+cells[1].text = f"<= {median_unsuccessful_threshold:.1f}"
 cells = table.rows[3].cells
 cells[0].text = "Variants identified in each group"
 cells[1].text = f"Successful: {len(successful_variants)}, Unsuccessful: {len(unsuccessful_variants)}"
+
+doc.add_paragraph("Overall Descriptive Statistics per Variant:", style="Heading 3")
+doc.add_paragraph(
+    f"Detailed breakdown of descriptive statistics computed across all variants. "
+    f"This table aggregates statistics per variant and then shows the highest, lowest, and average values of the {len(variant_dirs)} variants. "
+    f"Heavy-tailed distributions are characterized by skewness and kurtosis; variants with high skewness or kurtosis have more extreme or rare events."
+)
+
+# Compute per-variant statistics
+per_variant_stats = []
+for variant_name in sorted(df_all["variant"].unique()):
+    df_variant = df_all[df_all["variant"] == variant_name]
+    lifetime_data = df_variant["lifetime_ticks"].values
+    
+    per_variant_stats.append({
+        "variant": variant_name,
+        "mean": lifetime_data.mean(),
+        "median": np.median(lifetime_data),
+        "std": lifetime_data.std(),
+        "min": lifetime_data.min(),
+        "max": lifetime_data.max(),
+        "range": lifetime_data.max() - lifetime_data.min(),
+        "iqr": np.percentile(lifetime_data, 75) - np.percentile(lifetime_data, 25),
+        "p5": np.percentile(lifetime_data, 5),
+        "p25": np.percentile(lifetime_data, 25),
+        "p75": np.percentile(lifetime_data, 75),
+        "p95": np.percentile(lifetime_data, 95),
+        "skewness": skew(lifetime_data),
+        "kurtosis": kurtosis(lifetime_data),
+        "cv": (lifetime_data.std() / lifetime_data.mean() * 100) if lifetime_data.mean() > 0 else 0,
+        "n_runs": len(lifetime_data)
+    })
+
+df_per_variant = pd.DataFrame(per_variant_stats)
+
+# Create summary table showing aggregated statistics across variants
+variant_summary_stats = []
+metrics_to_aggregate = ["mean", "median", "std", "min", "max", "range", "iqr", "p5", "p25", "p75", "p95", "skewness", "kurtosis", "cv"]
+
+for metric in metrics_to_aggregate:
+    col_data = df_per_variant[metric]
+    max_val = col_data.max()
+    min_val = col_data.min()
+    avg_val = col_data.mean()
+    
+    # Find which variant has max and min
+    max_variant = df_per_variant.loc[col_data.idxmax(), "variant"]
+    min_variant = df_per_variant.loc[col_data.idxmin(), "variant"]
+    
+    variant_summary_stats.append({
+        "statistic": metric.upper(),
+        "highest": max_val,
+        "highest_variant": max_variant,
+        "lowest": min_val,
+        "lowest_variant": min_variant,
+        "average": avg_val
+    })
+
+df_variant_summary = pd.DataFrame(variant_summary_stats)
+
+table = doc.add_table(rows=len(df_variant_summary) + 1, cols=6)
+table.style = "Light Grid Accent 1"
+cells = table.rows[0].cells
+cells[0].text = "Statistic"
+cells[1].text = "Highest Value"
+cells[2].text = "Variant (Highest)"
+cells[3].text = "Lowest Value"
+cells[4].text = "Variant (Lowest)"
+cells[5].text = "Average"
+
+for row_idx, (_, row) in enumerate(df_variant_summary.iterrows(), 1):
+    cells = table.rows[row_idx].cells
+    cells[0].text = row["statistic"]
+    cells[1].text = f"{row['highest']:.2f}"
+    cells[2].text = row["highest_variant"]
+    cells[3].text = f"{row['lowest']:.2f}"
+    cells[4].text = row["lowest_variant"]
+    cells[5].text = f"{row['average']:.2f}"
 
 # ==================================================================
 # 1.2. SUMMARY DESCRIPTIVE STATISTICS - BENCHMARK VARIANTS
@@ -1556,8 +1463,8 @@ if df_benchmarks is not None:
     doc.add_heading("1.2. Summary Statistics - Benchmark Variants", level=2)
     
     doc.add_paragraph(
-        "Benchmark variants are hard-wired control brains that follow predetermined algorithms rather than evolved random wiring. "
-        "We compare benchmark survival times to our random wiring variants to evaluate how well random circuits can match or exceed hand-designed solutions. "
+        "Benchmark variants are hard-wired control wirings that follow predetermined logics rather than random wiring. "
+        "We compare benchmark survival times to our random wiring variants to evaluate how well random circuits can match or exceed hand-designed task solutions. "
         "This provides a reference point for assessing the task solution potential of random wiring approaches."
     )
     
@@ -1601,11 +1508,11 @@ doc.add_paragraph(
 
 doc.add_paragraph(
     f"This plot shows the survival curves for all {len(variant_dirs)} wiring variants. "
-    f"Variants are color-coded by their performance percentile:"
+    f"Variants are color-coded by their performance achievement (range-based thresholds):"
 )
-doc.add_paragraph(f"  • Green: Top 10% (median survival ≥ {median_90_pct_threshold:.1f} ticks) — {len(successful_variants)} variants")
-doc.add_paragraph(f"  • Red: Bottom 10% (median survival ≤ {median_10_pct_threshold:.1f} ticks) — {len(unsuccessful_variants)} variants")
-doc.add_paragraph(f"  • Gray: Middle 80% (other variants)")
+doc.add_paragraph(f"  • Green: Top 10% of variants (median survival ≥ {median_successful_threshold:.1f} ticks) — {len(successful_variants)} variants")
+doc.add_paragraph(f"  • Red: Bottom 10% of variants (median survival ≤ {median_unsuccessful_threshold:.1f} ticks) — {len(unsuccessful_variants)} variants")
+doc.add_paragraph(f"  • Gray: Middle range (other variants)")
 if df_benchmarks is not None:
     doc.add_paragraph("  • Colored lines: Benchmark variants")
 
@@ -1619,8 +1526,8 @@ table = doc.add_table(rows=7, cols=3)
 table.style = "Light Grid Accent 1"
 cells = table.rows[0].cells
 cells[0].text = "Metric"
-cells[1].text = "Successful (Top 10%)"
-cells[2].text = "Unsuccessful (Bottom 10%)"
+cells[1].text = f"Successful (Top 10% of Variants)"
+cells[2].text = f"Unsuccessful (Bottom 10% of Variants)"
 cells = table.rows[1].cells
 cells[0].text = "Number of runs"
 cells[1].text = f"{len(successful_times)}"
@@ -1651,10 +1558,25 @@ if fig_path.exists():
     doc.add_picture(str(fig_path), width=Inches(6))
 doc.add_paragraph()
 
+# Add variant lists for debugging/tracking purposes
+doc.add_paragraph("Variant Group Membership (for debugging/tracking):", style="Heading 3")
+
+# Successful variants
+doc.add_paragraph(f"Successful Variants ({len(successful_variants)} total):", style="Heading 4")
+successful_variants_sorted = sorted(list(successful_variants))
+doc.add_paragraph(", ".join(successful_variants_sorted))
+
+# Unsuccessful variants
+doc.add_paragraph(f"Unsuccessful Variants ({len(unsuccessful_variants)} total):", style="Heading 4")
+unsuccessful_variants_sorted = sorted(list(unsuccessful_variants))
+doc.add_paragraph(", ".join(unsuccessful_variants_sorted))
+
+doc.add_paragraph()
+
 # ==================================================================
 # MANN-WHITNEY U TEST - RANDOM VARIANTS ONLY (No numbered header)
 # ==================================================================
-doc.add_paragraph("Mann-Whitney U Test Results (Random Variants Only):", style="Heading 3")
+doc.add_paragraph("Differences between successful and unsuccessful random variants (Mann-Whitney U):", style="Heading 3")
 doc.add_paragraph("This statistical test compares whether successful and unsuccessful random variants have significantly different survival distributions. ")
 table = doc.add_table(rows=3, cols=2)
 table.style = "Light Grid Accent 1"
@@ -1674,11 +1596,7 @@ doc.add_paragraph()
 # ==================================================================
 if df_benchmarks is not None:
     doc.add_paragraph()
-    doc.add_paragraph("Kruskal-Wallis Test Results (All Groups):", style="Heading 3")
-    doc.add_paragraph(
-        "Kruskal-Wallis test compares all three groups simultaneously: successful variants, unsuccessful variants, and benchmark variants. "
-        "It tests whether significant differences exist across all groups."
-    )
+    doc.add_paragraph("Differences between successful, unsuccessful, and benchmark variants (Kruskal-Wallis):", style="Heading 3")
     table = doc.add_table(rows=3, cols=2)
     table.style = "Light Grid Accent 1"
     cells = table.rows[0].cells
@@ -1724,9 +1642,10 @@ doc.add_paragraph("Break down of successful versus unsuccessful variants across 
 doc.add_heading("3.1. Movement Efficiency", level=2)
 doc.add_paragraph(
     "For each cardinal direction (North, East, South, West), we calculate the ratio of movement commands to sensory detections. "
-    "A ratio close to 1.0 indicates tight coupling between sensing and movement (reflexory behavior: the worm moves in response to each sensory detection). "
-    "Ratios far from 1.0 (either much higher or much lower) indicate decoupling: the worm either moves more without sensing, or senses food but moves selectively. "
-    "This metric reveals fundamental differences in movement strategy between successful and unsuccessful variants—whether they rely on reflexory sensorimotor coupling or employ a different navigation strategy."
+    "These are total numbers per run and only give a first overview indication of decision accuracy. A ratio close to 1.0 indicates tight coupling between sensing and " 
+    "movement. "
+    "Ratios far from 1.0 (either higher or lower) indicate decoupling: movement without sensing, or moving more selectively despite sensing. "
+    "This metric indicates fundamental differences in movement strategy between successful and unsuccessful variants but differences must be investigated on a tick-by-tick basis."
 )
 doc.add_paragraph("Movement Efficiency = Movement Count ÷ Sensing Count per direction")
 
@@ -1758,10 +1677,11 @@ if not df_accuracy.empty:
     doc.add_heading("3.2. Decision Accuracy", level=2)
     doc.add_paragraph(
         "Decision accuracy quantifies how often choices are aligned with food source locations. "
-        "This measures the quality of neural computation, whether the wiring interprets sensory input to direct movement toward food. "
-        "Higher accuracy indicates more reliable neural circuits. We compare the distribution of accuracy values between successful and unsuccessful "
-        "variants to determine whether fitness correlates with decision-making precision, or if other factors like movement efficiency play a larger role. Note that moving onto sensed food is "
-        "a very shortsighted strategy that might not lead to an optimal solution in more complex tasks e.g. with food regrow in previous positions."
+        "This measures, whether the wiring interprets sensory input to direct movement toward food. "
+        "Higher accuracy indicates more direct coupling of decisions. We compare the distribution of accuracy values between successful and unsuccessful "
+        "variants to determine whether fitness correlates with decision-making precision, or if other factors like movement efficiency play a larger role. " 
+        "Note that moving onto sensed food is a very shortsighted strategy that might not lead to an optimal solution in more complex tasks e.g. with food " 
+        "regrow in previous positions."
     )
     doc.add_paragraph("Decision Accuracy = Correct Decisions ÷ Total Decisions")
     
@@ -1796,7 +1716,12 @@ if not df_accuracy.empty:
     cells[1].text = f"{successful_accuracy.max():.3f}"
     cells[2].text = f"{unsuccessful_accuracy.max():.3f}"
     
-    doc.add_paragraph(f"{test_name_acc} Test Results:")
+    # Format header based on test type
+    if test_name_acc == "Mann-Whitney U":
+        header_text = "Differences between successful and unsuccessful random variants (Mann-Whitney U):"
+    else:
+        header_text = "Differences between successful, unsuccessful, and benchmark variants (Kruskal-Wallis):"
+    doc.add_paragraph(header_text)
     table = doc.add_table(rows=3, cols=2)
     table.style = "Light Grid Accent 1"
     cells = table.rows[0].cells
@@ -1836,51 +1761,16 @@ if not df_accuracy.empty:
         doc.add_picture(str(fig_path), width=Inches(6))
     doc.add_paragraph()
 
-# Section 3.3: Decision Diagnostic Analysis
-doc.add_heading("3.3. Decision Details", level=2)
-
-doc.add_paragraph(
-    "Decision-making behavior at the level of individual simulation ticks. We track how frequently decisions are made and how this relates to survival. "
-    "This reveals whether success comes from making more decisions, fewer decisions, or from the quality rather than quantity of decisions."
-)
-
-print_diagnostic_stats = df_diagnostic[df_diagnostic["group"] == "Unsuccessful"]
-successful_print_diagnostic = df_diagnostic[df_diagnostic["group"] == "Successful"]
-
-table = doc.add_table(rows=4, cols=3)
-table.style = "Light Grid Accent 1"
-cells = table.rows[0].cells
-cells[0].text = "Metric"
-cells[1].text = "Successful"
-cells[2].text = "Unsuccessful"
-cells = table.rows[1].cells
-cells[0].text = "Mean decisions/tick"
-cells[1].text = f"{successful_print_diagnostic['decisions_per_tick'].mean():.3f}"
-cells[2].text = f"{print_diagnostic_stats['decisions_per_tick'].mean():.3f}"
-cells = table.rows[2].cells
-cells[0].text = "Median decisions/tick"
-cells[1].text = f"{successful_print_diagnostic['decisions_per_tick'].median():.3f}"
-cells[2].text = f"{print_diagnostic_stats['decisions_per_tick'].median():.3f}"
-cells = table.rows[3].cells
-cells[0].text = "Mean total decisions/run"
-cells[1].text = f"{successful_print_diagnostic['total_decisions'].mean():.1f}"
-cells[2].text = f"{print_diagnostic_stats['total_decisions'].mean():.1f}"
-
-fig_path = results_dir / f"decision_diagnostic_{EXPERIMENT_NAME}.png"
-if fig_path.exists():
-    doc.add_picture(str(fig_path), width=Inches(6))
-doc.add_paragraph()
-
-# Section 3.4: Distance travelled (with subsections 3.4.1 and 3.4.2)
-# Section 3.5: Food eaten (with subsections 3.5.1 and 3.5.2)
+# Section 3.3: Distance travelled (with subsections 3.3.1 and 3.3.2)
+# Section 3.4: Food eaten (with subsections 3.4.1 and 3.4.2)
 metric_names_for_doc = [
-    ("distance", "3.4", "Distance travelled", [
-        ("distance", "3.4.1", "Distance travelled absolute"),
-        ("distance_per_tick", "3.4.2", "Distance travelled per tick")
+    ("distance", "3.3", "Distance travelled", [
+        ("distance", "3.3.1", "Distance travelled absolute"),
+        ("distance_per_tick", "3.3.2", "Distance travelled per tick")
     ]),
-    ("foods", "3.5", "Food eaten", [
-        ("foods", "3.5.1", "Food consumption absolute"),
-        ("foods_per_tick", "3.5.2", "Food consumption per tick")
+    ("foods", "3.4", "Food eaten", [
+        ("foods", "3.4.1", "Food consumption absolute"),
+        ("foods_per_tick", "3.4.2", "Food consumption per tick")
     ])
 ]
 
@@ -1888,12 +1778,12 @@ for main_metric, main_section_num, main_title, subsections in metric_names_for_d
     # Add main section heading
     doc.add_heading(f"{main_section_num}. {main_title}", level=2)
     
-    if main_section_num == "3.4":
+    if main_section_num == "3.3":
         doc.add_paragraph(
-            "Distance travelled total and normalized per tick for lifespan differences. This reveals movement intensity. "
+            "Distance travelled total and normalized per tick for lifespan differences. "
             "We compare movement patterns between successful and unsuccessful variants to understand how spatial exploration versus local exploitation correlates with fitness."
         )
-    elif main_section_num == "3.5":
+    elif main_section_num == "3.4":
         doc.add_paragraph(
             "Food consumption is the ultimate solution of the task. The more food consumed, the longer the survival. "
             "Normalized per tick food consumption may be the metric most directly linked to survival fitness."
@@ -1938,7 +1828,13 @@ for main_metric, main_section_num, main_title, subsections in metric_names_for_d
         cells[1].text = f"{stats['successful_max']:.3f}"
         cells[2].text = f"{stats['unsuccessful_max']:.3f}"
         
-        doc.add_paragraph(f"{stats.get('test_name', 'Kruskal-Wallis')} Test Results:")
+        # Format header based on test type
+        test_name_metric = stats.get('test_name', 'Kruskal-Wallis')
+        if test_name_metric == "Mann-Whitney U":
+            metric_header_text = "Differences between successful and unsuccessful random variants (Mann-Whitney U):"
+        else:
+            metric_header_text = "Differences between successful, unsuccessful, and benchmark variants (Kruskal-Wallis):"
+        doc.add_paragraph(metric_header_text)
         table = doc.add_table(rows=3, cols=2)
         table.style = "Light Grid Accent 1"
         cells = table.rows[0].cells
