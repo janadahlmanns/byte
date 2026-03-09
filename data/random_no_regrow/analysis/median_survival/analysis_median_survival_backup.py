@@ -233,8 +233,7 @@ def perform_statistical_test(unsuccessful_group, successful_group, benchmark_gro
 # Plot metric comparison (jitter + box plot)
 def plot_metric_comparison(data_df, metric_col, group_col, title, y_label, output_path, 
                            unsuccessful_group_label="Unsuccessful\n(Bottom 10%)", 
-                           successful_group_label="Successful\n(Top 10%)",
-                           doc=None):
+                           successful_group_label="Successful\n(Top 10%)"):
     """
     Create and save a jitter + box plot for metric comparison.
     
@@ -256,8 +255,6 @@ def plot_metric_comparison(data_df, metric_col, group_col, title, y_label, outpu
         Label for unsuccessful group (default includes newline for legend formatting)
     successful_group_label : str
         Label for successful group (default includes newline for legend formatting)
-    doc : docx.Document, optional
-        Word document to add the figure to. If provided, figure will be embedded in document.
     
     Returns:
     --------
@@ -331,12 +328,6 @@ def plot_metric_comparison(data_df, metric_col, group_col, title, y_label, outpu
     # Save figure
     fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
     print(f"Saved: {output_path}")
-    
-    # Add to Word document if provided
-    if doc is not None:
-        if output_path.exists():
-            doc.add_picture(str(output_path), width=Inches(6))
-        doc.add_paragraph()
     
     return fig
 
@@ -496,7 +487,7 @@ from scipy.stats import skew, kurtosis
 
 doc = Document()
 
-# region 1. EXPERIMENT INFORMATION ========================================================================================================================================================================
+# ==================================================================  1. EXPERIMENT INFORMATION  ================================================================== 
 
 doc.add_heading("Analysis Report: Random Wiring Variants", level=0)
 doc.add_heading(f"{EXPERIMENT_NAME}", level=1)
@@ -517,8 +508,7 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
         display_name = benchmark_names_map.get(benchmark_name, benchmark_name.replace("_", " ").title())
         doc.add_paragraph(f"{display_name}: {len(df_bench)} data points ({num_bench_variants} variants)")
 
-# region 1.1. SUMMARY STATISTICS - RANDOM VARIANTS =========================================================================================================================================================
-
+# ==================================================================  1.1. SUMMARY STATISTICS - RANDOM VARIANTS  ================================================================== 
 doc.add_heading("1.1. Summary Statistics - Random Wiring Variants", level=2)
 
 doc.add_paragraph(
@@ -576,8 +566,71 @@ for row_idx, (metric_name, value_str) in enumerate(metrics_stats_table, 1):
     cells = table.rows[row_idx].cells
     cells[0].text = metric_name
     cells[1].text = value_str
-# endregion
-# region 1.2. SUMMARY STATISTICS - BENCHMARK VARIANTS (if available) =======================================================================================================================================
+
+# ==================================================================  1.2. SUMMARY STATISTICS - BENCHMARK VARIANTS (if available)  ================================================================== 
+    df_variant = df_all[df_all["variant"] == variant_name]
+    lifetime_ticks = df_variant["lifetime_ticks"].values
+    
+    variant_stats.append({
+        "variant": variant_name,
+        "mean_survival": lifetime_ticks.mean(),
+        "std_survival": lifetime_ticks.std(),
+        "median_survival": np.median(lifetime_ticks),
+        "min_survival": lifetime_ticks.min(),
+        "max_survival": lifetime_ticks.max(),
+        "n_runs": len(lifetime_ticks),
+    })
+
+df_stats = pd.DataFrame(variant_stats)
+
+# =====================================================================
+# Calculate threshold values for group classification
+# =====================================================================
+median_min = df_stats["median_survival"].min()
+median_max = df_stats["median_survival"].max()
+median_range = median_max - median_min
+
+# Successful: top 10% of performance range (max - 10% of range)
+median_successful_threshold = median_max - (0.10 * median_range)
+
+# Unsuccessful: bottom 10% of performance range (min + 10% of range)
+median_unsuccessful_threshold = median_min + (0.10 * median_range)
+
+# Initialize output directory and figure tracking
+results_dir = Path(__file__).resolve().parent
+results_dir.mkdir(exist_ok=True)
+fig_paths = []  # Track figures for report
+
+
+# =====================================================================
+# Print summary statistics
+# =====================================================================
+
+print("\n" + "="*60)
+print("STATISTICAL SUMMARY ACROSS ALL VARIANTS")
+print("="*60)
+
+print(f"\nMedian survival time (ticks) - Range-Based Threshold Analysis:")
+print(f"  Minimum median (worst variant): {median_min:.1f} ticks")
+print(f"  Maximum median (best variant): {median_max:.1f} ticks")
+print(f"  Range: {median_range:.1f} ticks")
+print(f"  ")
+print(f"  Successful threshold (top 10% of range): >= {median_successful_threshold:.1f} ticks")
+print(f"  Unsuccessful threshold (bottom 10% of range): <= {median_unsuccessful_threshold:.1f} ticks")
+
+print(f"\nVariants in TOP 10% of performance range (>= {median_successful_threshold:.1f} ticks):")
+print(df_stats[df_stats["median_survival"] >= median_successful_threshold].sort_values("median_survival", ascending=False)[["variant", "median_survival", "std_survival"]])
+
+print(f"\nVariants in BOTTOM 10% of performance range (<= {median_unsuccessful_threshold:.1f} ticks):")
+print(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold].sort_values("median_survival")[["variant", "median_survival", "std_survival"]])
+
+
+
+
+
+
+# ==================================================================  1.2. SUMMARY STATISTICS - BENCHMARK VARIANTS (if available)  ================================================================== 
+
 if df_benchmarks is not None and len(df_benchmarks) > 0:
     doc.add_heading("1.2. Summary Statistics - Benchmark Variants", level=2)
     
@@ -599,17 +652,12 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
         bench_skewness = skew(bench_lifetimes)
         bench_kurtosis = kurtosis(bench_lifetimes)
         
-        table = doc.add_table(rows=15, cols=2)
+        table = doc.add_table(rows=10, cols=2)
         table.style = "Light Grid Accent 1"
         cells = table.rows[0].cells
         cells[0].text = "Statistic"
         cells[1].text = "Value"
-        bench_p5 = np.percentile(bench_lifetimes, 5)
-        bench_p25 = np.percentile(bench_lifetimes, 25)
-        bench_p75 = np.percentile(bench_lifetimes, 75)
-        bench_p95 = np.percentile(bench_lifetimes, 95)
-        bench_cv = (bench_std / bench_mean) * 100 if bench_mean != 0 else float('nan')
-
+        
         bench_metrics = [
             ("Mean", f"{bench_mean:.2f} ticks"),
             ("Median", f"{bench_median:.2f} ticks"),
@@ -617,14 +665,9 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
             ("Min", f"{bench_min:.2f} ticks"),
             ("Max", f"{bench_max:.2f} ticks"),
             ("Range", f"{bench_range:.2f} ticks"),
-            ("IQR (25th-75th percentile)", f"{bench_iqr:.2f} ticks"),
-            ("5th Percentile", f"{bench_p5:.2f} ticks"),
-            ("25th Percentile", f"{bench_p25:.2f} ticks"),
-            ("75th Percentile", f"{bench_p75:.2f} ticks"),
-            ("95th Percentile", f"{bench_p95:.2f} ticks"),
+            ("IQR", f"{bench_iqr:.2f} ticks"),
             ("Skewness", f"{bench_skewness:.3f}"),
             ("Kurtosis (excess)", f"{bench_kurtosis:.3f}"),
-            ("Coefficient of Variation", f"{bench_cv:.2f} %"),
         ]
         
         for row_idx, (metric_name, value_str) in enumerate(bench_metrics, 1):
@@ -632,13 +675,8 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
             cells[0].text = metric_name
             cells[1].text = value_str
 
-  
 
-
-# endregion
-# endregion
-# region 2. GROUP SELECTION ================================================================================================================================================================================
-
+# ==================================================================  2. GROUP SELECTION  ================================================================== 
 
 doc.add_heading("2. Group Selection Based on Survival Race", level=2)
 
@@ -651,25 +689,6 @@ median_min = df_stats["median_survival"].min()
 median_max = df_stats["median_survival"].max()
 median_range = median_max - median_min
 
-# =====================================================================
-# Calculate threshold values for group classification
-# =====================================================================
-df_stats = pd.DataFrame(variant_stats)
-median_min = df_stats["median_survival"].min()
-median_max = df_stats["median_survival"].max()
-median_range = median_max - median_min
-
-# Successful: top 10% of performance range (max - 10% of range)
-median_successful_threshold = median_max - (0.10 * median_range)
-
-# Unsuccessful: bottom 10% of performance range (min + 10% of range)
-median_unsuccessful_threshold = median_min + (0.10 * median_range)
-
-# Initialize output directory and figure tracking
-results_dir = Path(__file__).resolve().parent
-results_dir.mkdir(exist_ok=True)
-fig_paths = []  # Track figures for report
-
 # Successful: top 10% of performance range (max - 10% of range)
 median_successful_threshold = median_max - (0.10 * median_range)
 
@@ -680,28 +699,6 @@ median_unsuccessful_threshold = median_min + (0.10 * median_range)
 top_10_pct_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
 bottom_10_pct_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
 
-
-
-
-# =====================================================================
-# IDENTIFY SUCCESSFUL AND UNSUCCESSFUL VARIANT GROUPS
-# =====================================================================
-
-successful_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
-unsuccessful_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
-
-print(f"\nSuccessful variants (top 10% of range): {len(successful_variants)}")
-print(f"Unsuccessful variants (bottom 10% of range): {len(unsuccessful_variants)}")
-print(f"\nVariants in TOP 10% of range: {len(successful_variants)}")
-print(f"Variants in BOTTOM 10% of range: {len(unsuccessful_variants)}")
-
-doc.add_paragraph("Successful Variant Group (Top 10%):", style="Heading 3")
-successful_list = ", ".join(sorted(successful_variants))
-doc.add_paragraph(successful_list)
-
-doc.add_paragraph("Unsuccessful Variant Group (Bottom 10%):", style="Heading 3")
-unsuccessful_list = ", ".join(sorted(unsuccessful_variants))
-doc.add_paragraph(unsuccessful_list)
 
 # =====================================================================
 # Create survival race plot
@@ -782,8 +779,8 @@ plt.grid(True, alpha=0.3)
 
 # Create custom legend
 legend_elements = [
-    Line2D([0], [0], color=GREEN_COLOR, linewidth=1.5, label=f"Random Top 10% (median ≥ {median_successful_threshold:.1f} ticks)"),
-    Line2D([0], [0], color=RED_COLOR, linewidth=1.5, label=f"Random Bottom 10% (median ≤ {median_unsuccessful_threshold:.1f} ticks)"),
+    Line2D([0], [0], color=green_color, linewidth=1.5, label=f"Random Top 10% (median ≥ {median_successful_threshold:.1f} ticks)"),
+    Line2D([0], [0], color=red_color, linewidth=1.5, label=f"Random Bottom 10% (median ≤ {median_unsuccessful_threshold:.1f} ticks)"),
     Line2D([0], [0], color="gray", linewidth=0.8, label="Random Middle 80%"),
 ]
 
@@ -807,12 +804,31 @@ fig_paths.append(("Survival Race: All Variants", fig_path))
 
 plt.show()
 
-if fig_path.exists():
-    doc.add_picture(str(fig_path), width=Inches(6))
-doc.add_paragraph()
+doc.add_paragraph(f"File: survival_race_{EXPERIMENT_NAME}.png")
 
-# endregion
-# region 3. COMPARISON =====================================================================================================================================================================================
+
+# =====================================================================
+# IDENTIFY SUCCESSFUL AND UNSUCCESSFUL VARIANT GROUPS
+# =====================================================================
+
+successful_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
+unsuccessful_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
+
+print(f"\nSuccessful variants (top 10% of range): {len(successful_variants)}")
+print(f"Unsuccessful variants (bottom 10% of range): {len(unsuccessful_variants)}")
+print(f"\nVariants in TOP 10% of range: {len(successful_variants)}")
+print(f"Variants in BOTTOM 10% of range: {len(unsuccessful_variants)}")
+
+doc.add_paragraph("Successful Variant Group (Top 10%):", style="Heading 3")
+successful_list = ", ".join(sorted(successful_variants))
+doc.add_paragraph(successful_list)
+
+doc.add_paragraph("Unsuccessful Variant Group (Bottom 10%):", style="Heading 3")
+unsuccessful_list = ", ".join(sorted(unsuccessful_variants))
+doc.add_paragraph(unsuccessful_list)
+
+
+# ==================================================================  3. COMPARISON  ================================================================== 
 
 
 doc.add_heading("3. Comparison", level=2)
@@ -822,7 +838,7 @@ doc.add_paragraph(
     "Survival times comparison helps validate our group selection; subsequent sections examine behavioral and performance metrics."
 )
 
-# region 3.1. SURVIVAL TIMES ========================================================================================================================================================================
+# ==================================================================  3.1. SURVIVAL TIMES  ================================================================== 
 
 doc.add_heading("3.1. Survival Times", level=3)
 
@@ -871,17 +887,15 @@ title_survival = "Survival Times: Unsuccessful vs Successful Wiring Variants"
 if df_benchmarks is not None:
     title_survival = "Survival Times: Random Variants vs Benchmarks"
 
-output_path_survival = results_dir / f"comp_survival_{EXPERIMENT_NAME}.png"
 fig = plot_metric_comparison(
     df_survival, 
     "lifetime_ticks", 
     "group",
     title=title_survival,
     y_label="Lifetime (ticks)",
-    output_path=output_path_survival,
-    doc=doc
+    output_path=results_dir / f"comp_survival_{EXPERIMENT_NAME}.png"
 )
-fig_paths.append(("Survival Times Comparison", output_path_survival))
+fig_paths.append(("Survival Times Comparison", fig))
 plt.show()
 
 # Calculate statistics for survival times
@@ -904,8 +918,7 @@ report_statistics(doc, stats_survival, "Survival Times")
 
 doc.add_paragraph("TBD - Interpretation of survival time differences.", style="Heading 3")
 
-# endregion
-# region 3.2. MOVEMENT EFFICIENCY ========================================================================================================================================================================
+# ==================================================================  3.2. MOVEMENT EFFICIENCY  ================================================================== 
 
 doc.add_heading("3.2. Movement Efficiency", level=3)
 
@@ -1103,15 +1116,9 @@ if not df_efficiency.empty:
     
     plt.show()
     
-    if fig_efficiency_path.exists():
-        doc.add_picture(str(fig_efficiency_path), width=Inches(6))
-    doc.add_paragraph()
-    
     doc.add_paragraph("TBD - Interpretation of movement efficiency by direction.", style="Heading 3")
 
-# endregion
-# region 3.3. DECISION ACCURACY ========================================================================================================================================================================
-
+# ==================================================================  3.3. DECISION ACCURACY  ================================================================== 
 
 doc.add_heading("3.3. Decision Accuracy", level=3)
 
@@ -1170,17 +1177,15 @@ df_accuracy = pd.DataFrame(decision_accuracy_data)
 
 if not df_accuracy.empty:
     # Plot decision accuracy comparison
-    output_path_accuracy = results_dir / f"decision_accuracy_{EXPERIMENT_NAME}.png"
     fig = plot_metric_comparison(
         df_accuracy,
         "accuracy",
         "group",
         title="Decision Accuracy: Variants Comparison",
         y_label="Accuracy (Correct / Total)",
-        output_path=output_path_accuracy,
-        doc=doc
+        output_path=results_dir / f"decision_accuracy_{EXPERIMENT_NAME}.png"
     )
-    fig_paths.append(("Decision Accuracy Comparison", output_path_accuracy))
+    fig_paths.append(("Decision Accuracy Comparison", fig))
     plt.show()
     
     # Calculate statistics for decision accuracy
@@ -1207,9 +1212,7 @@ else:
 
 print("\nDecision Accuracy Analysis Complete")
 
-# endregion
-# region 3.4. DISTANCE TRAVELED ========================================================================================================================================================================
-
+# ==================================================================  3.4. DISTANCE TRAVELED  ================================================================== 
 doc.add_heading("3.4. Distance Traveled", level=3)
 
 doc.add_paragraph(
@@ -1218,7 +1221,7 @@ doc.add_paragraph(
     "distance per tick reveals movement efficiency in relation to time spent."
 )
 
-# region 3.4.1 Absolute Distance ========================================================================================================================================================================
+# ==================================================================  3.4.1 Absolute Distance  ================================================================== 
 
 doc.add_heading("3.4.1. Distance Traveled (Absolute)", level=4)
 
@@ -1260,17 +1263,15 @@ if df_benchmarks is not None:
 df_distance = pd.DataFrame(plot_data)
 
 if not df_distance.empty:
-    output_path_distance = results_dir / f"comp_distance_{EXPERIMENT_NAME}.png"
     fig = plot_metric_comparison(
         df_distance,
         "distance",
         "group",
         title="Distance Traveled: Unsuccessful vs Successful Wiring Variants",
         y_label="Distance (units)",
-        output_path=output_path_distance,
-        doc=doc
+        output_path=results_dir / f"comp_distance_{EXPERIMENT_NAME}.png"
     )
-    fig_paths.append(("Distance (Absolute) Comparison", output_path_distance))
+    fig_paths.append(("Distance (Absolute) Comparison", fig))
     plt.show()
     
     unsuccessful_distance = df_distance[df_distance["group"] == "Unsuccessful\n(Bottom 10%)"]["distance"].values
@@ -1290,9 +1291,8 @@ if not df_distance.empty:
     
     doc.add_paragraph("TBD - Interpretation of distance differences.", style="Heading 3")
 
-# endregion
-# region 3.4.2 Distance Per Tick (Normalized) ========================================================================================================================================================================
 
+# ==================================================================  3.4.2 Distance Per Tick (Normalized)  ================================================================== 
 doc.add_heading("3.4.2. Distance Per Tick (Normalized)", level=4)
 
 # Prepare data for distance per tick
@@ -1333,17 +1333,15 @@ if df_benchmarks is not None:
 df_distance_per_tick = pd.DataFrame(plot_data)
 
 if not df_distance_per_tick.empty:
-    output_path_distance_per_tick = results_dir / f"comp_distance_per_tick_{EXPERIMENT_NAME}.png"
     fig = plot_metric_comparison(
         df_distance_per_tick,
         "distance_per_tick",
         "group",
         title="Distance Per Tick: Unsuccessful vs Successful Wiring Variants",
         y_label="Distance / Tick",
-        output_path=output_path_distance_per_tick,
-        doc=doc
+        output_path=results_dir / f"comp_distance_per_tick_{EXPERIMENT_NAME}.png"
     )
-    fig_paths.append(("Distance Per Tick Comparison", output_path_distance_per_tick))
+    fig_paths.append(("Distance Per Tick Comparison", fig))
     plt.show()
     
     unsuccessful_dist_pt = df_distance_per_tick[df_distance_per_tick["group"] == "Unsuccessful\n(Bottom 10%)"]["distance_per_tick"].values
@@ -1363,10 +1361,7 @@ if not df_distance_per_tick.empty:
     
     doc.add_paragraph("TBD - Interpretation of distance per tick differences.", style="Heading 3")
 
-# endregion
-# endregion
-# region 3.5. FOOD CONSUMPTION ========================================================================================================================================================================
-
+# ==================================================================  3.5. FOOD CONSUMPTION  ================================================================== 
 
 doc.add_heading("3.5. Food Consumption", level=3)
 
@@ -1375,7 +1370,7 @@ doc.add_paragraph(
     "Total foods shows absolute consumption; foods per tick reveals feeding efficiency relative to time."
 )
 
-# region 3.5.1 Food Consumption (Absolute) ========================================================================================================================================================================
+# ==================================================================  3.5.1 Food Consumption (Absolute)  ================================================================== 
 doc.add_heading("3.5.1. Food Consumption (Absolute)", level=4)
 
 # Prepare data for absolute food consumption
@@ -1416,17 +1411,15 @@ if df_benchmarks is not None:
 df_foods = pd.DataFrame(plot_data)
 
 if not df_foods.empty:
-    output_path_foods = results_dir / f"comp_foods_{EXPERIMENT_NAME}.png"
     fig = plot_metric_comparison(
         df_foods,
         "foods",
         "group",
         title="Food Consumption: Unsuccessful vs Successful Wiring Variants",
         y_label="Foods Consumed",
-        output_path=output_path_foods,
-        doc=doc
+        output_path=results_dir / f"comp_foods_{EXPERIMENT_NAME}.png"
     )
-    fig_paths.append(("Food Consumption Comparison", output_path_foods))
+    fig_paths.append(("Food Consumption Comparison", fig))
     plt.show()
     
     unsuccessful_foods = df_foods[df_foods["group"] == "Unsuccessful\n(Bottom 10%)"]["foods"].values
@@ -1446,9 +1439,7 @@ if not df_foods.empty:
     
     doc.add_paragraph("TBD - Interpretation of food consumption differences.", style="Heading 3")
 
-# endregion
-# region 3.5.2 Food Per Tick (Normalized) ========================================================================================================================================================================
-
+# ==================================================================  3.5.2 Food Per Tick (Normalized)  ================================================================== 
 doc.add_heading("3.5.2. Food Per Tick (Normalized)", level=4)
 
 # Prepare data for food per tick
@@ -1489,17 +1480,15 @@ if df_benchmarks is not None:
 df_foods_per_tick = pd.DataFrame(plot_data)
 
 if not df_foods_per_tick.empty:
-    output_path_foods_per_tick = results_dir / f"comp_foods_per_tick_{EXPERIMENT_NAME}.png"
     fig = plot_metric_comparison(
         df_foods_per_tick,
         "foods_per_tick",
         "group",
         title="Food Per Tick: Unsuccessful vs Successful Wiring Variants",
         y_label="Foods / Tick",
-        output_path=output_path_foods_per_tick,
-        doc=doc
+        output_path=results_dir / f"comp_foods_per_tick_{EXPERIMENT_NAME}.png"
     )
-    fig_paths.append(("Food Per Tick Comparison", output_path_foods_per_tick))
+    fig_paths.append(("Food Per Tick Comparison", fig))
     plt.show()
     
     unsuccessful_foods_pt = df_foods_per_tick[df_foods_per_tick["group"] == "Unsuccessful\n(Bottom 10%)"]["foods_per_tick"].values
@@ -1518,10 +1507,6 @@ if not df_foods_per_tick.empty:
     report_statistics(doc, stats_foods_pt, "Food Per Tick")
     
     doc.add_paragraph("TBD - Interpretation of food per tick differences.", style="Heading 3")
-
-# endregion
-# endregion
-# endregion
 
 # ===============================================================================================================================================================================================================
 #                                                                                   E - FINALIZE DOCUMENT AND SAVE
