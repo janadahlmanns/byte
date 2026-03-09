@@ -89,7 +89,7 @@ print(f"Total rows loaded: {len(df_all)}")
 print(f"Unique variants: {df_all['variant'].nunique()}")
 
 # =====================================================================
-# Load benchmark variants (optional)
+# Load benchmark variants (if any are specified)
 # =====================================================================
 
 benchmark_data = {}
@@ -271,7 +271,7 @@ for variant_name in sorted(df_all["variant"].unique()):
     # Compute survival race: at each tick, how many are still alive
     max_t = survival_times.max()
     ticks = np.arange(max_t + 1)
-    
+     
     # Count survivors at each tick
     alive_count = np.array([(survival_times >= t).sum() for t in ticks])
     
