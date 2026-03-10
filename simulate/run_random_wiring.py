@@ -26,10 +26,10 @@ from mvb.world_renderer_qt import QtRenderer
 # ============================================================
 
 EXPERIMENT_FOLDER = "data/random_no_regrow/rawdata/"
-SIMULATION_NAME   = "random_no_regrow_all_tracked"  # descriptive name for this batch of runs, used in output folder and file names
+SIMULATION_NAME   = "lookup_no_regrow_all_tracked"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
+BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
 
 # ============================================================
 # WIRING RANDOMIZATION PARAMETERS
@@ -40,14 +40,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1000                            # Number of randomized wiring variants to generate
+N_VARIANTS = 1                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 100
+N_RUNS      = 1
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -55,9 +55,9 @@ REGROW_TIME = 3000                           # Time for food to regrow
 # VISUALIZATION PARAMETERS
 # ============================================================
 
-VIZ_ENABLED = False                        # Enable visualization
+VIZ_ENABLED = True                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
+VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
 
 # ============================================================
@@ -495,6 +495,14 @@ def print_wiring_summary(brain_init_spec):
 
 def main():
     cfg = load_config(CONFIG_PATH)
+    
+    # Apply visualization parameters from top of file to the config
+    if "viz" not in cfg:
+        cfg["viz"] = {}
+    cfg["viz"]["enabled"] = VIZ_ENABLED
+    cfg["viz"]["fps"] = VIZ_FPS
+    cfg["viz"]["brain_enabled"] = VIZ_BRAIN_ENABLED
+    cfg["viz"]["brain_fps"] = VIZ_BRAIN_FPS
     
     # Check for brain_init vs config consistency
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
