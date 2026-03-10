@@ -40,11 +40,11 @@ EXPERIMENT_NAME = script_name.replace("analysis_", "")
 # Format: [(display_name, folder_path), (display_name2, folder_path2), ...]
 # Example: [("Hard-wired Lookup", BASE_DIR / "2026-03-08_hardwired_lookup"), ("Algorithmic", BASE_DIR / "2026-02-15_algo")]
 
-# BENCHMARK_FOLDERS = [
-#     ("Hard-wired Lookup", BASE_DIR / "2026-03-08_12-51-56_hardwired_lookup"),
-# ]
+BENCHMARK_FOLDERS = [
+     ("Hard-wired Lookup", BASE_DIR / "2026-03-10_09-32-49_lookup_no_regrow_all_tracked"),
+ ]
 
-BENCHMARK_FOLDERS = []
+# BENCHMARK_FOLDERS = []
 
 # =====================================================================
 # Color definitions for variant groups

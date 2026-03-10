@@ -6,9 +6,9 @@ world:
   - 26
   rng_seed: 1
 viz:
-  enabled: false
+  enabled: true
   fps: 4.0
-  brain_enabled: false
+  brain_enabled: true
   brain_fps: 4.0
 food:
   feeding_paradigm:

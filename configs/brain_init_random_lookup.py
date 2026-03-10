@@ -109,7 +109,7 @@ def build_brain_spec(
     # HARD-WIRED LOOKUP TABLE CONNECTIONS
     # ============================================================
     # This implements the algorithmic wiring with deterministic connections
-    # that replicate behavior: food sensed → move there; no food → all outputs active
+    # that replicate behavior: food sensed → stay; no food → interneuron fires all movement outputs
     connections = np.zeros((n_neurons, n_neurons, 2), dtype=float)
     connections[:, :, 1] = 1.0  # All reliability = 1.0
     
@@ -129,22 +129,23 @@ def build_brain_spec(
     # HARD-CODED SPECIAL CONNECTION
     # ============================================================
     # On Food → Stay/Eat: neuron 0 → neuron 5, weight 1.0 (overrides excitatory weight)
+    # This ensures that when on food, the byte always stays
     connections[ON_FOOD_NEURON, STAY_OUTPUT_NEURON, 0] = HARD_CODED_CONNECTION_WEIGHT
     
     # ============================================================
-    # Inhibitory Connections: 1-4 → 5
+    # Inhibitory Connections: 0-4 → 10 (Input neurons inhibit interneuron)
     # ============================================================
-    # When directional food is detected (1-4), inhibit the "stay" output (5)
-    # This competes with the sensory-to-output excitation during decision-making
-    for src in INPUT_NEURONS[1:]:  # 1-4 (exclude "on_food" neuron 0)
-        connections[src, STAY_OUTPUT_NEURON, 0] = INHIBITORY_WEIGHT
+    # When any sensory input is active, it inhibits the interneuron
+    # This prevents the interneuron from triggering movement when food is sensed
+    for src in INPUT_NEURONS:  # 0-4
+        connections[src, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
     
     # ============================================================
-    # Excitatory Connections: 10 → 5-9
+    # Excitatory Connections: 10 → 6-9 (Always-on → Movement outputs only, not Stay)
     # ============================================================
-    # Always-on neuron drives all output neurons
-    # This ensures all outputs can be active when no food is sensed
-    for tgt in OUTPUT_NEURONS:  # 5-9
+    # When the interneuron is disinhibited (no food sensed), it drives the movement outputs
+    # This allows one direction to fire when no food is detected
+    for tgt in OUTPUT_NEURONS[1:]:  # 6-9 (exclude neuron 5 which is "stay")
         connections[ALWAYS_ON, tgt, 0] = EXCITATORY_WEIGHT
     
     # ============================================================
@@ -167,18 +168,18 @@ def build_brain_spec(
                 modulator_spec[(src, tgt)].append((src, POTENTIATION_WEIGHT))
     
     # ============================================================
-    # Depression on Inhibitory Directional-to-Stay Connections
+    # Depression on Inhibitory Input-to-Interneuron Connections
     # ============================================================
-    # Connections 1-4 → 5 (inhibitory) are modulated by depression from their sources
-    for src in INPUT_NEURONS[1:]:  # 1-4
-        if (src, STAY_OUTPUT_NEURON) in modulator_spec:
-            modulator_spec[(src, STAY_OUTPUT_NEURON)].append((src, DEPRESSION_WEIGHT))
+    # Connections 0-4 → 10 (inhibitory) are modulated by depression from their sources
+    for src in INPUT_NEURONS:  # 0-4
+        if (src, ALWAYS_ON) in modulator_spec:
+            modulator_spec[(src, ALWAYS_ON)].append((src, DEPRESSION_WEIGHT))
     
     # ============================================================
-    # Potentiation on Always-On-to-Output Connections
+    # Potentiation on Always-On-to-Movement Connections
     # ============================================================
-    # Connections 10 → 5-9 are potentiated by neuron 10
-    for tgt in OUTPUT_NEURONS:  # 5-9
+    # Connections 10 → 6-9 are potentiated by neuron 10
+    for tgt in OUTPUT_NEURONS[1:]:  # 6-9 (exclude stay neuron 5)
         if (ALWAYS_ON, tgt) in modulator_spec:
             modulator_spec[(ALWAYS_ON, tgt)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
     
