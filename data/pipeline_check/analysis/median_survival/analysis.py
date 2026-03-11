@@ -9,6 +9,11 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from scipy.stats import mannwhitneyu, kruskal
 import scikit_posthocs as sp
+import sys
+DATA_DIR = Path(__file__).resolve().parents[3] # Add data directory to path for module imports
+sys.path.insert(0, str(DATA_DIR))
+from analysis_tools.network_visualization import network_viz
+
 
 
 plt.ion()  # Enable interactive mode
@@ -32,6 +37,7 @@ script_name = Path(__file__).stem  # e.g., "analysis_overall_survival" -> "overa
 EXPERIMENT_NAME = script_name.replace("analysis_", "")
 
 
+
 # Point to your benchmark data (optional)
 
 # Add one or more benchmark variant folders with names to compare against the top/bottom 10% groups
@@ -40,17 +46,19 @@ EXPERIMENT_NAME = script_name.replace("analysis_", "")
 # Format: [(display_name, folder_path), (display_name2, folder_path2), ...]
 # Example: [("Hard-wired Lookup", BASE_DIR / "2026-03-08_hardwired_lookup"), ("Algorithmic", BASE_DIR / "2026-02-15_algo")]
 
-#BENCHMARK_FOLDERS = [
-#     ("Hard-wired Lookup", BASE_DIR / "2026-03-10_09-32-49_lookup_no_regrow_all_tracked"),
-# ]
+BENCHMARK_FOLDERS = [
+     ("Hard-wired Lookup", BASE_DIR / "2026-03-11_15-25-54_C_w_noise_w_plasticity_no_regrow_lookup_eta_0_01"),
+ ]
 
-BENCHMARK_FOLDERS = []
+#BENCHMARK_FOLDERS = []
 
 # =====================================================================
-# Color definitions for variant groups
+# Specification of visuals
 # =====================================================================
 GREEN_COLOR = "#0B3D2E"  # Dark green for successful variants
 RED_COLOR = "#8B3A3A"    # Wine red for unsuccessful variants
+# Network visualization configuration
+NETWORK_VIZ_CONFIG = '11'  # Corresponds to network_viz_11.yaml in configs/ folder
 
 
 # =====================================================================  B - LOAD DATA AND INITIALIZE VARIABLES  ================================================
@@ -79,9 +87,12 @@ for variant_dir in variant_dirs:
 if not all_data:
     raise ValueError("No variant summary data found!")
 
-df_all = pd.concat(all_data, ignore_index=True)
-print(f"Total rows loaded: {len(df_all)}")
-print(f"Unique variants: {df_all['variant'].nunique()}")
+df_random = pd.concat(all_data, ignore_index=True)
+print(f"Total rows loaded: {len(df_random)}")
+print(f"Unique variants: {df_random['variant'].nunique()}")
+
+# df_all will be the combined dataframe with benchmarks added later
+df_all = df_random.copy()
 
 # Load benchmark(s) if any
 
@@ -153,8 +164,8 @@ else:
 
 variant_stats = []
 
-for variant_name in sorted(df_all["variant"].unique()):
-    df_variant = df_all[df_all["variant"] == variant_name]
+for variant_name in sorted(df_random["variant"].unique()):
+    df_variant = df_random[df_random["variant"] == variant_name]
     lifetime_ticks = df_variant["lifetime_ticks"].values
     
     variant_stats.append({
@@ -531,7 +542,7 @@ doc.add_heading("1.1. Summary Statistics - Random Wiring Variants", level=2)
 
 doc.add_paragraph(
     f"Summary of how long random wiring variants survive in the experimental environment. "
-    f"We measure survival time in simulation ticks across all {len(variant_dirs)} variants and {len(df_all) // len(variant_dirs)} runs per variant. "
+    f"We measure survival time in simulation ticks across all {len(variant_dirs)} variants and {len(df_random) // len(variant_dirs)} runs per variant. "
     f"The statistics below provide a comprehensive overview of survival time distribution across all measurements."
 )
 
@@ -540,7 +551,7 @@ doc.add_paragraph("Overall Descriptive Statistics (Across All Variants):", style
 # =====================================================================
 # Calculate comprehensive statistics on ALL raw lifetime data
 # =====================================================================
-all_lifetimes = df_all["lifetime_ticks"].values
+all_lifetimes = df_random["lifetime_ticks"].values
 
 overall_mean = all_lifetimes.mean()
 overall_median = np.median(all_lifetimes)
@@ -593,8 +604,8 @@ doc.add_paragraph("Per-variant Summary (Highest, Lowest, Average across variants
 
 # Build per-variant metrics
 variant_metrics = []
-for variant_name in sorted(df_all["variant"].unique()):
-    vdf = df_all[df_all["variant"] == variant_name]["lifetime_ticks"].values
+for variant_name in sorted(df_random["variant"].unique()):
+    vdf = df_random[df_random["variant"] == variant_name]["lifetime_ticks"].values
     if len(vdf) == 0:
         continue
     v_mean = vdf.mean()
@@ -744,6 +755,66 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
             cells = table.rows[row_idx].cells
             cells[0].text = metric_name
             cells[1].text = value_str
+        
+        # Add network visualization for this benchmark
+        doc.add_paragraph()  # Add spacing
+        
+        benchmark_folder_path = benchmark_paths_map.get(benchmark_name)
+        if benchmark_folder_path:
+            try:
+                benchmark_dir = Path(benchmark_folder_path)
+                # Get the first variant folder from the benchmark
+                benchmark_variants = sorted([d for d in benchmark_dir.iterdir() if d.is_dir() and d.name.startswith("variant_")])
+                
+                if benchmark_variants:
+                    first_variant_dir = benchmark_variants[0]
+                    wiring_file = first_variant_dir / "wiring.csv"
+                    modulation_file = first_variant_dir / "modulation.csv"
+                    
+                    if wiring_file.exists():
+                        # Load network configuration
+                        neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+                        
+                        # Define which weight columns and labels to show
+                        # Creates separate full-size figures then combines them
+                        weight_columns = [
+                            'weight_initial',
+                            'weight_final_run_0001',
+                            'weight_final_run_0002',
+                            'weight_final_run_0003'
+                        ]
+                        panel_labels = [
+                            'Initial Wiring',
+                            'Run 1 - Final',
+                            'Run 2 - Final',
+                            'Run 3 - Final'
+                        ]
+                        
+                        # Draw networks as separate figures and combine them
+                        network_fig_path = results_dir / f"network_combined_{benchmark_name}.png"
+                        network_viz.draw_and_combine_networks(
+                            wiring_csv=str(wiring_file),
+                            weight_columns=weight_columns,
+                            panel_labels=panel_labels,
+                            output_path=str(network_fig_path),
+                            modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                            neuron_positions=neuron_positions,
+                            neuron_types=neuron_types,
+                            title=f'Network Development - {display_name}'
+                        )
+                        
+                        # Add to document
+                        doc.add_paragraph("Network Development (Initial vs. Final States):", style="Heading 4")
+                        doc.add_picture(str(network_fig_path), width=Inches(6.5))
+                    else:
+                        print(f"Warning: Wiring file not found in {first_variant_dir}")
+                else:
+                    print(f"Warning: No variant folders found in benchmark {benchmark_name}")
+                
+            except FileNotFoundError as e:
+                print(f"Warning: Network config not found for benchmark {benchmark_name}: {e}")
+            except Exception as e:
+                print(f"Error loading network visualization for benchmark {benchmark_name}: {e}")
 
 #endregion  # closes 1.2
 #endregion  # closes 1
@@ -802,7 +873,7 @@ bottom_10_pct_variants = set(df_stats[df_stats["median_survival"] <= median_unsu
 successful_variants = set(df_stats[df_stats["median_survival"] >= median_successful_threshold]["variant"].values)
 unsuccessful_variants = set(df_stats[df_stats["median_survival"] <= median_unsuccessful_threshold]["variant"].values)
 
-# Assign group labels to the main dataframe so later sections can filter directly
+# Assign group labels to the random variants dataframe
 def _assign_group_label(var_name):
     if var_name in successful_variants:
         return "Successful\n(Top 10%)"
@@ -810,7 +881,16 @@ def _assign_group_label(var_name):
         return "Unsuccessful\n(Bottom 10%)"
     return "Random Middle"
 
-df_all["group"] = df_all["variant"].apply(_assign_group_label)
+df_random["group"] = df_random["variant"].apply(_assign_group_label)
+
+# For df_all, preserve benchmark group labels (which were already set) and only assign labels to random variants
+if "benchmark_group" in df_all.columns:
+    # Only update rows where benchmark_group is null (i.e., random variants)
+    mask = df_all["benchmark_group"].isna()
+    df_all.loc[mask, "group"] = df_all[mask]["variant"].apply(_assign_group_label)
+else:
+    # No benchmarks - df_all is just df_random with group labels already assigned
+    df_all["group"] = df_all["variant"].apply(_assign_group_label)
 
 # Make df_all immutable so that any attempts to modify df_all after this point will raise an error, catching unintended mutations of our data
 df_all.flags.writeable = False
@@ -838,15 +918,15 @@ def _extract_key(v):
     else:
         s = v
     try:
-        return int(s)
+        return (0, int(s))  # Integers sort first, then by numeric value
     except Exception:
-        return s
+        return (1, s)  # Non-integers sort second, then lexically
 
 success_sorted = sorted(successful_variants, key=_extract_key)
 unsuccess_sorted = sorted(unsuccessful_variants, key=_extract_key)
 
-success_nums = ", ".join(str(_extract_key(v)) for v in success_sorted) if success_sorted else "None"
-unsuccess_nums = ", ".join(str(_extract_key(v)) for v in unsuccess_sorted) if unsuccess_sorted else "None"
+success_nums = ", ".join(str(_extract_key(v)[1]) for v in success_sorted) if success_sorted else "None"
+unsuccess_nums = ", ".join(str(_extract_key(v)[1]) for v in unsuccess_sorted) if unsuccess_sorted else "None"
 
 # Create a compact two-row table
 tbl = doc.add_table(rows=2, cols=1)
@@ -895,9 +975,9 @@ sns.set_theme(style="whitegrid", context="talk")
 
 fig = plt.figure(figsize=(14, 8))
 
-# For each variant, compute survival race curve
-for variant_name in sorted(df_all["variant"].unique()):
-    df_variant = df_all[df_all["variant"] == variant_name]
+# For each variant, compute survival race curve (using random variants only)
+for variant_name in sorted(df_random["variant"].unique()):
+    df_variant = df_random[df_random["variant"] == variant_name]
     survival_times = df_variant["lifetime_ticks"].values
     
     # Compute survival race: at each tick, how many are still alive
@@ -1776,6 +1856,66 @@ if not df_foods_per_tick.empty:
 #endregion  # closes 3.5.2
 #endregion  # closes 3.5
 #endregion  # closes 3
+
+#region 4. Test network visualization ========================================================================================================================================================================
+
+doc.add_heading("4. Test Network Visualization", level=3)
+
+# Load network data from first variant's CSV files
+first_variant_dir = variant_dirs[0] if variant_dirs else None
+if first_variant_dir:
+    wiring_file = first_variant_dir / "wiring.csv"
+    modulation_file = first_variant_dir / "modulation.csv"
+    
+    if wiring_file.exists():
+        # Load network configuration
+        try:
+            neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+            
+            # Load network data using the helper function
+            neurons, connections, modulatory = network_viz.load_network_from_csvs(
+                wiring_csv=str(wiring_file),
+                modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                neuron_positions=neuron_positions,
+                neuron_types=neuron_types,
+                weight_column='weight_initial'
+            )
+            
+            # Draw network
+            fig, ax = plt.subplots(figsize=(14, 10))
+            network_viz.draw_network(
+                neurons=neurons,
+                connections=connections,
+                modulatory=modulatory,
+                ax=ax,
+                title=f'Neural Network - {first_variant_dir.name}',
+                weight_column='weight',
+                show_weights=False
+            )
+            plt.tight_layout()
+            
+            # Save the figure
+            network_fig_path = results_dir / f"network_visualization_{EXPERIMENT_NAME}.png"
+            plt.savefig(network_fig_path, dpi=150, bbox_inches='tight')
+            print(f"Network visualization saved to: {network_fig_path}")
+            plt.show()
+            
+            # Add to document
+            doc.add_paragraph(f"Network visualization for variant: {first_variant_dir.name}")
+            doc.add_picture(str(network_fig_path), width=Inches(6.5))
+        
+        except FileNotFoundError as e:
+            doc.add_paragraph(f"(Network visualization config not found: {e})")
+            print(f"Warning: {e}")
+        except Exception as e:
+            doc.add_paragraph(f"(Error loading network visualization: {e})")
+            print(f"Error: {e}")
+    else:
+        doc.add_paragraph("(Wiring CSV not found for network visualization)")
+else:
+    doc.add_paragraph("(No variants found for network visualization)")
+
+#endregion  # closes 4
 
 # =====================================================================  E - FINALIZE DOCUMENT AND SAVE ================================================
 # ==========================================================================================================================================
