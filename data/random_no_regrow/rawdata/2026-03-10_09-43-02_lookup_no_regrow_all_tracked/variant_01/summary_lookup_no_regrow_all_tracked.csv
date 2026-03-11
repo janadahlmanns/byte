@@ -1,2 +1,0 @@
-run_id,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west,decisions,correct_decisions
-1,32,1,1,0,0,0,1,0,0,1,1,0,1,0

@@ -25,8 +25,8 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/random_no_regrow/rawdata/"
-SIMULATION_NAME   = "lookup_no_regrow_all_tracked"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/pipeline_check/"
+SIMULATION_NAME   = "C_w_noise_w_plasticity_no_regrow_lookup_eta_0_01"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
 BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
@@ -47,7 +47,7 @@ N_VARIANTS = 1                            # Number of randomized wiring variants
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 1
+N_RUNS      = 50
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -55,9 +55,9 @@ REGROW_TIME = 3000                           # Time for food to regrow
 # VISUALIZATION PARAMETERS
 # ============================================================
 
-VIZ_ENABLED = True                        # Enable visualization
+VIZ_ENABLED = False                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
+VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
 
 # ============================================================
