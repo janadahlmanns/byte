@@ -61,7 +61,7 @@ def build_brain_spec(
     # Connection and modulation weights
     EXCITATORY_WEIGHT = 0.6
     INHIBITORY_WEIGHT = -0.6
-    POTENTIATION_WEIGHT = 1.0
+    POTENTIATION_WEIGHT = 0.5
     DEPRESSION_WEIGHT = -0.5
     HARD_CODED_CONNECTION_WEIGHT = 1.0
     
@@ -109,44 +109,40 @@ def build_brain_spec(
     # HARD-WIRED LOOKUP TABLE CONNECTIONS
     # ============================================================
     # This implements the algorithmic wiring with deterministic connections
-    # that replicate behavior: food sensed → stay; no food → interneuron fires all movement outputs
     connections = np.zeros((n_neurons, n_neurons, 2), dtype=float)
     connections[:, :, 1] = 1.0  # All reliability = 1.0
     
-    # Define neuron roles
-    ON_FOOD_NEURON = INPUT_NEURONS[0]     # 0
-    STAY_OUTPUT_NEURON = OUTPUT_NEURONS[0]  # 5
+    # ============================================================
+    # Hard-coded connection: n0 → n5 with weight 1.0 (no modulation)
+    # ============================================================
+    connections[0, 5, 0] = HARD_CODED_CONNECTION_WEIGHT
     
     # ============================================================
-    # Excitatory Connections: 0-4 → 5-9
+    # Excitatory Connections: n1→n6, n2→n7, n3→n8, n4→n9
     # ============================================================
-    # Each sensory input neuron drives the corresponding output neuron
-    for src in INPUT_NEURONS:  # 0-4
-        for tgt in OUTPUT_NEURONS:  # 5-9
-            connections[src, tgt, 0] = EXCITATORY_WEIGHT
+    # Each directional sensory neuron drives the corresponding output neuron
+    connections[1, 6, 0] = EXCITATORY_WEIGHT
+    connections[2, 7, 0] = EXCITATORY_WEIGHT
+    connections[3, 8, 0] = EXCITATORY_WEIGHT
+    connections[4, 9, 0] = EXCITATORY_WEIGHT
     
     # ============================================================
-    # HARD-CODED SPECIAL CONNECTION
+    # Inhibitory Connections: n1, n2, n3, n4 → n10
     # ============================================================
-    # On Food → Stay/Eat: neuron 0 → neuron 5, weight 1.0 (overrides excitatory weight)
-    # This ensures that when on food, the byte always stays
-    connections[ON_FOOD_NEURON, STAY_OUTPUT_NEURON, 0] = HARD_CODED_CONNECTION_WEIGHT
+    # Directional sensory neurons inhibit the interneuron
+    connections[1, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
+    connections[2, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
+    connections[3, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
+    connections[4, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
     
     # ============================================================
-    # Inhibitory Connections: 0-4 → 10 (Input neurons inhibit interneuron)
+    # Excitatory Connections: n10 → n6, n7, n8, n9
     # ============================================================
-    # When any sensory input is active, it inhibits the interneuron
-    # This prevents the interneuron from triggering movement when food is sensed
-    for src in INPUT_NEURONS:  # 0-4
-        connections[src, ALWAYS_ON, 0] = INHIBITORY_WEIGHT
-    
-    # ============================================================
-    # Excitatory Connections: 10 → 6-9 (Always-on → Movement outputs only, not Stay)
-    # ============================================================
-    # When the interneuron is disinhibited (no food sensed), it drives the movement outputs
-    # This allows one direction to fire when no food is detected
-    for tgt in OUTPUT_NEURONS[1:]:  # 6-9 (exclude neuron 5 which is "stay")
-        connections[ALWAYS_ON, tgt, 0] = EXCITATORY_WEIGHT
+    # Always-on neuron drives all movement outputs
+    connections[ALWAYS_ON, 6, 0] = EXCITATORY_WEIGHT
+    connections[ALWAYS_ON, 7, 0] = EXCITATORY_WEIGHT
+    connections[ALWAYS_ON, 8, 0] = EXCITATORY_WEIGHT
+    connections[ALWAYS_ON, 9, 0] = EXCITATORY_WEIGHT
     
     # ============================================================
     # PLASTICITY MODULATION (Hard-wired)
@@ -159,29 +155,36 @@ def build_brain_spec(
                 modulator_spec[(src, tgt)] = []
     
     # ============================================================
-    # Potentiation on Excitatory Sensory-to-Output Connections
+    # No modulation on n0 → n5 connection (leave empty list)
     # ============================================================
-    # Connections 0-4 → 5-9 are potentiated by their source neurons (0-4)
-    for src in INPUT_NEURONS:  # 0-4
-        for tgt in OUTPUT_NEURONS:  # 5-9
-            if (src, tgt) in modulator_spec:
-                modulator_spec[(src, tgt)].append((src, POTENTIATION_WEIGHT))
+    # modulator_spec[(0, 5)] already has empty list from initialization
     
     # ============================================================
-    # Depression on Inhibitory Input-to-Interneuron Connections
+    # Potentiation on Excitatory Connections: n1→n6, n2→n7, n3→n8, n4→n9
     # ============================================================
-    # Connections 0-4 → 10 (inhibitory) are modulated by depression from their sources
-    for src in INPUT_NEURONS:  # 0-4
-        if (src, ALWAYS_ON) in modulator_spec:
-            modulator_spec[(src, ALWAYS_ON)].append((src, DEPRESSION_WEIGHT))
+    # Each connection is potentiated by its source neuron
+    modulator_spec[(1, 6)].append((1, POTENTIATION_WEIGHT))
+    modulator_spec[(2, 7)].append((2, POTENTIATION_WEIGHT))
+    modulator_spec[(3, 8)].append((3, POTENTIATION_WEIGHT))
+    modulator_spec[(4, 9)].append((4, POTENTIATION_WEIGHT))
     
     # ============================================================
-    # Potentiation on Always-On-to-Movement Connections
+    # Depression on Inhibitory Connections: n1, n2, n3, n4 → n10
     # ============================================================
-    # Connections 10 → 6-9 are potentiated by neuron 10
-    for tgt in OUTPUT_NEURONS[1:]:  # 6-9 (exclude stay neuron 5)
-        if (ALWAYS_ON, tgt) in modulator_spec:
-            modulator_spec[(ALWAYS_ON, tgt)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
+    # Each inhibitory connection has depression triggered by its source
+    modulator_spec[(1, ALWAYS_ON)].append((1, DEPRESSION_WEIGHT))
+    modulator_spec[(2, ALWAYS_ON)].append((2, DEPRESSION_WEIGHT))
+    modulator_spec[(3, ALWAYS_ON)].append((3, DEPRESSION_WEIGHT))
+    modulator_spec[(4, ALWAYS_ON)].append((4, DEPRESSION_WEIGHT))
+    
+    # ============================================================
+    # Potentiation on n10 → n6, n7, n8, n9 Connections
+    # ============================================================
+    # All these connections are potentiated by n10
+    modulator_spec[(ALWAYS_ON, 6)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
+    modulator_spec[(ALWAYS_ON, 7)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
+    modulator_spec[(ALWAYS_ON, 8)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
+    modulator_spec[(ALWAYS_ON, 9)].append((ALWAYS_ON, POTENTIATION_WEIGHT))
     
     return neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec
 
