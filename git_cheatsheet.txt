@@ -58,7 +58,7 @@ BASIC WORKFLOW (NEW FEATURE)
 3) Work like normal
    (edit files)
 
-   git status
+   git status 
    git add .
    git commit -m "Describe what you did"
 

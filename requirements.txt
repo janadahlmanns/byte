@@ -9,4 +9,4 @@ pynput
 python-docx
 PySide6
 networkx
-networkx
+h5py
