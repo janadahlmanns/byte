@@ -112,11 +112,11 @@ def build_brain_spec():
     modulator_spec[(3, 8)].append((3, 0.5))   # n3 potentiates its own connection
     modulator_spec[(4, 9)].append((4, 0.5))   # n4 potentiates its own connection
     
-    # n1-4 → n10: DEPRESSION triggered by source neurons
-    modulator_spec[(1, 10)].append((1, -0.5))  # n1 depresses its inhibitory connection
-    modulator_spec[(2, 10)].append((2, -0.5))  # n2 depresses its inhibitory connection
-    modulator_spec[(3, 10)].append((3, -0.5))  # n3 depresses its inhibitory connection
-    modulator_spec[(4, 10)].append((4, -0.5))  # n4 depresses its inhibitory connection
+    # n1-4 → n10: POTENTIATION triggered by source neurons
+    modulator_spec[(1, 10)].append((1, 0.5))  # n1 potentiates its inhibitory connection
+    modulator_spec[(2, 10)].append((2, 0.5))  # n2 potentiates its inhibitory connection
+    modulator_spec[(3, 10)].append((3, 0.5))  # n3 potentiates its inhibitory connection
+    modulator_spec[(4, 10)].append((4, 0.5))  # n4 potentiates its inhibitory connection
     
     # n10 → n6-9: POTENTIATION triggered by n10
     modulator_spec[(10, 6)].append((10, 0.5))  # n10 potentiates connection to n6

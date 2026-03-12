@@ -10,8 +10,20 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from scipy.stats import mannwhitneyu, kruskal
 import scikit_posthocs as sp
 import sys
-DATA_DIR = Path(__file__).resolve().parents[3] # Add data directory to path for module imports
-sys.path.insert(0, str(DATA_DIR))
+
+# Find workspace root by locating parent directory containing 'data' and 'simulate' folders
+current_path = Path(__file__).resolve()
+WORKSPACE_ROOT = None
+while current_path.parent != current_path:  # While not at filesystem root
+    if (current_path / "data").exists() and (current_path / "simulate").exists():
+        WORKSPACE_ROOT = current_path
+        break
+    current_path = current_path.parent
+
+if WORKSPACE_ROOT is None:
+    raise RuntimeError("Could not find workspace root. Searched parent directories for 'data' and 'simulate' folders.")
+
+sys.path.insert(0, str(WORKSPACE_ROOT))
 from analysis_tools.network_visualization import network_viz
 
 
@@ -22,11 +34,11 @@ plt.ion()  # Enable interactive mode
 # ==========================================================================================================================================
 
 
-# Point to your variant data
+# Point to variant data
 BASE_DIR = Path(__file__).resolve().parents[2] / "rawdata"
 
 # Manually specify the experiment folder (or set to None to auto-detect most recent)
-EXPERIMENT_FOLDER = "2026-03-11_15-25-54_C_w_noise_w_plasticity_no_regrow_lookup_eta_0_01"  # Change this to your experiment folder name
+EXPERIMENT_FOLDER = "2026-03-12_10-08-32_random_lookup"  # Change this to experiment folder name
 
 EXPERIMENT_DIR = BASE_DIR / EXPERIMENT_FOLDER
 if not EXPERIMENT_DIR.exists():
@@ -36,9 +48,13 @@ if not EXPERIMENT_DIR.exists():
 script_name = Path(__file__).stem  # e.g., "analysis_overall_survival" -> "overall_survival"
 EXPERIMENT_NAME = script_name.replace("analysis_", "")
 
+# Display name for the experiment (customize this for a nice report title and filenames)
+# This is used in the report title and appended to all saved figures
+EXPERIMENT_DISPLAY_NAME = "Random Wiring"  
 
 
-# Point to your benchmark data (optional)
+
+# Point to benchmark data (optional)
 
 # Add one or more benchmark variant folders with names to compare against the top/bottom 10% groups
 # Each benchmark folder should contain variant_* subdirectories with summary_*.csv files
@@ -47,7 +63,7 @@ EXPERIMENT_NAME = script_name.replace("analysis_", "")
 # Example: [("Hard-wired Lookup", BASE_DIR / "2026-03-08_hardwired_lookup"), ("Algorithmic", BASE_DIR / "2026-02-15_algo")]
 
 BENCHMARK_FOLDERS = [
-     ("Hard-wired Lookup", BASE_DIR / "2026-03-11_15-25-54_C_w_noise_w_plasticity_no_regrow_lookup_eta_0_01"),
+     ("Hard-wired Lookup", BASE_DIR / "2026-03-12_10-13-02_random_lookup"),
  ]
 
 #BENCHMARK_FOLDERS = []
@@ -518,7 +534,7 @@ doc = Document()
 #region 1. EXPERIMENT INFORMATION ========================================================================================================================================================================
 
 doc.add_heading("Analysis Report: Random Wiring Variants", level=0)
-doc.add_heading(f"{EXPERIMENT_NAME}", level=1)
+doc.add_heading(f"{EXPERIMENT_DISPLAY_NAME}", level=1)
 
 doc.add_heading("1. Experiment Information", level=2)
 
@@ -791,7 +807,7 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
                         ]
                         
                         # Draw networks as separate figures and combine them
-                        network_fig_path = results_dir / f"network_combined_{benchmark_name}.png"
+                        network_fig_path = results_dir / f"network_{display_name}.png"
                         network_viz.draw_and_combine_networks(
                             wiring_csv=str(wiring_file),
                             weight_columns=weight_columns,
@@ -1063,7 +1079,7 @@ plt.legend(handles=legend_elements, loc="upper right", fontsize=10, frameon=True
 plt.tight_layout()
 
 # Save figure
-fig_path = results_dir / f"survival_race_{EXPERIMENT_NAME}.png"
+fig_path = results_dir / f"survival_race_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
 fig.savefig(fig_path, dpi=150, bbox_inches="tight")
 print(f"\nSaved: {fig_path}")
 fig_paths.append(("Survival Race: All Variants", fig_path))
@@ -1109,6 +1125,145 @@ cells = table.rows[6].cells
 cells[0].text = "Max (ticks)"
 cells[1].text = f"{successful_times.max():.1f}"
 cells[2].text = f"{unsuccessful_times.max():.1f}"
+
+# =====================================================================
+# Network visualizations for group representatives
+# =====================================================================
+
+doc.add_paragraph()
+doc.add_paragraph("Network Development: Successful vs Unsuccessful Variants", style="Heading 4")
+doc.add_paragraph(
+    "Below are combined network visualizations showing initial wiring and the first three runtime states "
+    "for representative variants from the successful and unsuccessful groups."
+)
+
+# Load network configuration once
+neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+
+# Helper function to extract numeric part of variant name for sorting
+def _get_variant_number(variant_name):
+    """Extract numeric portion from variant name (e.g., 'variant_001' -> 1)"""
+    if "_" in variant_name:
+        s = variant_name.split("_", 1)[1]
+    else:
+        s = variant_name
+    try:
+        return int(s)
+    except:
+        return float('inf')
+
+# Define weight columns and labels for visualization
+weight_columns = [
+    'weight_initial',
+    'weight_final_run_0001',
+    'weight_final_run_0002',
+    'weight_final_run_0003'
+]
+panel_labels = [
+    'Initial Wiring',
+    'Run 1 - Final',
+    'Run 2 - Final',
+    'Run 3 - Final'
+]
+
+# Process successful variants (first up to 3)
+if len(successful_variants) > 0:
+    doc.add_paragraph("Successful Variants (Top 10%):", style="Heading 5")
+    
+    successful_sorted = sorted(successful_variants, key=_get_variant_number)[:3]
+    successful_variant_dirs = []
+    
+    for variant_name in successful_sorted:
+        # Find the variant directory
+        for var_dir in variant_dirs:
+            if var_dir.name == variant_name:
+                successful_variant_dirs.append(var_dir)
+                break
+    
+    # Create network plots for each successful variant
+    for variant_dir in successful_variant_dirs:
+        variant_name = variant_dir.name
+        wiring_file = variant_dir / "wiring.csv"
+        modulation_file = variant_dir / "modulation.csv"
+        
+        if wiring_file.exists():
+            try:
+                # Extract variant number for filename
+                variant_num = _get_variant_number(variant_name)
+                
+                # Create output path
+                network_fig_path = results_dir / f"network_variant_{variant_num:03d}.png"
+                
+                # Generate network visualization
+                network_viz.draw_and_combine_networks(
+                    wiring_csv=str(wiring_file),
+                    weight_columns=weight_columns,
+                    panel_labels=panel_labels,
+                    output_path=str(network_fig_path),
+                    modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                    neuron_positions=neuron_positions,
+                    neuron_types=neuron_types,
+                    title=f'Network Development - {variant_name} (Successful)'
+                )
+                
+                # Add to document
+                doc.add_picture(str(network_fig_path), width=Inches(6.5))
+                print(f"Saved network visualization: {network_fig_path}")
+                
+            except Exception as e:
+                print(f"Error creating network visualization for {variant_name}: {e}")
+        else:
+            print(f"Warning: Wiring file not found in {variant_dir}")
+
+# Process unsuccessful variants (first up to 3)
+if len(unsuccessful_variants) > 0:
+    doc.add_paragraph()
+    doc.add_paragraph("Unsuccessful Variants (Bottom 10%):", style="Heading 5")
+    
+    unsuccessful_sorted = sorted(unsuccessful_variants, key=_get_variant_number)[:3]
+    unsuccessful_variant_dirs = []
+    
+    for variant_name in unsuccessful_sorted:
+        # Find the variant directory
+        for var_dir in variant_dirs:
+            if var_dir.name == variant_name:
+                unsuccessful_variant_dirs.append(var_dir)
+                break
+    
+    # Create network plots for each unsuccessful variant
+    for variant_dir in unsuccessful_variant_dirs:
+        variant_name = variant_dir.name
+        wiring_file = variant_dir / "wiring.csv"
+        modulation_file = variant_dir / "modulation.csv"
+        
+        if wiring_file.exists():
+            try:
+                # Extract variant number for filename
+                variant_num = _get_variant_number(variant_name)
+                
+                # Create output path
+                network_fig_path = results_dir / f"network_variant_{variant_num:03d}.png"
+                
+                # Generate network visualization
+                network_viz.draw_and_combine_networks(
+                    wiring_csv=str(wiring_file),
+                    weight_columns=weight_columns,
+                    panel_labels=panel_labels,
+                    output_path=str(network_fig_path),
+                    modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                    neuron_positions=neuron_positions,
+                    neuron_types=neuron_types,
+                    title=f'Network Development - {variant_name} (Unsuccessful)'
+                )
+                
+                # Add to document
+                doc.add_picture(str(network_fig_path), width=Inches(6.5))
+                print(f"Saved network visualization: {network_fig_path}")
+                
+            except Exception as e:
+                print(f"Error creating network visualization for {variant_name}: {e}")
+        else:
+            print(f"Warning: Wiring file not found in {variant_dir}")
 
 #endregion # closes 2.
 #region 3. COMPARISON =====================================================================================================================================================================================
@@ -1170,7 +1325,7 @@ title_survival = "Survival Times: Unsuccessful vs Successful Wiring Variants"
 if df_benchmarks is not None:
     title_survival = "Survival Times: Random Variants vs Benchmarks"
 
-output_path_survival = results_dir / f"comp_survival_{EXPERIMENT_NAME}.png"
+output_path_survival = results_dir / f"comp_survival_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
 fig = plot_metric_comparison(
     df_survival, 
     "lifetime_ticks", 
@@ -1418,7 +1573,7 @@ if not df_efficiency.empty:
     plt.tight_layout()
     
     # Save figure
-    fig_efficiency_path = results_dir / f"movement_efficiency_{EXPERIMENT_NAME}.png"
+    fig_efficiency_path = results_dir / f"movement_efficiency_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
     fig.savefig(fig_efficiency_path, dpi=150, bbox_inches="tight")
     print(f"\nSaved: {fig_efficiency_path}")
     fig_paths.append(("Movement Efficiency by Direction", fig_efficiency_path))
@@ -1493,7 +1648,7 @@ df_accuracy = pd.DataFrame(decision_accuracy_data)
 
 if not df_accuracy.empty:
     # Plot decision accuracy comparison
-    output_path_accuracy = results_dir / f"decision_accuracy_{EXPERIMENT_NAME}.png"
+    output_path_accuracy = results_dir / f"decision_accuracy_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
     fig = plot_metric_comparison(
         df_accuracy,
         "accuracy",
@@ -1584,7 +1739,7 @@ if 'benchmark_group' in df_all.columns:
 df_distance = pd.DataFrame(plot_data)
 
 if not df_distance.empty:
-    output_path_distance = results_dir / f"comp_distance_{EXPERIMENT_NAME}.png"
+    output_path_distance = results_dir / f"comp_distance_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
     fig = plot_metric_comparison(
         df_distance,
         "distance",
@@ -1661,7 +1816,7 @@ if df_benchmarks is not None:
 df_distance_per_tick = pd.DataFrame(plot_data)
 
 # Plot and comparative statistics (plot_metric_comparison + report_statistics)
-output_path_distance_per_tick = results_dir / f"comp_distance_per_tick_{EXPERIMENT_NAME}.png"
+output_path_distance_per_tick = results_dir / f"comp_distance_per_tick_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
 fig = plot_metric_comparison(
     df_distance_per_tick,
     "distance_per_tick",
@@ -1745,7 +1900,7 @@ if 'benchmark_group' in df_all.columns:
 df_foods = pd.DataFrame(plot_data)
 
 if not df_foods.empty:
-    output_path_foods = results_dir / f"comp_foods_{EXPERIMENT_NAME}.png"
+    output_path_foods = results_dir / f"comp_foods_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
     fig = plot_metric_comparison(
         df_foods,
         "foods",
@@ -1823,7 +1978,7 @@ if 'benchmark_group' in df_all.columns:
 df_foods_per_tick = pd.DataFrame(plot_data)
 
 if not df_foods_per_tick.empty:
-    output_path_foods_per_tick = results_dir / f"comp_foods_per_tick_{EXPERIMENT_NAME}.png"
+    output_path_foods_per_tick = results_dir / f"comp_foods_per_tick_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.png"
     fig = plot_metric_comparison(
         df_foods_per_tick,
         "foods_per_tick",
@@ -1857,73 +2012,13 @@ if not df_foods_per_tick.empty:
 #endregion  # closes 3.5
 #endregion  # closes 3
 
-#region 4. Test network visualization ========================================================================================================================================================================
-
-doc.add_heading("4. Test Network Visualization", level=3)
-
-# Load network data from first variant's CSV files
-first_variant_dir = variant_dirs[0] if variant_dirs else None
-if first_variant_dir:
-    wiring_file = first_variant_dir / "wiring.csv"
-    modulation_file = first_variant_dir / "modulation.csv"
-    
-    if wiring_file.exists():
-        # Load network configuration
-        try:
-            neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
-            
-            # Load network data using the helper function
-            neurons, connections, modulatory = network_viz.load_network_from_csvs(
-                wiring_csv=str(wiring_file),
-                modulation_csv=str(modulation_file) if modulation_file.exists() else None,
-                neuron_positions=neuron_positions,
-                neuron_types=neuron_types,
-                weight_column='weight_initial'
-            )
-            
-            # Draw network
-            fig, ax = plt.subplots(figsize=(14, 10))
-            network_viz.draw_network(
-                neurons=neurons,
-                connections=connections,
-                modulatory=modulatory,
-                ax=ax,
-                title=f'Neural Network - {first_variant_dir.name}',
-                weight_column='weight',
-                show_weights=False
-            )
-            plt.tight_layout()
-            
-            # Save the figure
-            network_fig_path = results_dir / f"network_visualization_{EXPERIMENT_NAME}.png"
-            plt.savefig(network_fig_path, dpi=150, bbox_inches='tight')
-            print(f"Network visualization saved to: {network_fig_path}")
-            plt.show()
-            
-            # Add to document
-            doc.add_paragraph(f"Network visualization for variant: {first_variant_dir.name}")
-            doc.add_picture(str(network_fig_path), width=Inches(6.5))
-        
-        except FileNotFoundError as e:
-            doc.add_paragraph(f"(Network visualization config not found: {e})")
-            print(f"Warning: {e}")
-        except Exception as e:
-            doc.add_paragraph(f"(Error loading network visualization: {e})")
-            print(f"Error: {e}")
-    else:
-        doc.add_paragraph("(Wiring CSV not found for network visualization)")
-else:
-    doc.add_paragraph("(No variants found for network visualization)")
-
-#endregion  # closes 4
-
 # =====================================================================  E - FINALIZE DOCUMENT AND SAVE ================================================
 # ==========================================================================================================================================
 
 
 print("\nFinalizing document and saving...")
 
-report_path = results_dir / f"report_{EXPERIMENT_NAME}.docx"
+report_path = results_dir / f"report_{EXPERIMENT_NAME}_{EXPERIMENT_DISPLAY_NAME.replace(' ', '_')}.docx"
 doc.save(report_path)
 print(f"Report saved to: {report_path}")
 

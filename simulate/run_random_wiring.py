@@ -25,8 +25,8 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/pipeline_check/"
-SIMULATION_NAME   = "C_w_noise_w_plasticity_no_regrow_lookup_eta_0_01"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/pipeline_check/rawdata/"
+SIMULATION_NAME   = "random_lookup"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
 BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
