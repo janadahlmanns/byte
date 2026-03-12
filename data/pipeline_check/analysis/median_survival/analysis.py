@@ -10,6 +10,7 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from scipy.stats import mannwhitneyu, kruskal
 import scikit_posthocs as sp
 import sys
+import h5py
 
 # Find workspace root by locating parent directory containing 'data' and 'simulate' folders
 current_path = Path(__file__).resolve()
@@ -34,17 +35,28 @@ plt.ion()  # Enable interactive mode
 # ==========================================================================================================================================
 
 
-# Point to variant data
+# Point to raw data directory
 BASE_DIR = Path(__file__).resolve().parents[2] / "rawdata"
 
-# Manually specify the experiment folder (or set to None to auto-detect most recent)
-EXPERIMENT_FOLDER = "2026-03-12_10-08-32_random_lookup"  # Change this to experiment folder name
+# Manually specify the experiment HDF5 file name (without .h5 extension)
+# or set to None to auto-detect most recent .h5 file
+EXPERIMENT_NAME_OR_FILEPATH = "2026-03-12_13-04-06_random_lookup"  # HDF5 filename (with or without .h5)
 
-EXPERIMENT_DIR = BASE_DIR / EXPERIMENT_FOLDER
-if not EXPERIMENT_DIR.exists():
-    raise FileNotFoundError(f"Experiment folder not found: {EXPERIMENT_DIR}")
+# Locate the HDF5 file
+if EXPERIMENT_NAME_OR_FILEPATH.endswith('.h5'):
+    HDF5_FILE = Path(EXPERIMENT_NAME_OR_FILEPATH)
+else:
+    # Try with .h5 extension
+    hdf5_candidates = list(BASE_DIR.glob(f"{EXPERIMENT_NAME_OR_FILEPATH}*.h5"))
+    if hdf5_candidates:
+        HDF5_FILE = hdf5_candidates[0]
+    else:
+        HDF5_FILE = BASE_DIR / f"{EXPERIMENT_NAME_OR_FILEPATH}.h5"
 
-# Extract experiment name from script filename (not EXPERIMENT_FOLDER)
+if not HDF5_FILE.exists():
+    raise FileNotFoundError(f"HDF5 file not found: {HDF5_FILE}")
+
+# Extract experiment name from script filename (not from HDF5 filename)
 script_name = Path(__file__).stem  # e.g., "analysis_overall_survival" -> "overall_survival"
 EXPERIMENT_NAME = script_name.replace("analysis_", "")
 
@@ -53,20 +65,14 @@ EXPERIMENT_NAME = script_name.replace("analysis_", "")
 EXPERIMENT_DISPLAY_NAME = "Random Wiring"  
 
 
-
 # Point to benchmark data (optional)
+# Format: [(display_name, hdf5_file_or_name), (display_name2, hdf5_file_or_name2), ...]
+# Example: [("Hard-wired Lookup", BASE_DIR / "2026-03-08_hardwired_lookup.h5"), ("Algorithmic", BASE_DIR / "2026-02-15_algo.h5")]
+BENCHMARK_HDF5_FILES = [
+    ("Hard-wired Lookup", BASE_DIR / "2026-03-12_13-04-06_random_lookup.h5"),
+]
 
-# Add one or more benchmark variant folders with names to compare against the top/bottom 10% groups
-# Each benchmark folder should contain variant_* subdirectories with summary_*.csv files
-# Set to empty list [] to skip benchmark comparison
-# Format: [(display_name, folder_path), (display_name2, folder_path2), ...]
-# Example: [("Hard-wired Lookup", BASE_DIR / "2026-03-08_hardwired_lookup"), ("Algorithmic", BASE_DIR / "2026-02-15_algo")]
-
-BENCHMARK_FOLDERS = [
-     ("Hard-wired Lookup", BASE_DIR / "2026-03-12_10-13-02_random_lookup"),
- ]
-
-#BENCHMARK_FOLDERS = []
+#BENCHMARK_HDF5_FILES = []
 
 # =====================================================================
 # Specification of visuals
@@ -77,33 +83,109 @@ RED_COLOR = "#8B3A3A"    # Wine red for unsuccessful variants
 NETWORK_VIZ_CONFIG = '11'  # Corresponds to network_viz_11.yaml in configs/ folder
 
 
+# =====================================================================  HELPER FUNCTIONS FOR HDF5 LOADING  ====================================
+# ==========================================================================================================================================
+
+def load_variant_data_from_hdf5(hdf5_file: Path) -> pd.DataFrame:
+    """
+    Load variant summary data from HDF5 file.
+    
+    Args:
+        hdf5_file: Path to HDF5 file
+    
+    Returns:
+        DataFrame with all variant summary data (one row per run, variant column added)
+    """
+    all_variants = []
+    
+    with h5py.File(hdf5_file, 'r') as f:
+        # Find all variant_XX groups
+        variant_groups = [key for key in f.keys() if key.startswith('variant_')]
+        
+        for variant_group_name in sorted(variant_groups):
+            variant_group = f[variant_group_name]
+            
+            # Load summary dataset
+            if 'summary' not in variant_group:
+                print(f"Warning: No summary dataset in {variant_group_name}")
+                continue
+            
+            summary_dataset = variant_group['summary']
+            # Convert structured array to DataFrame
+            df_variant = pd.DataFrame(summary_dataset[()])
+            df_variant['variant'] = variant_group_name
+            all_variants.append(df_variant)
+    
+    if not all_variants:
+        raise ValueError(f"No variant summary data found in {hdf5_file}")
+    
+    return pd.concat(all_variants, ignore_index=True)
+
+
+def load_wiring_from_hdf5(hdf5_file: Path, variant_name: str = "variant_01") -> pd.DataFrame:
+    """
+    Load wiring data from HDF5 file for a specific variant.
+    
+    Args:
+        hdf5_file: Path to HDF5 file
+        variant_name: Variant group name (e.g., "variant_01")
+    
+    Returns:
+        DataFrame with wiring data
+    """
+    with h5py.File(hdf5_file, 'r') as f:
+        if variant_name not in f:
+            # Try first variant if specified one doesn't exist
+            variants = [key for key in f.keys() if key.startswith('variant_')]
+            if variants:
+                variant_name = sorted(variants)[0]
+            else:
+                raise ValueError(f"No variants found in {hdf5_file}")
+        
+        if 'wiring' not in f[variant_name]:
+            raise ValueError(f"No wiring dataset in {variant_name}")
+        
+        wiring_dataset = f[variant_name]['wiring']
+        df_wiring = pd.DataFrame(wiring_dataset[()])
+    
+    return df_wiring
+
+
+def load_modulation_from_hdf5(hdf5_file: Path, variant_name: str = "variant_01") -> pd.DataFrame:
+    """
+    Load modulation data from HDF5 file for a specific variant.
+    
+    Args:
+        hdf5_file: Path to HDF5 file
+        variant_name: Variant group name (e.g., "variant_01")
+    
+    Returns:
+        DataFrame with modulation data
+    """
+    with h5py.File(hdf5_file, 'r') as f:
+        if variant_name not in f:
+            # Try first variant if specified one doesn't exist
+            variants = [key for key in f.keys() if key.startswith('variant_')]
+            if variants:
+                variant_name = sorted(variants)[0]
+            else:
+                raise ValueError(f"No variants found in {hdf5_file}")
+        
+        if 'modulation' not in f[variant_name]:
+            return pd.DataFrame()  # Return empty DF if no modulation
+        
+        modulation_dataset = f[variant_name]['modulation']
+        df_modulation = pd.DataFrame(modulation_dataset[()])
+    
+    return df_modulation
+
+
 # =====================================================================  B - LOAD DATA AND INITIALIZE VARIABLES  ================================================
 # ==========================================================================================================================================
 
-# Load all variants 
-variant_dirs = sorted([d for d in EXPERIMENT_DIR.iterdir() if d.is_dir() and d.name.startswith("variant_")])
-print(f"Found {len(variant_dirs)} variants")
-
-all_data = []
-
-for variant_dir in variant_dirs:
-    variant_name = variant_dir.name  # e.g., "variant_001"
-    
-    # Find any summary_*.csv file in this variant directory (more flexible)
-    summary_files = list(variant_dir.glob("summary_*.csv"))
-    
-    if summary_files:
-        summary_file = summary_files[0]  # Take the first (and should be only) summary file
-        df = pd.read_csv(summary_file)
-        df["variant"] = variant_name
-        all_data.append(df)
-    else:
-        print(f"Warning: No summary file in {variant_dir}")
-
-if not all_data:
-    raise ValueError("No variant summary data found!")
-
-df_random = pd.concat(all_data, ignore_index=True)
+# Load all variants from HDF5 file
+print(f"Loading data from: {HDF5_FILE}")
+df_random = load_variant_data_from_hdf5(HDF5_FILE)
 print(f"Total rows loaded: {len(df_random)}")
 print(f"Unique variants: {df_random['variant'].nunique()}")
 
@@ -111,68 +193,50 @@ print(f"Unique variants: {df_random['variant'].nunique()}")
 df_all = df_random.copy()
 
 # Load benchmark(s) if any
-
 benchmark_data = {}
-benchmark_names_map = {}  # Map folder name to display name
-benchmark_paths_map = {}  # Map folder name to full folder path
+benchmark_names_map = {}  # Map HDF5 file to display name
+df_benchmarks = None
 
-if BENCHMARK_FOLDERS:
-    for display_name, benchmark_dir in BENCHMARK_FOLDERS:
-        if not benchmark_dir.exists():
-            print(f"Warning: Benchmark folder not found: {benchmark_dir}")
+if BENCHMARK_HDF5_FILES:
+    benchmark_dfs = []
+    for display_name, benchmark_hdf5_file in BENCHMARK_HDF5_FILES:
+        if isinstance(benchmark_hdf5_file, str):
+            benchmark_hdf5_file = Path(benchmark_hdf5_file)
+        
+        # Ensure .h5 extension
+        if not benchmark_hdf5_file.suffix == '.h5':
+            benchmark_hdf5_file = benchmark_hdf5_file.with_suffix('.h5')
+        
+        if not benchmark_hdf5_file.exists():
+            print(f"Warning: Benchmark file not found: {benchmark_hdf5_file}")
             continue
         
-        folder_name = benchmark_dir.name
-        benchmark_names_map[folder_name] = display_name
-        benchmark_paths_map[folder_name] = str(benchmark_dir.resolve())
+        print(f"\nLoading benchmark '{display_name}' from: {benchmark_hdf5_file.resolve()}")
         
-        print(f"\nLoading benchmark '{display_name}' from: {benchmark_dir.resolve()}")
-        
-        benchmark_variants = sorted([d for d in benchmark_dir.iterdir() if d.is_dir() and d.name.startswith("variant_")])
-        print(f"  Found {len(benchmark_variants)} variants")
-        
-        benchmark_data[folder_name] = []
-        
-        for variant_dir in benchmark_variants:
-            variant_name = variant_dir.name
-            summary_files = list(variant_dir.glob("summary_*.csv"))
-            
-            if summary_files:
-                summary_file = summary_files[0]
-                df = pd.read_csv(summary_file)
-                df["variant"] = f"{folder_name}_{variant_name}"
-                df["benchmark_group"] = folder_name
-                df["benchmark_display_name"] = display_name
-                df["benchmark_folder_path"] = str(benchmark_dir.resolve())
-                benchmark_data[folder_name].append(df)
-            else:
-                print(f"    Warning: No summary file in {variant_dir}")
-        
-        print(f"  Loaded {len(benchmark_data[folder_name])} variants from {folder_name}")
+        try:
+            df_benchmark = load_variant_data_from_hdf5(benchmark_hdf5_file)
+            benchmark_group = benchmark_hdf5_file.stem
+            df_benchmark["benchmark_group"] = benchmark_group
+            df_benchmark["benchmark_display_name"] = display_name
+            df_benchmark["benchmark_folder_path"] = str(benchmark_hdf5_file.parent.resolve())
+            benchmark_dfs.append(df_benchmark)
+            benchmark_names_map[benchmark_group] = display_name  # Map for later lookup
+            print(f"  Loaded {df_benchmark['variant'].nunique()} variants with {len(df_benchmark)} total runs")
+        except Exception as e:
+            print(f"  Error loading benchmark: {e}")
+            continue
     
     # Combine all benchmark data
-    all_benchmark_data = []
-    for benchmark_list in benchmark_data.values():
-        all_benchmark_data.extend(benchmark_list)
-    
-    if all_benchmark_data:
-        df_benchmarks = pd.concat(all_benchmark_data, ignore_index=True)
-        print(f"\nTotal benchmark rows loaded: {len(df_benchmarks)}")
-        print(f"Unique benchmark groups: {df_benchmarks['benchmark_group'].nunique()}")
-        # Merge benchmark rows into df_all with a `group` label so downstream code can filter one DF
-        bench_df = df_benchmarks.copy()
-        if 'benchmark_display_name' in bench_df.columns:
-            bench_df['group'] = bench_df['benchmark_display_name'].apply(lambda x: f"{x}\n(Benchmark)")
-        else:
-            bench_df['group'] = bench_df['benchmark_group'].apply(lambda g: f"{benchmark_names_map.get(g, g.replace('_', ' ').title())}\n(Benchmark)")
-
-        # concat aligns columns; keep df_all as the primary container
-        df_all = pd.concat([df_all, bench_df], ignore_index=True, sort=False)
+    if benchmark_dfs:
+        df_benchmarks = pd.concat(benchmark_dfs, ignore_index=True)
+        df_all = pd.concat([df_random, df_benchmarks], ignore_index=True)
+        print(f"\nTotal benchmark data loaded: {len(df_benchmarks)} rows")
     else:
+        print("No valid benchmark files loaded")
         df_benchmarks = None
 else:
+    print("No benchmarks specified")
     df_benchmarks = None
-    print("\nNo benchmark folders specified (BENCHMARK_FOLDERS is empty)")
 
 # =====================================================================
 # Calculate variant statistics and group thresholds
@@ -539,10 +603,12 @@ doc.add_heading(f"{EXPERIMENT_DISPLAY_NAME}", level=1)
 doc.add_heading("1. Experiment Information", level=2)
 
 doc.add_paragraph("Random Wiring Variants:", style="Heading 3")
-doc.add_paragraph(f"Experiment folder: {EXPERIMENT_DIR.name}")
-doc.add_paragraph(f"Total random variants analyzed: {len(variant_dirs)}")
-doc.add_paragraph(f"Runs per variant: {len(df_all) // len(variant_dirs)}")
-doc.add_paragraph(f"Total data points (random): {len(df_all)}")
+doc.add_paragraph(f"Experiment file: {HDF5_FILE.name}")
+n_variants = df_random['variant'].nunique()
+runs_per_variant = len(df_random) // n_variants if n_variants > 0 else 0
+doc.add_paragraph(f"Total random variants analyzed: {n_variants}")
+doc.add_paragraph(f"Runs per variant: {runs_per_variant}")
+doc.add_paragraph(f"Total data points (random): {len(df_random)}")
 
 if df_benchmarks is not None and len(df_benchmarks) > 0:
     doc.add_paragraph("Benchmark Variants:", style="Heading 3")
@@ -558,7 +624,7 @@ doc.add_heading("1.1. Summary Statistics - Random Wiring Variants", level=2)
 
 doc.add_paragraph(
     f"Summary of how long random wiring variants survive in the experimental environment. "
-    f"We measure survival time in simulation ticks across all {len(variant_dirs)} variants and {len(df_random) // len(variant_dirs)} runs per variant. "
+    f"We measure survival time in simulation ticks across all {n_variants} variants and {runs_per_variant} runs per variant. "
     f"The statistics below provide a comprehensive overview of survival time distribution across all measurements."
 )
 
@@ -775,62 +841,77 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
         # Add network visualization for this benchmark
         doc.add_paragraph()  # Add spacing
         
-        benchmark_folder_path = benchmark_paths_map.get(benchmark_name)
-        if benchmark_folder_path:
+        # Try to find and load benchmark HDF5 file
+        benchmark_hdf5_file = None
+        if df_benchmarks is not None and benchmark_name in df_benchmarks['benchmark_group'].values:
+            # Find the HDF5 file path from benchmark data
+            bench_sample = df_benchmarks[df_benchmarks['benchmark_group'] == benchmark_name].iloc[0]
+            if 'benchmark_folder_path' in bench_sample:
+                bench_folder = Path(bench_sample['benchmark_folder_path'])
+                # Look for .h5 file in that folder
+                h5_files = list(bench_folder.glob("*.h5"))
+                if h5_files:
+                    benchmark_hdf5_file = h5_files[0]
+        
+        if benchmark_hdf5_file and benchmark_hdf5_file.exists():
             try:
-                benchmark_dir = Path(benchmark_folder_path)
-                # Get the first variant folder from the benchmark
-                benchmark_variants = sorted([d for d in benchmark_dir.iterdir() if d.is_dir() and d.name.startswith("variant_")])
+                # Load network configuration
+                neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
                 
-                if benchmark_variants:
-                    first_variant_dir = benchmark_variants[0]
-                    wiring_file = first_variant_dir / "wiring.csv"
-                    modulation_file = first_variant_dir / "modulation.csv"
+                # Load wiring and modulation from HDF5
+                df_wiring = load_wiring_from_hdf5(benchmark_hdf5_file, "variant_01")
+                df_modulation = load_modulation_from_hdf5(benchmark_hdf5_file, "variant_01")
+                
+                # Define which weight columns and labels to show
+                # Creates separate full-size figures then combines them
+                weight_columns = [
+                    'weight_initial',
+                    'weight_final_run_0001',
+                    'weight_final_run_0002',
+                    'weight_final_run_0003'
+                ]
+                panel_labels = [
+                    'Initial Wiring',
+                    'Run 1 - Final',
+                    'Run 2 - Final',
+                    'Run 3 - Final'
+                ]
+                
+                # Temporarily save to CSV for network viz function
+                import tempfile
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    wiring_csv = Path(tmpdir) / "wiring.csv"
+                    modulation_csv = Path(tmpdir) / "modulation.csv"
                     
-                    if wiring_file.exists():
-                        # Load network configuration
-                        neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
-                        
-                        # Define which weight columns and labels to show
-                        # Creates separate full-size figures then combines them
-                        weight_columns = [
-                            'weight_initial',
-                            'weight_final_run_0001',
-                            'weight_final_run_0002',
-                            'weight_final_run_0003'
-                        ]
-                        panel_labels = [
-                            'Initial Wiring',
-                            'Run 1 - Final',
-                            'Run 2 - Final',
-                            'Run 3 - Final'
-                        ]
-                        
-                        # Draw networks as separate figures and combine them
-                        network_fig_path = results_dir / f"network_{display_name}.png"
-                        network_viz.draw_and_combine_networks(
-                            wiring_csv=str(wiring_file),
-                            weight_columns=weight_columns,
-                            panel_labels=panel_labels,
-                            output_path=str(network_fig_path),
-                            modulation_csv=str(modulation_file) if modulation_file.exists() else None,
-                            neuron_positions=neuron_positions,
-                            neuron_types=neuron_types,
-                            title=f'Network Development - {display_name}'
-                        )
-                        
-                        # Add to document
-                        doc.add_paragraph("Network Development (Initial vs. Final States):", style="Heading 4")
-                        doc.add_picture(str(network_fig_path), width=Inches(6.5))
-                    else:
-                        print(f"Warning: Wiring file not found in {first_variant_dir}")
-                else:
-                    print(f"Warning: No variant folders found in benchmark {benchmark_name}")
+                    df_wiring.to_csv(wiring_csv, index=False)
+                    if len(df_modulation) > 0:
+                        df_modulation.to_csv(modulation_csv, index=False)
+                    
+                    # Draw networks and combine
+                    # Sanitize display_name for use in filename
+                    safe_display_name = display_name.replace(" ", "_").replace("-", "_")
+                    network_fig_path = results_dir / f"network_{safe_display_name}.png"
+                    network_viz.draw_and_combine_networks(
+                        wiring_csv=str(wiring_csv),
+                        weight_columns=weight_columns,
+                        panel_labels=panel_labels,
+                        output_path=str(network_fig_path),
+                        modulation_csv=str(modulation_csv) if len(df_modulation) > 0 else None,
+                        neuron_positions=neuron_positions,
+                        neuron_types=neuron_types,
+                        title=f'Network Development - {display_name}'
+                    )
+                    
+                    # Add to document
+                    doc.add_paragraph("Network Development (Initial vs. Final States):", style="Heading 4")
+                    doc.add_picture(str(network_fig_path), width=Inches(6.5))
                 
             except FileNotFoundError as e:
-                print(f"Warning: Network config not found for benchmark {benchmark_name}: {e}")
+                print(f"Warning: Network config not found for benchmark {display_name}: {e}")
             except Exception as e:
-                print(f"Error loading network visualization for benchmark {benchmark_name}: {e}")
+                print(f"Error loading network visualization for benchmark {display_name}: {e}")
+        else:
+            print(f"Warning: Could not find HDF5 file for benchmark {display_name}")
 
 #endregion  # closes 1.2
 #endregion  # closes 1
@@ -839,8 +920,8 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
 doc.add_heading("2. Group Selection Based on Survival Race", level=2)
 
 doc.add_paragraph(
-    f"Success is measured based on median survival across {len(df_all) // len(variant_dirs):.0f} runs with different randomizer seeds. "
-    f"The {len(variant_dirs)} different wiring variants are split into successful and unsuccessful groups based on their performance. "
+    f"Success is measured based on median survival across {runs_per_variant:.0f} runs with different randomizer seeds. "
+    f"The {n_variants} different wiring variants are split into successful and unsuccessful groups based on their performance. "
     f"The achievable range of median liefetimes is split into percentiles. Variants in the 'successful' group had median lifetimes in the top 10% of that range, "
     f"while variants in the 'unsuccessful' group had median lifetimes in the bottom 10% of that range. This approach respects natural performance gaps "
     f"and identifies only the variants that truly solve the task well regardless of the number of variants that achieve this."
@@ -978,7 +1059,7 @@ doc.add_paragraph(
 )
 
 doc.add_paragraph(
-    f"This plot shows the survival curves for all {len(variant_dirs)} wiring variants. "
+    f"This plot shows the survival curves for all {n_variants} wiring variants. "
     f"Variants are color-coded by their performance achievement (range-based thresholds):"
 )
 doc.add_paragraph(f"  • Green: Top 10% of variants (median survival ≥ {median_successful_threshold:.1f} ticks) — {len(successful_variants)} variants")
@@ -1053,10 +1134,9 @@ if df_benchmarks is not None:
 plt.xlabel("Tick", fontsize=12)
 plt.ylabel("Number of Bytes alive", fontsize=12)
 title_suffix = ""
-if df_benchmarks is not None:
+if df_benchmarks is not None and len(df_benchmarks) > 0:
     title_suffix = f" + {len(list(df_benchmarks['benchmark_group'].unique()))} Benchmark(s)"
-runs_per_variant = len(df_all) // len(variant_dirs)
-plt.title(f"Survival Race: All {len(variant_dirs)} Random Variants{title_suffix}\n({runs_per_variant} world seeds per variant)")
+plt.title(f"Survival Race: All {n_variants} Random Variants{title_suffix}\n({runs_per_variant} world seeds per variant)")
 plt.grid(True, alpha=0.3)
 
 # Create custom legend
@@ -1171,36 +1251,38 @@ if len(successful_variants) > 0:
     doc.add_paragraph("Successful Variants (Top 10%):", style="Heading 5")
     
     successful_sorted = sorted(successful_variants, key=_get_variant_number)[:3]
-    successful_variant_dirs = []
-    
-    for variant_name in successful_sorted:
-        # Find the variant directory
-        for var_dir in variant_dirs:
-            if var_dir.name == variant_name:
-                successful_variant_dirs.append(var_dir)
-                break
     
     # Create network plots for each successful variant
-    for variant_dir in successful_variant_dirs:
-        variant_name = variant_dir.name
-        wiring_file = variant_dir / "wiring.csv"
-        modulation_file = variant_dir / "modulation.csv"
-        
-        if wiring_file.exists():
-            try:
-                # Extract variant number for filename
-                variant_num = _get_variant_number(variant_name)
+    for variant_name in successful_sorted:
+        try:
+            # Extract variant number for filename
+            variant_num = _get_variant_number(variant_name)
+            
+            # Load wiring and modulation from HDF5
+            df_wiring = load_wiring_from_hdf5(HDF5_FILE, variant_name)
+            df_modulation = load_modulation_from_hdf5(HDF5_FILE, variant_name)
+            
+            # Create output path
+            safe_exp_name = EXPERIMENT_DISPLAY_NAME.replace(" ", "_")
+            network_fig_path = results_dir / f"network_{safe_exp_name}_variant_{variant_num:03d}.png"
+            
+            # Temporarily save to CSV for network viz function
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                wiring_csv = Path(tmpdir) / "wiring.csv"
+                modulation_csv = Path(tmpdir) / "modulation.csv"
                 
-                # Create output path
-                network_fig_path = results_dir / f"network_variant_{variant_num:03d}.png"
+                df_wiring.to_csv(wiring_csv, index=False)
+                if len(df_modulation) > 0:
+                    df_modulation.to_csv(modulation_csv, index=False)
                 
                 # Generate network visualization
                 network_viz.draw_and_combine_networks(
-                    wiring_csv=str(wiring_file),
+                    wiring_csv=str(wiring_csv),
                     weight_columns=weight_columns,
                     panel_labels=panel_labels,
                     output_path=str(network_fig_path),
-                    modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                    modulation_csv=str(modulation_csv) if len(df_modulation) > 0 else None,
                     neuron_positions=neuron_positions,
                     neuron_types=neuron_types,
                     title=f'Network Development - {variant_name} (Successful)'
@@ -1210,10 +1292,8 @@ if len(successful_variants) > 0:
                 doc.add_picture(str(network_fig_path), width=Inches(6.5))
                 print(f"Saved network visualization: {network_fig_path}")
                 
-            except Exception as e:
-                print(f"Error creating network visualization for {variant_name}: {e}")
-        else:
-            print(f"Warning: Wiring file not found in {variant_dir}")
+        except Exception as e:
+            print(f"Error creating network visualization for {variant_name}: {e}")
 
 # Process unsuccessful variants (first up to 3)
 if len(unsuccessful_variants) > 0:
@@ -1221,36 +1301,38 @@ if len(unsuccessful_variants) > 0:
     doc.add_paragraph("Unsuccessful Variants (Bottom 10%):", style="Heading 5")
     
     unsuccessful_sorted = sorted(unsuccessful_variants, key=_get_variant_number)[:3]
-    unsuccessful_variant_dirs = []
-    
-    for variant_name in unsuccessful_sorted:
-        # Find the variant directory
-        for var_dir in variant_dirs:
-            if var_dir.name == variant_name:
-                unsuccessful_variant_dirs.append(var_dir)
-                break
     
     # Create network plots for each unsuccessful variant
-    for variant_dir in unsuccessful_variant_dirs:
-        variant_name = variant_dir.name
-        wiring_file = variant_dir / "wiring.csv"
-        modulation_file = variant_dir / "modulation.csv"
-        
-        if wiring_file.exists():
-            try:
-                # Extract variant number for filename
-                variant_num = _get_variant_number(variant_name)
+    for variant_name in unsuccessful_sorted:
+        try:
+            # Extract variant number for filename
+            variant_num = _get_variant_number(variant_name)
+            
+            # Load wiring and modulation from HDF5
+            df_wiring = load_wiring_from_hdf5(HDF5_FILE, variant_name)
+            df_modulation = load_modulation_from_hdf5(HDF5_FILE, variant_name)
+            
+            # Create output path
+            safe_exp_name = EXPERIMENT_DISPLAY_NAME.replace(" ", "_")
+            network_fig_path = results_dir / f"network_{safe_exp_name}_variant_{variant_num:03d}.png"
+            
+            # Temporarily save to CSV for network viz function
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                wiring_csv = Path(tmpdir) / "wiring.csv"
+                modulation_csv = Path(tmpdir) / "modulation.csv"
                 
-                # Create output path
-                network_fig_path = results_dir / f"network_variant_{variant_num:03d}.png"
+                df_wiring.to_csv(wiring_csv, index=False)
+                if len(df_modulation) > 0:
+                    df_modulation.to_csv(modulation_csv, index=False)
                 
                 # Generate network visualization
                 network_viz.draw_and_combine_networks(
-                    wiring_csv=str(wiring_file),
+                    wiring_csv=str(wiring_csv),
                     weight_columns=weight_columns,
                     panel_labels=panel_labels,
                     output_path=str(network_fig_path),
-                    modulation_csv=str(modulation_file) if modulation_file.exists() else None,
+                    modulation_csv=str(modulation_csv) if len(df_modulation) > 0 else None,
                     neuron_positions=neuron_positions,
                     neuron_types=neuron_types,
                     title=f'Network Development - {variant_name} (Unsuccessful)'
@@ -1259,11 +1341,9 @@ if len(unsuccessful_variants) > 0:
                 # Add to document
                 doc.add_picture(str(network_fig_path), width=Inches(6.5))
                 print(f"Saved network visualization: {network_fig_path}")
-                
-            except Exception as e:
-                print(f"Error creating network visualization for {variant_name}: {e}")
-        else:
-            print(f"Warning: Wiring file not found in {variant_dir}")
+            
+        except Exception as e:
+            print(f"Error creating network visualization for {variant_name}: {e}")
 
 #endregion # closes 2.
 #region 3. COMPARISON =====================================================================================================================================================================================

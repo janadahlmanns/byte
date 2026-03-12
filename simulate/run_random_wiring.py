@@ -19,6 +19,14 @@ from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManag
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
+from .hdf5_utils import (
+    create_hdf5_file,
+    save_variant_summary_to_hdf5,
+    save_wiring_to_hdf5,
+    save_modulation_to_hdf5,
+    save_heatmaps_to_hdf5,
+    save_per_tick_to_hdf5,
+)
 
 
 # ============================================================
@@ -40,7 +48,7 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1                            # Number of randomized wiring variants to generate
+N_VARIANTS = 3                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
@@ -143,6 +151,51 @@ def reset_sim(world, feeding_cfg, rng_food, worm):
     worm.reset()
 
 
+def _rename_world_config_keys(cfg: dict) -> dict:
+    """
+    Rename world config keys to include prefixes for HDF5 attribute clarity.
+    
+    Transforms keys like:
+      world.grid_width → world_grid_width
+      food.feeding_paradigm.initial → feeding_initial
+      worm.speed → worm_speed
+      sensors.active → worm_sensors_active
+      decisionmaking.version → decisionmaking_version
+    
+    Skips the 'viz' section entirely.
+    """
+    renamed = {}
+    
+    # Process world section
+    if "world" in cfg:
+        for key, val in cfg["world"].items():
+            renamed[f"world_{key}"] = val
+    
+    # Process food section - flatten feeding_paradigm keys
+    if "food" in cfg:
+        food_cfg = cfg["food"]
+        if "feeding_paradigm" in food_cfg:
+            for key, val in food_cfg["feeding_paradigm"].items():
+                renamed[f"feeding_{key}"] = val
+    
+    # Process worm section
+    if "worm" in cfg:
+        for key, val in cfg["worm"].items():
+            renamed[f"worm_{key}"] = val
+    
+    # Process sensors section
+    if "sensors" in cfg:
+        for key, val in cfg["sensors"].items():
+            renamed[f"worm_sensors_{key}"] = val
+    
+    # Process decisionmaking section
+    if "decisionmaking" in cfg:
+        for key, val in cfg["decisionmaking"].items():
+            renamed[f"decisionmaking_{key}"] = val
+    
+    return renamed
+
+
 def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) -> float:
     """Get weight of specific neuron-to-neuron connection from brain state.
     
@@ -178,14 +231,24 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
 # output + metrics
 # ============================================================
 
-def make_experiment_dir() -> Path:
+def make_experiment_dir() -> tuple[Path, Path]:
+    """Create experiment directory and HDF5 file.
+    
+    Returns:
+        Tuple of (run_dir, hdf5_path) where run_dir is for temporary/intermediate files
+        and hdf5_path is the main data file.
+    """
     base = Path(EXPERIMENT_FOLDER)
     base.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = base / f"{ts}_{SIMULATION_NAME}"
-    run_dir.mkdir()
-    return run_dir
+    run_dir.mkdir(exist_ok=True)
+    
+    # HDF5 file will use the same timestamped name
+    hdf5_path = base / f"{ts}_{SIMULATION_NAME}.h5"
+    
+    return run_dir, hdf5_path
 
 
 def append_wiring_column_to_csv(wiring_file: Path, run_id: int, final_weights: dict):
@@ -523,8 +586,8 @@ def main():
     
     brain = load_brain_module(make_decision_cfg(cfg))
 
-    run_dir = make_experiment_dir()
-    print(f"[batch] writing to {run_dir}")
+    run_dir, hdf5_path = make_experiment_dir()
+    print(f"[batch] writing to {hdf5_path}")
 
     # Initialize pause manager only if visualization is enabled
     pause_mgr = init_pause_manager() if viz_enabled else None
@@ -562,12 +625,13 @@ def main():
                 elif w < 0 and inhibitory_weight is None:
                     inhibitory_weight = float(w)
         
-        # Build comprehensive config dict
+        # Build comprehensive config dict with proper flattening-friendly naming
+        # Keys are named with prefixes to avoid ambiguity when flattened to HDF5 attributes
         comprehensive_config = {
             "experiment_metadata": {
                 "experiment_folder": EXPERIMENT_FOLDER,
                 "simulation_name": SIMULATION_NAME,
-                "config_path": CONFIG_PATH,
+                "simulation_config_path": CONFIG_PATH,
                 "brain_init_type": BRAIN_INIT,
             },
             "wiring_randomization": {
@@ -581,8 +645,8 @@ def main():
             "simulation_parameters": {
                 "max_ticks": MAX_TICKS,
                 "n_runs": N_RUNS,
-                "initial_fraction_per_cell": INITIAL_FRACTION_PER_CELL,
-                "regrow_time": REGROW_TIME,
+                "feeding_initial_fraction_per_cell": INITIAL_FRACTION_PER_CELL,
+                "feeding_regrow_time": REGROW_TIME,
             },
             "data_tracking": {
                 "enable_per_tick_tracking": ENABLE_PER_TICK_TRACKING,
@@ -598,15 +662,14 @@ def main():
                 "n_output_neurons": 5,
                 "n_always_on_neurons": 1,
             },
-            "world_config": cfg,
         }
         
-        # Save comprehensive config as JSON
-        import json
-        config_json_path = run_dir / f"config_used_{SIMULATION_NAME}.json"
-        with open(config_json_path, 'w', encoding='utf-8') as f:
-            json.dump(comprehensive_config, f, indent=2)
-        print(f"[config] Saved comprehensive config to {config_json_path.name}")
+        # Merge renamed world config keys directly (to avoid double-prefixing)
+        comprehensive_config.update(_rename_world_config_keys(cfg))
+        
+        # Save comprehensive config as HDF5 attributes
+        create_hdf5_file(hdf5_path, comprehensive_config)
+        print(f"[config] Created HDF5 file: {hdf5_path.name}")
         
         for variant_id in range(N_VARIANTS):
             print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...")
@@ -625,31 +688,35 @@ def main():
             # Print wiring diagram
             # print_wiring_summary(brain_init_spec)  # Disabled for cleaner output
             
-            # Create variant-specific subdirectory
+            # Create variant-specific subdirectory (for any temp files if needed)
             variant_dir = run_dir / f"variant_{variant_id+1:02d}"
-            variant_dir.mkdir()
-            (variant_dir / "runs").mkdir()
+            variant_dir.mkdir(exist_ok=True)
             
             # Save initial wiring for this variant (same for all runs)
             wiring_file = variant_dir / "wiring.csv"
             neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
-            wiring_lines = ["src,tgt,weight_initial"]
+            
+            # Build wiring data for this variant (will be written to HDF5 after all runs)
+            wiring_initial_data = []
             for src in range(connections.shape[0]):
                 for tgt in range(connections.shape[1]):
                     if connections[src, tgt, 0] != 0.0:
                         weight = connections[src, tgt, 0]
-                        wiring_lines.append(f"{src},{tgt},{weight:.6f}")
-            wiring_file.write_text("\n".join(wiring_lines) + "\n", encoding="utf-8")
+                        wiring_initial_data.append({'src': src, 'tgt': tgt, 'weight_initial': weight})
             
-            # Save modulation spec for this variant
-            modulation_file = variant_dir / "modulation.csv"
-            modulation_lines = ["target_src,target_tgt,modulator_src,modulation_weight"]
+            # Build modulation data for this variant (will be written to HDF5 after all runs)
+            modulation_data = []
             for (target_src, target_tgt), modulators in modulator_spec.items():
                 for mod_src, mod_weight in modulators:
-                    modulation_lines.append(f"{target_src},{target_tgt},{mod_src},{mod_weight:.6f}")
-            modulation_file.write_text("\n".join(modulation_lines) + "\n", encoding="utf-8")
+                    modulation_data.append({
+                        'target_src': target_src,
+                        'target_tgt': target_tgt,
+                        'modulator_src': mod_src,
+                        'modulation_weight': mod_weight
+                    })
             
-            summary_lines = ["run_id,lifetime_ticks,foods,distance,final_energy,moves_north,moves_south,moves_east,moves_west,food_sensed_north,food_sensed_east,food_sensed_south,food_sensed_west,decisions,correct_decisions"]
+            # Initialize summary data collection for this variant
+            summary_data = []
             
             # Collect final weights for all runs (to write all at once at the end)
             final_weights_all_runs = {}  # {run_id: {(src, tgt): weight}}
@@ -707,12 +774,34 @@ def main():
                     renderer.close()
 
                 # ============================================================
-                # Per-tick tracking: conditional per-tick CSV saves
+                # Per-tick tracking: save to HDF5 (if enabled)
                 # ============================================================
-                # Save comprehensive per-tick data (if enabled)
+                # Save comprehensive per-tick data to HDF5 (if enabled)
                 if ENABLE_PER_TICK_TRACKING:
-                    per_tick_file = variant_dir / "runs" / f"run_{run_id+1:04d}_per_tick.csv"
-                    rec.save_per_tick_csv(per_tick_file)
+                    # Convert per_tick_rows to DataFrame for easier processing
+                    header = ["tick", "food_sensed_N", "food_sensed_E", "food_sensed_S", "food_sensed_W",
+                              "movement", "food_consumed", "energy", "manhattan_dist", "decision_made"] + \
+                             [f"conn_{src}_{tgt}" for src, tgt in rec.connections_to_track]
+                    per_tick_list = []
+                    for row in rec.per_tick_rows:
+                        per_tick_list.append({
+                            'tick': row[0],
+                            'food_sensed_N': row[1],
+                            'food_sensed_E': row[2],
+                            'food_sensed_S': row[3],
+                            'food_sensed_W': row[4],
+                            'movement': row[5],
+                            'food_consumed': row[6],
+                            'energy': row[7],
+                            'manhattan_dist': row[8],
+                            'decision_made': row[9],
+                        })
+                        # Add connection weights
+                        for idx, (src, tgt) in enumerate(rec.connections_to_track):
+                            per_tick_list[-1][f'conn_{src}_{tgt}'] = row[10 + idx]
+                    
+                    per_tick_df = pd.DataFrame(per_tick_list)
+                    save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id + 1, per_tick_df)
                 
                 # Collect heatmaps for this run (to write all at once per variant)
                 if ENABLE_HEAT_MAP_TRACKING:
@@ -725,17 +814,33 @@ def main():
                     final_weights_dict[(src, tgt)] = w
                 final_weights_all_runs[run_id+1] = final_weights_dict
 
-                summary_lines.append(
-                    f"{run_id+1},{worm.ticks},{worm.eats},{worm.distance},{worm.energy},{rec.moves_north},{rec.moves_south},{rec.moves_east},{rec.moves_west},{rec.food_sensed_north},{rec.food_sensed_east},{rec.food_sensed_south},{rec.food_sensed_west},{rec.decisions},{rec.correct_decisions}"
-                )
+                # Collect summary data for this run
+                summary_data.append({
+                    'run_id': run_id+1,
+                    'lifetime_ticks': worm.ticks,
+                    'foods': worm.eats,
+                    'distance': worm.distance,
+                    'final_energy': worm.energy,
+                    'moves_north': rec.moves_north,
+                    'moves_south': rec.moves_south,
+                    'moves_east': rec.moves_east,
+                    'moves_west': rec.moves_west,
+                    'food_sensed_north': rec.food_sensed_north,
+                    'food_sensed_east': rec.food_sensed_east,
+                    'food_sensed_south': rec.food_sensed_south,
+                    'food_sensed_west': rec.food_sensed_west,
+                    'decisions': rec.decisions,
+                    'correct_decisions': rec.correct_decisions,
+                })
 
             # ============================================================
-            # Write all final weights to wiring file at once (avoid fragmentation)
+            # Write variant data to HDF5
             # ============================================================
-            df_wiring = pd.read_csv(wiring_file)
             
-            # Build all final weight columns at once before assigning
-            final_weights = {}
+            # Build wiring DataFrame and save to HDF5
+            df_wiring = pd.DataFrame(wiring_initial_data)
+            
+            # Add final weight columns for each run
             for run_id, weights_dict in final_weights_all_runs.items():
                 column_name = f"weight_final_run_{run_id:04d}"
                 weights_list = []
@@ -744,50 +849,40 @@ def main():
                     tgt = int(row['tgt'])
                     weight = weights_dict.get((src, tgt), 0.0)
                     weights_list.append(weight)
-                final_weights[column_name] = weights_list
+                df_wiring[column_name] = weights_list
             
-            # Create new DataFrame with all weight columns and concatenate
-            df_final_weights = pd.DataFrame(final_weights)
-            df_wiring = pd.concat([df_wiring, df_final_weights], axis=1)
-            df_wiring.to_csv(wiring_file, index=False)
-
-            # Save summary for this variant
-            summary_name = f"summary_{SIMULATION_NAME}.csv"
-            (variant_dir / summary_name).write_text(
-                "\n".join(summary_lines) + "\n", encoding="utf-8"
-            )
+            save_wiring_to_hdf5(hdf5_path, variant_id + 1, df_wiring)
             
-            # Save consolidated heatmaps for all runs in this variant
+            # Save modulation data to HDF5
+            df_modulation = pd.DataFrame(modulation_data)
+            save_modulation_to_hdf5(hdf5_path, variant_id + 1, df_modulation)
+            
+            # Save summary for this variant to HDF5
+            df_summary = pd.DataFrame(summary_data)
+            save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, df_summary)
+            
+            # Save consolidated heatmaps for all runs in this variant to HDF5
             if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
                 # Get grid dimensions from first run's heatmap
                 first_entering = list(heatmaps_all_runs.values())[0][0]
                 grid_height = max(y for y, x in first_entering.keys()) + 1
                 grid_width = max(x for y, x in first_entering.keys()) + 1
                 
-                # Build header: field_y, field_x, then alternating entering/staying for each run
-                header = ["field_y", "field_x"]
-                for run_id in sorted(heatmaps_all_runs.keys()):
-                    header.append(f"entering_run_{run_id:04d}")
-                    header.append(f"staying_run_{run_id:04d}")
-                
-                # Build rows: linearize grid and collect data from all runs
-                lines = [",".join(header)]
+                # Build DataFrame: field_y, field_x, then alternating entering/staying for each run
+                heatmap_rows = []
                 for y in range(grid_height):
                     for x in range(grid_width):
-                        row = [str(y), str(x)]
+                        row_dict = {'field_y': y, 'field_x': x}
                         for run_id in sorted(heatmaps_all_runs.keys()):
                             entering_heatmap, staying_heatmap = heatmaps_all_runs[run_id]
                             entering_count = entering_heatmap.get((y, x), 0)
                             staying_count = staying_heatmap.get((y, x), 0)
-                            row.append(str(entering_count))
-                            row.append(str(staying_count))
-                        lines.append(",".join(row))
+                            row_dict[f"entering_run_{run_id:04d}"] = entering_count
+                            row_dict[f"staying_run_{run_id:04d}"] = staying_count
+                        heatmap_rows.append(row_dict)
                 
-                # Write consolidated heatmaps file for this variant
-                heatmaps_name = f"heatmaps_{SIMULATION_NAME}.csv"
-                (variant_dir / heatmaps_name).write_text(
-                    "\n".join(lines) + "\n", encoding="utf-8"
-                )
+                df_heatmaps = pd.DataFrame(heatmap_rows)
+                save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, df_heatmaps)
 
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
