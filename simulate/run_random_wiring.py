@@ -1,18 +1,16 @@
-# ------------------------------------------------------------
-# run batch of simulations of Byte with randomized wiring
-# randomizer seed is incremented by 1 with each variant!
-# visualization is optional and specified in input parameters
-# data are recorded into specified folder, plus summary data of the whole batch
-# ------------------------------------------------------------
+# Batch simulation of Byte with randomized wiring variants
+# Each variant's wiring seed is incremented by 1
+# Results are saved to HDF5
 
 import importlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import yaml
 import numpy as np
-import pandas as pd
 
 from mvb.world import World, WorldConfig
 from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
@@ -48,14 +46,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 3                            # Number of randomized wiring variants to generate
+N_VARIANTS = 100                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 50
+N_RUNS      = 100
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -74,16 +72,28 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
+
 # ============================================================
 # helpers
 # ============================================================
+
+def get_num_workers():
+    """Determine number of worker processes. Reserves 2 cores for system tasks.
+    Returns None if system has ≤2 cores (force serial execution)."""
+    try:
+        available_cores = os.cpu_count()
+        if available_cores is None or available_cores <= 2:
+            return None
+        return max(1, available_cores - 2)
+    except Exception:
+        return None
 
 def load_config(path: str):
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 def build_rng_streams(seed: int, has_brain: bool):
-    """Build separate RNG streams for different aspects of simulation."""
+    """Build separate RNG streams for simulation aspects."""
     seed = int(seed)
     rng_food = np.random.default_rng(seed)
     rng_decision = np.random.default_rng(seed)
@@ -231,39 +241,29 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
 # output + metrics
 # ============================================================
 
-def make_experiment_dir() -> tuple[Path, Path]:
-    """Create experiment directory and HDF5 file.
+def make_experiment_dir() -> Path:
+    """Create HDF5 file path for experiment.
     
     Returns:
-        Tuple of (run_dir, hdf5_path) where run_dir is for temporary/intermediate files
-        and hdf5_path is the main data file.
+        Path to HDF5 file for saving all results.
     """
     base = Path(EXPERIMENT_FOLDER)
     base.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_dir = base / f"{ts}_{SIMULATION_NAME}"
-    run_dir.mkdir(exist_ok=True)
-    
-    # HDF5 file will use the same timestamped name
     hdf5_path = base / f"{ts}_{SIMULATION_NAME}.h5"
     
-    return run_dir, hdf5_path
+    return hdf5_path
 
 
-def append_wiring_column_to_csv(wiring_file: Path, run_id: int, final_weights: dict):
-    """
-    DEPRECATED: This function is no longer used because it causes dataframe fragmentation.
-    Final weights are now collected in memory and written all at once per variant.
-    """
-    pass
+
 
 
 @dataclass
 class MetricsRecorder:
-    rows: list[tuple]  # Main tracked data per tick
-    per_tick_rows: list[tuple]  # Comprehensive per-tick tracking (if ENABLE_PER_TICK_TRACKING is True)
-    connections_to_track: list[tuple]  # List of (src, tgt) pairs to track over time
+    per_tick_data: np.ndarray = None
+    per_tick_count: int = 0
+    connections_to_track: list[tuple] = None
     start_y: int = 0  # Starting Y position for manhattan distance calculation
     start_x: int = 0  # Starting X position for manhattan distance calculation
     prev_y: int = 0
@@ -272,8 +272,8 @@ class MetricsRecorder:
     prev_action: tuple = None  # Track which movement happened
     grid_height: int = 0  # World grid height for heatmap indexing
     grid_width: int = 0  # World grid width for heatmap indexing
-    entering_heatmap: dict = None  # {(y, x): count} - field entry counts
-    staying_heatmap: dict = None  # {(y, x): count} - field ticks spent
+    entering_heatmap: np.ndarray = None  # 2D array (height, width) - field entry counts
+    staying_heatmap: np.ndarray = None  # 2D array (height, width) - field ticks spent
     moves_north: int = 0
     moves_south: int = 0
     moves_east: int = 0
@@ -287,34 +287,42 @@ class MetricsRecorder:
 
     @classmethod
     def empty(cls, worm: Worm, brain_init_spec):
-        """Initialize recorder with brain init spec to extract connection tracking."""
+        """Initialize recorder with brain init spec and worm state."""
         neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
         
-        # Identify all non-zero connections at initialization
         connections_to_track = []
         for src in range(connections.shape[0]):
             for tgt in range(connections.shape[1]):
                 if connections[src, tgt, 0] != 0.0:
                     connections_to_track.append((src, tgt))
         
-        # Initialize heatmaps
         grid_height = worm.world.cfg.grid_height
         grid_width = worm.world.cfg.grid_width
-        entering_heatmap = {}
-        staying_heatmap = {}
+        entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+        staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+        entering_heatmap[worm.y, worm.x] = 1
         
-        # Initialize all grid positions with 0, then set start position to 1 for entering
-        for y in range(grid_height):
-            for x in range(grid_width):
-                entering_heatmap[(y, x)] = 0
-                staying_heatmap[(y, x)] = 0
-        
-        # Starting position gets 1 enter count
-        entering_heatmap[(worm.y, worm.x)] = 1
+        per_tick_data = None
+        if ENABLE_PER_TICK_TRACKING:
+            dtype_fields = [
+                ('tick', 'i4'),
+                ('food_sensed_N', 'u1'),
+                ('food_sensed_E', 'u1'),
+                ('food_sensed_S', 'u1'),
+                ('food_sensed_W', 'u1'),
+                ('movement', 'S4'),
+                ('food_consumed', 'u1'),
+                ('energy', 'f4'),
+                ('manhattan_dist', 'u2'),
+                ('decision_made', 'u1'),
+            ]
+            for src, tgt in connections_to_track:
+                dtype_fields.append((f'{src}_{tgt}', 'f4'))
+            per_tick_data = np.zeros(MAX_TICKS, dtype=dtype_fields)
         
         return cls(
-            rows=[],
-            per_tick_rows=[],
+            per_tick_data=per_tick_data,
+            per_tick_count=0,
             connections_to_track=connections_to_track,
             start_y=worm.y,
             start_x=worm.x,
@@ -339,12 +347,7 @@ class MetricsRecorder:
         )
 
     def record(self, worm: Worm):
-        """
-        Record metrics for this tick.
-        - Always tracks: movement and food sensing (for summary statistics)
-        - Conditionally tracks: comprehensive per-tick data (controlled by ENABLE_PER_TICK_TRACKING)
-        """
-        # Track directional movement
+        """Record metrics for this tick."""
         dy = worm.y - self.prev_y
         dx = worm.x - self.prev_x
         
@@ -398,7 +401,7 @@ class MetricsRecorder:
                 self.correct_decisions += 1
         
         # Track comprehensive per-tick data (if enabled)
-        if ENABLE_PER_TICK_TRACKING:
+        if ENABLE_PER_TICK_TRACKING and self.per_tick_data is not None:
             # Determine movement direction from previous action
             movement_str = "stay"
             if self.prev_action is not None:
@@ -422,8 +425,9 @@ class MetricsRecorder:
             # Check if decision was made (action is not None)
             decision_made = 1 if worm.action is not None else 0
             
-            # Collect per-tick data
-            tick_data = [
+            # Populate array at current tick index
+            tick_idx = worm.ticks
+            self.per_tick_data[tick_idx] = (
                 worm.ticks,
                 int(food_north),
                 int(food_east),
@@ -434,120 +438,161 @@ class MetricsRecorder:
                 worm.energy,
                 manhattan_dist,
                 decision_made,
-            ]
+            ) + tuple(get_connection_weight(worm.brain, src, tgt) for src, tgt in self.connections_to_track)
             
-            # Add all connection weights
-            for src, tgt in self.connections_to_track:
-                w = get_connection_weight(worm.brain, src, tgt)
-                tick_data.append(w)
-            
-            self.per_tick_rows.append(tuple(tick_data))
+            self.per_tick_count = tick_idx + 1
         
-        # Track heatmaps (if enabled)
         if ENABLE_HEAT_MAP_TRACKING:
-            # STAYING heatmap: increment for every tick on current field
-            self.staying_heatmap[(worm.y, worm.x)] += 1
-            
-            # ENTERING heatmap: increment only when entering a new field (not when staying to eat)
+            self.staying_heatmap[worm.y, worm.x] += 1
             position_changed = (worm.y != self.prev_y) or (worm.x != self.prev_x)
             food_consumed = worm.eats > self.prev_eats
             stayed_to_eat = (self.prev_action is not None and 
                             self.prev_action[0] == "stay" and 
                             food_consumed)
-            
-            # Enter a new field incrementing (but NOT if we stayed in place to eat)
             if position_changed and not stayed_to_eat:
-                self.entering_heatmap[(worm.y, worm.x)] += 1
+                self.entering_heatmap[worm.y, worm.x] += 1
         
-        # Update previous position, eats count, and action for next call
         self.prev_y = worm.y
         self.prev_x = worm.x
         self.prev_eats = worm.eats
         self.prev_action = worm.action
 
-    def save_csv(self, path: Path):
-        lines = ["tick,energy,eats,distance,conn_1_6_weight,conn_2_7_weight,conn_3_8_weight,conn_4_9_weight,food_north_sensed,food_east_sensed,food_south_sensed,food_west_sensed"]
-        lines += [f"{t},{e},{k},{d},{w16:.6f},{w27:.6f},{w38:.6f},{w49:.6f},{int(fn)},{int(fe)},{int(fs)},{int(fw)}" 
-                  for t, e, k, d, w16, w27, w38, w49, fn, fe, fs, fw in self.rows]
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    
-    def save_per_tick_csv(self, path: Path):
-        """Save comprehensive per-tick tracking data."""
-        header = ["tick", "food_sensed_N", "food_sensed_E", "food_sensed_S", "food_sensed_W",
-                  "movement", "food_consumed", "energy", "manhattan_dist", "decision_made"] + \
-                 [f"conn_{src}_{tgt}" for src, tgt in self.connections_to_track]
-        lines = [",".join(header)]
-        for row in self.per_tick_rows:
-            # First 10 columns: tick, food_sensed (4x), movement, food_consumed, energy, manhattan_dist, decision_made
-            formatted_row = [str(row[0])] + [str(int(row[i])) for i in range(1, 5)] + [str(row[5]), str(row[6]), str(row[7]), str(row[8]), str(row[9])]
-            # Remaining columns: connection weights (floats)
-            formatted_row += [f"{val:.6f}" if isinstance(val, float) else str(val) for val in row[10:]]
-            lines.append(",".join(formatted_row))
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    
-    def save_heatmaps_csv(self, path: Path):
-        """Save entering and staying heatmaps for all grid positions."""
-        header = ["field_y", "field_x", "entering_count", "staying_count"]
-        lines = [",".join(header)]
-        
-        # Sort by y, then x for consistent output
-        for y in range(self.grid_height):
-            for x in range(self.grid_width):
-                entering_count = self.entering_heatmap.get((y, x), 0)
-                staying_count = self.staying_heatmap.get((y, x), 0)
-                lines.append(f"{y},{x},{entering_count},{staying_count}")
-        
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    
-    def save_wiring_snapshot(self, path: Path, brain_init_spec, label: str):
-        """Save a snapshot of the wiring (initial or final)."""
-        neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
-        lines = ["src,tgt,weight"]
-        for src, tgt in self.connections_to_track:
-            weight = connections[src, tgt, 0]
-            lines.append(f"{src},{tgt},{weight:.6f}")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def print_wiring_summary(brain_init_spec):
-    """Print a quick wiring diagram of connections and modulation."""
+
+
+# ============================================================
+# worker function for parallel execution
+# ============================================================
+
+def run_variant_worker(
+    variant_id,
+    brain_module_name,
+    cfg,
+    hdf5_path,
+):
+    """Execute a single variant's simulation runs and return data for HDF5 write."""
+    
+    brain_module = load_brain_module(brain_module_name)
+    
+    # Calculate wiring seed for this variant
+    wiring_seed = WIRING_RANDOMIZATION_SEED + variant_id
+    
+    brain_init_spec = load_brain_init(
+        BRAIN_INIT,
+        wiring_seed=wiring_seed,
+        connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
+        connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
+        modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
+        modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
+    )
+    
+    # Extract brain spec components
     neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
     
-    # Count connections by type
-    excitatory_conns = np.count_nonzero(connections[:, :, 0] > 0)
-    inhibitory_conns = np.count_nonzero(connections[:, :, 0] < 0)
-    total_conns = excitatory_conns + inhibitory_conns
-    
-    # Count modulations
-    total_modulators = sum(len(mods) for mods in modulator_spec.values())
-    potentiation_mods = sum(
-        sum(1 for _, w in mods if w > 0)
-        for mods in modulator_spec.values()
-    )
-    depression_mods = sum(
-        sum(1 for _, w in mods if w < 0)
-        for mods in modulator_spec.values()
-    )
-    
-    print(f"\n  [WIRING] Connections: {total_conns} total ({excitatory_conns} exc, {inhibitory_conns} inh)")
-    print(f"  [WIRING] Modulation: {total_modulators} total ({potentiation_mods} potentiation, {depression_mods} depression)")
-    
-    # List all non-zero connections
-    print(f"  [CONNECTIONS]")
+    # Identify non-zero connections at initialization
+    connections_to_track = []
     for src in range(connections.shape[0]):
         for tgt in range(connections.shape[1]):
-            weight = connections[src, tgt, 0]
-            if weight != 0.0:
-                conn_type = "exc" if weight > 0 else "inh"
-                print(f"    {src:2d} -> {tgt:2d}  weight={weight:6.2f} ({conn_type})")
+            if connections[src, tgt, 0] != 0.0:
+                connections_to_track.append((src, tgt))
     
-    # List modulations if present
-    if modulator_spec:
-        print(f"  [MODULATION]")
-        for (conn_src, conn_tgt), mods in modulator_spec.items():
-            if mods:
-                mod_str = "; ".join([f"{m_src}({m_w:+.1f})" for m_src, m_w in mods])
-                print(f"    {conn_src} -> {conn_tgt}:  {mod_str}")
+    # Pre-allocate wiring array with columns for all run final weights
+    dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
+    for run_id in range(1, N_RUNS + 1):
+        dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
+    wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
+    
+    for idx, (src, tgt) in enumerate(connections_to_track):
+        wiring_array[idx]['src'] = src
+        wiring_array[idx]['tgt'] = tgt
+        wiring_array[idx]['weight_initial'] = connections[src, tgt, 0]
+    
+    # Pre-allocate modulation array
+    dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
+    modulation_list = []
+    for (target_src, target_tgt), modulators in modulator_spec.items():
+        for mod_src, mod_weight in modulators:
+            modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
+    modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
+    
+    # Pre-allocate summary array
+    dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'), 
+                     ('distance', 'i4'), ('final_energy', 'f4'),
+                     ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
+                     ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
+                     ('decisions', 'i4'), ('correct_decisions', 'i4')]
+    summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
+    
+    heatmaps_all_runs = {}
+    per_tick_all_runs = {}
+    
+    has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
+    
+    for run_id in range(N_RUNS):
+        rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
+            cfg["world"]["rng_seed"] + run_id, has_brain_config
+        )
+        
+        world = make_world(cfg)
+        feeding_cfg = make_feeding_cfg(cfg)
+        world.feeding_cfg = feeding_cfg
+        
+        worm = make_worm(world, cfg)
+        worm.active_sensors = make_sensor_cfg(cfg)
+        worm.brain = brain_module
+        if hasattr(worm.brain, "init"):
+            if brain_init_spec is not None:
+                worm.brain.init(worm, cfg, rng_neuron_noise, brain_init_spec=brain_init_spec)
+            else:
+                worm.brain.init(worm, cfg, rng_neuron_noise)
+        
+        reset_sim(world, feeding_cfg, rng_food, worm)
+        worm.renderer = None
+        
+        rec = MetricsRecorder.empty(worm, brain_init_spec)
+        rec.record(worm)
+        
+        while worm.alive and worm.ticks < MAX_TICKS:
+            world.step()
+            worm.step_day(rng_decision)
+            worm.ticks += 1
+            rec.record(worm)
+        
+        if ENABLE_PER_TICK_TRACKING and rec.per_tick_data is not None:
+            per_tick_all_runs[run_id+1] = rec.per_tick_data[:rec.per_tick_count]
+        
+        if ENABLE_HEAT_MAP_TRACKING:
+            heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
+        
+        for idx, (src, tgt) in enumerate(connections_to_track):
+            w = get_connection_weight(worm.brain, src, tgt)
+            wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
+        
+        summary_array[run_id]['run_id'] = run_id + 1
+        summary_array[run_id]['lifetime_ticks'] = worm.ticks
+        summary_array[run_id]['foods'] = worm.eats
+        summary_array[run_id]['distance'] = worm.distance
+        summary_array[run_id]['final_energy'] = worm.energy
+        summary_array[run_id]['moves_north'] = rec.moves_north
+        summary_array[run_id]['moves_south'] = rec.moves_south
+        summary_array[run_id]['moves_east'] = rec.moves_east
+        summary_array[run_id]['moves_west'] = rec.moves_west
+        summary_array[run_id]['food_sensed_north'] = rec.food_sensed_north
+        summary_array[run_id]['food_sensed_east'] = rec.food_sensed_east
+        summary_array[run_id]['food_sensed_south'] = rec.food_sensed_south
+        summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
+        summary_array[run_id]['decisions'] = rec.decisions
+        summary_array[run_id]['correct_decisions'] = rec.correct_decisions
+    
+    return (
+        variant_id,
+        wiring_array,
+        modulation_array,
+        summary_array,
+        heatmaps_all_runs,
+        per_tick_all_runs,
+    )
 
 
 # ============================================================
@@ -557,6 +602,9 @@ def print_wiring_summary(brain_init_spec):
 
 
 def main():
+    # ============================================================
+    # SETUP & CONFIGURATION
+    # ============================================================
     cfg = load_config(CONFIG_PATH)
     
     # Apply visualization parameters from top of file to the config
@@ -573,7 +621,6 @@ def main():
     if BRAIN_INIT.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
     
-    # Check visualization settings for batch runs
     viz_enabled = VIZ_ENABLED
     
     if N_RUNS > 2 and viz_enabled:
@@ -584,37 +631,38 @@ def main():
             print("[INFO] Disabling visualization for this batch run.")
             viz_enabled = False
     
+    num_workers = None
+    if viz_enabled and VIZ_BRAIN_ENABLED:
+        print("[INFO] Brain visualization enabled. Running serially.")
+    else:
+        num_workers = get_num_workers()
+        if num_workers is None:
+            print("[INFO] Insufficient CPU cores. Running serially.")
+        else:
+            available_cores = os.cpu_count()
+            print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
+    
     brain = load_brain_module(make_decision_cfg(cfg))
-
-    run_dir, hdf5_path = make_experiment_dir()
-    print(f"[batch] writing to {hdf5_path}")
-
-    # Initialize pause manager only if visualization is enabled
+    hdf5_path = make_experiment_dir()
+    print(f"[batch] writing to {hdf5_path}\n")
     pause_mgr = init_pause_manager() if viz_enabled else None
 
     # ============================================================
-    # OUTER LOOP: Iterate over wiring variants
+    # INITIALIZE HDF5 FILE
     # ============================================================
     try:
-        # Create one test variant to extract brain initialization parameters
-        wiring_seed_test = WIRING_RANDOMIZATION_SEED
+        brain_module_name = make_decision_cfg(cfg)
         brain_init_spec_test = load_brain_init(
             BRAIN_INIT,
-            wiring_seed=wiring_seed_test,
+            wiring_seed=WIRING_RANDOMIZATION_SEED,
             connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
             connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
             modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
             modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
         )
         
-        # Extract brain parameters from the spec
         neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec_test
         n_neurons = neuron_params.shape[0]
-        
-        # Count total connections
-        num_total_connections = int(np.count_nonzero(connections[:, :, 0]))
-        
-        # Infer weights from actual connections (take first one found)
         excitatory_weight = None
         inhibitory_weight = None
         for src in range(n_neurons):
@@ -625,8 +673,6 @@ def main():
                 elif w < 0 and inhibitory_weight is None:
                     inhibitory_weight = float(w)
         
-        # Build comprehensive config dict with proper flattening-friendly naming
-        # Keys are named with prefixes to avoid ambiguity when flattened to HDF5 attributes
         comprehensive_config = {
             "experiment_metadata": {
                 "experiment_folder": EXPERIMENT_FOLDER,
@@ -664,233 +710,100 @@ def main():
             },
         }
         
-        # Merge renamed world config keys directly (to avoid double-prefixing)
         comprehensive_config.update(_rename_world_config_keys(cfg))
-        
-        # Save comprehensive config as HDF5 attributes
         create_hdf5_file(hdf5_path, comprehensive_config)
-        print(f"[config] Created HDF5 file: {hdf5_path.name}")
+        print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
         
-        for variant_id in range(N_VARIANTS):
-            print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...")
-            
-            # Create randomized brain initialization for this variant
-            wiring_seed = WIRING_RANDOMIZATION_SEED + variant_id
-            brain_init_spec = load_brain_init(
-                BRAIN_INIT,
-                wiring_seed=wiring_seed,
-                connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
-                connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
-                modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
-                modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
-            )
-            
-            # Print wiring diagram
-            # print_wiring_summary(brain_init_spec)  # Disabled for cleaner output
-            
-            # Create variant-specific subdirectory (for any temp files if needed)
-            variant_dir = run_dir / f"variant_{variant_id+1:02d}"
-            variant_dir.mkdir(exist_ok=True)
-            
-            # Save initial wiring for this variant (same for all runs)
-            wiring_file = variant_dir / "wiring.csv"
-            neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
-            
-            # Build wiring data for this variant (will be written to HDF5 after all runs)
-            wiring_initial_data = []
-            for src in range(connections.shape[0]):
-                for tgt in range(connections.shape[1]):
-                    if connections[src, tgt, 0] != 0.0:
-                        weight = connections[src, tgt, 0]
-                        wiring_initial_data.append({'src': src, 'tgt': tgt, 'weight_initial': weight})
-            
-            # Build modulation data for this variant (will be written to HDF5 after all runs)
-            modulation_data = []
-            for (target_src, target_tgt), modulators in modulator_spec.items():
-                for mod_src, mod_weight in modulators:
-                    modulation_data.append({
-                        'target_src': target_src,
-                        'target_tgt': target_tgt,
-                        'modulator_src': mod_src,
-                        'modulation_weight': mod_weight
-                    })
-            
-            # Initialize summary data collection for this variant
-            summary_data = []
-            
-            # Collect final weights for all runs (to write all at once at the end)
-            final_weights_all_runs = {}  # {run_id: {(src, tgt): weight}}
-            
-            # Collect heatmaps for all runs (to write all at once at the end)
-            heatmaps_all_runs = {}  # {run_id: (entering_heatmap, staying_heatmap)}
-
-            # ============================================================
-            # INNER LOOP: Iterate over world seeds for this variant
-            # ============================================================
-            for run_id in range(N_RUNS):
-                # Build RNG streams for this run
-                rng_food, rng_decision, rng_neuron_noise = build_rng_streams(cfg["world"]["rng_seed"] + run_id, has_brain_config)
-
-                world = make_world(cfg)
-                feeding_cfg = make_feeding_cfg(cfg)
-                world.feeding_cfg = feeding_cfg
-
-                worm = make_worm(world, cfg)
-                worm.active_sensors = make_sensor_cfg(cfg)
-                worm.brain = brain
-                if hasattr(worm.brain, "init"):
-                    if brain_init_spec is not None:
-                        worm.brain.init(worm, cfg, rng_neuron_noise, brain_init_spec=brain_init_spec)
-                    else:
-                        worm.brain.init(worm, cfg, rng_neuron_noise)
-
-                reset_sim(world, feeding_cfg, rng_food, worm)
-
-                # Setup world visualization (if enabled)
-                renderer = None
-                if viz_enabled:
-                    renderer = QtRenderer(world, worm, fps=VIZ_FPS)
-                worm.renderer = renderer
-
-                rec = MetricsRecorder.empty(worm, brain_init_spec)
-                rec.record(worm)
-
-                while worm.alive and worm.ticks < MAX_TICKS:
-                    # CHECKPOINT: Check for pause/exit
-                    if pause_mgr:
-                        pause_mgr.check_pause()
-
-                    world.step()
-                    worm.step_day(rng_decision)
-                    worm.ticks += 1
-                    rec.record(worm)
-                    
-                    # Frame pacing for visualization
-                    if renderer:
-                        renderer.wait_frame()
-
-                # Clean up renderer for this run
-                if renderer:
-                    renderer.close()
-
-                # ============================================================
-                # Per-tick tracking: save to HDF5 (if enabled)
-                # ============================================================
-                # Save comprehensive per-tick data to HDF5 (if enabled)
-                if ENABLE_PER_TICK_TRACKING:
-                    # Convert per_tick_rows to DataFrame for easier processing
-                    header = ["tick", "food_sensed_N", "food_sensed_E", "food_sensed_S", "food_sensed_W",
-                              "movement", "food_consumed", "energy", "manhattan_dist", "decision_made"] + \
-                             [f"conn_{src}_{tgt}" for src, tgt in rec.connections_to_track]
-                    per_tick_list = []
-                    for row in rec.per_tick_rows:
-                        per_tick_list.append({
-                            'tick': row[0],
-                            'food_sensed_N': row[1],
-                            'food_sensed_E': row[2],
-                            'food_sensed_S': row[3],
-                            'food_sensed_W': row[4],
-                            'movement': row[5],
-                            'food_consumed': row[6],
-                            'energy': row[7],
-                            'manhattan_dist': row[8],
-                            'decision_made': row[9],
-                        })
-                        # Add connection weights
-                        for idx, (src, tgt) in enumerate(rec.connections_to_track):
-                            per_tick_list[-1][f'conn_{src}_{tgt}'] = row[10 + idx]
-                    
-                    per_tick_df = pd.DataFrame(per_tick_list)
-                    save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id + 1, per_tick_df)
+        # Run simulation
+        
+        if num_workers is None:
+            for variant_id in range(N_VARIANTS):
+                print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
                 
-                # Collect heatmaps for this run (to write all at once per variant)
-                if ENABLE_HEAT_MAP_TRACKING:
-                    heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
+                (
+                    returned_variant_id,
+                    wiring_array,
+                    modulation_array,
+                    summary_array,
+                    heatmaps_all_runs,
+                    per_tick_all_runs,
+                ) = run_variant_worker(
+                    variant_id,
+                    brain_module_name,
+                    cfg,
+                    hdf5_path,
+                )
                 
-                # Collect final wiring for this run (to be written all at once per variant)
-                final_weights_dict = {}
-                for src, tgt in rec.connections_to_track:
-                    w = get_connection_weight(worm.brain, src, tgt)
-                    final_weights_dict[(src, tgt)] = w
-                final_weights_all_runs[run_id+1] = final_weights_dict
-
-                # Collect summary data for this run
-                summary_data.append({
-                    'run_id': run_id+1,
-                    'lifetime_ticks': worm.ticks,
-                    'foods': worm.eats,
-                    'distance': worm.distance,
-                    'final_energy': worm.energy,
-                    'moves_north': rec.moves_north,
-                    'moves_south': rec.moves_south,
-                    'moves_east': rec.moves_east,
-                    'moves_west': rec.moves_west,
-                    'food_sensed_north': rec.food_sensed_north,
-                    'food_sensed_east': rec.food_sensed_east,
-                    'food_sensed_south': rec.food_sensed_south,
-                    'food_sensed_west': rec.food_sensed_west,
-                    'decisions': rec.decisions,
-                    'correct_decisions': rec.correct_decisions,
-                })
-
-            # ============================================================
-            # Write variant data to HDF5
-            # ============================================================
-            
-            # Build wiring DataFrame and save to HDF5
-            df_wiring = pd.DataFrame(wiring_initial_data)
-            
-            # Add final weight columns for each run
-            for run_id, weights_dict in final_weights_all_runs.items():
-                column_name = f"weight_final_run_{run_id:04d}"
-                weights_list = []
-                for _, row in df_wiring.iterrows():
-                    src = int(row['src'])
-                    tgt = int(row['tgt'])
-                    weight = weights_dict.get((src, tgt), 0.0)
-                    weights_list.append(weight)
-                df_wiring[column_name] = weights_list
-            
-            save_wiring_to_hdf5(hdf5_path, variant_id + 1, df_wiring)
-            
-            # Save modulation data to HDF5
-            df_modulation = pd.DataFrame(modulation_data)
-            save_modulation_to_hdf5(hdf5_path, variant_id + 1, df_modulation)
-            
-            # Save summary for this variant to HDF5
-            df_summary = pd.DataFrame(summary_data)
-            save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, df_summary)
-            
-            # Save consolidated heatmaps for all runs in this variant to HDF5
-            if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
-                # Get grid dimensions from first run's heatmap
-                first_entering = list(heatmaps_all_runs.values())[0][0]
-                grid_height = max(y for y, x in first_entering.keys()) + 1
-                grid_width = max(x for y, x in first_entering.keys()) + 1
+                # Write to HDF5
+                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
+                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
+                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
                 
-                # Build DataFrame: field_y, field_x, then alternating entering/staying for each run
-                heatmap_rows = []
-                for y in range(grid_height):
-                    for x in range(grid_width):
-                        row_dict = {'field_y': y, 'field_x': x}
-                        for run_id in sorted(heatmaps_all_runs.keys()):
-                            entering_heatmap, staying_heatmap = heatmaps_all_runs[run_id]
-                            entering_count = entering_heatmap.get((y, x), 0)
-                            staying_count = staying_heatmap.get((y, x), 0)
-                            row_dict[f"entering_run_{run_id:04d}"] = entering_count
-                            row_dict[f"staying_run_{run_id:04d}"] = staying_count
-                        heatmap_rows.append(row_dict)
+                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
+                    for run_id, per_tick_data in per_tick_all_runs.items():
+                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
                 
-                df_heatmaps = pd.DataFrame(heatmap_rows)
-                save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, df_heatmaps)
-
+                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
+                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
+                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+                
+                print(" done")
+        
+        else:
+            results_by_variant = {}
+            completed = 0
+            
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {}
+                for variant_id in range(N_VARIANTS):
+                    future = executor.submit(
+                        run_variant_worker,
+                        variant_id,
+                        brain_module_name,
+                        cfg,
+                        hdf5_path,
+                    )
+                    futures[future] = variant_id
+                
+                for future in as_completed(futures):
+                    variant_id = futures[future]
+                    completed += 1
+                    result = future.result()
+                    results_by_variant[result[0]] = result
+                    print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
+            
+            print()
+            
+            for variant_id in range(N_VARIANTS):
+                (
+                    returned_variant_id,
+                    wiring_array,
+                    modulation_array,
+                    summary_array,
+                    heatmaps_all_runs,
+                    per_tick_all_runs,
+                ) = results_by_variant[variant_id]
+                
+                # Write to HDF5
+                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
+                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
+                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+                
+                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
+                    for run_id, per_tick_data in per_tick_all_runs.items():
+                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
+                
+                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
+                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
+                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+        
+        print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
+    
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
     finally:
         if pause_mgr:
             cleanup_pause_manager()
-
-    print("[batch] all variants done.")
 
 
 if __name__ == "__main__":
