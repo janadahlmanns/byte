@@ -169,13 +169,13 @@ def build_brain_spec(
     modulator_spec[(4, 9)].append((4, POTENTIATION_WEIGHT))
     
     # ============================================================
-    # Depression on Inhibitory Connections: n1, n2, n3, n4 → n10
+    # Potentiation on Inhibitory Connections: n1, n2, n3, n4 → n10
     # ============================================================
-    # Each inhibitory connection has depression triggered by its source
-    modulator_spec[(1, ALWAYS_ON)].append((1, DEPRESSION_WEIGHT))
-    modulator_spec[(2, ALWAYS_ON)].append((2, DEPRESSION_WEIGHT))
-    modulator_spec[(3, ALWAYS_ON)].append((3, DEPRESSION_WEIGHT))
-    modulator_spec[(4, ALWAYS_ON)].append((4, DEPRESSION_WEIGHT))
+    # Each inhibitory connection has potentiation triggered by its source
+    modulator_spec[(1, ALWAYS_ON)].append((1, POTENTIATION_WEIGHT))
+    modulator_spec[(2, ALWAYS_ON)].append((2, POTENTIATION_WEIGHT))
+    modulator_spec[(3, ALWAYS_ON)].append((3, POTENTIATION_WEIGHT))
+    modulator_spec[(4, ALWAYS_ON)].append((4, POTENTIATION_WEIGHT))
     
     # ============================================================
     # Potentiation on n10 → n6, n7, n8, n9 Connections
