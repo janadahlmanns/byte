@@ -66,49 +66,63 @@ def build_brain_spec():
     connections[:, :, 1] = 1.0
 
     # ---------------------------------
-    # manual wiring (input -> output)
+    # manual wiring (hard-coded connections)
     # ---------------------------------
     # Note: input sources are wired separately in decisionmaking_neuronal_algorithm.py
     # This connection matrix is only for neuron-to-neuron connections
     
-    # neurons 0-4 feed to neurons 5-9
-    # AND neurons 0-4 inhibit neuron 10
-    for i in range(5):
-        src = i
-        tgt = i + 5
-        if i == 0:
-            # Connection 0→5 (stay/eat): strong, reflexive, plastic
-            connections[src, tgt, 0] = 0.6
-        else:
-            # Connections 1-4→6-9 (directions): weak, for learning
-            connections[src, tgt, 0] = 1.0
-        connections[src, 10, 0] = -0.6  # inhibition to interneuron
+    # n0 → n5 (on_food → stay): strong, reflexive, NO plasticity
+    connections[0, 5, 0] = 1.0
+    
+    # n1-4 → n6-9 (directional sensors → directional outputs): weak, for learning
+    connections[1, 6, 0] = 0.6
+    connections[2, 7, 0] = 0.6
+    connections[3, 8, 0] = 0.6
+    connections[4, 9, 0] = 0.6
+    
+    # n1-4 → n10 (directional sensors inhibit interneuron)
+    connections[1, 10, 0] = -0.6
+    connections[2, 10, 0] = -0.6
+    connections[3, 10, 0] = -0.6
+    connections[4, 10, 0] = -0.6
 
-    # interneuron 10 excites output neurons 6-9 (but not 5 which is "stay")
-    for i in range(6, 10):
-        connections[10, i, 0] = 0.6  # weight
+    # n10 → n6-9 (interneuron excites all directional outputs)
+    connections[10, 6, 0] = 0.6
+    connections[10, 7, 0] = 0.6
+    connections[10, 8, 0] = 0.6
+    connections[10, 9, 0] = 0.6
 
     # ---------------------------------
     # plasticity parameters
     # ---------------------------------
-    eta = 0.0  # Global plasticity factor
+    eta = 0.01  # Global plasticity factor
     
-    # TEST SETUP: Connection from neuron 1 (food_north sensor) to neuron 6 (move_north output)
-    # should receive modulatory input from neuron 1 itself with mod_weight = +1.0
-    # This means: when food_north fires, it strengthens its own connection to move_north
-    # Expected behavior: Initially weak response to north food, strengthens over encounters
-    
-    # Plasticity setup: initialize modulator_spec
+    # Plasticity setup: initialize modulator_spec for all connections
     modulator_spec = {}
-       
-    # neurons 1-4 modulate their respective direction connections
-    # Additionally, each direction gets depression (-0.5) from the next direction neuron (circular)
-    for i in range(1, 5):
-        src = i
-        tgt = i + 5
-        next_neuron = 1 + ((i - 1 + 1) % 4)  # cycles: 1→2→3→4→1
-        modulator_spec[(src, tgt)] = [(next_neuron, -0.5)]
+    for src in range(n_neurons):
+        for tgt in range(n_neurons):
+            if connections[src, tgt, 0] != 0.0:
+                modulator_spec[(src, tgt)] = []
     
+    # n0 → n5: NO modulation (empty list already set)
+    
+    # n1-4 → n6-9: POTENTIATION triggered by source neurons
+    modulator_spec[(1, 6)].append((1, 0.5))   # n1 potentiates its own connection
+    modulator_spec[(2, 7)].append((2, 0.5))   # n2 potentiates its own connection
+    modulator_spec[(3, 8)].append((3, 0.5))   # n3 potentiates its own connection
+    modulator_spec[(4, 9)].append((4, 0.5))   # n4 potentiates its own connection
+    
+    # n1-4 → n10: POTENTIATION triggered by source neurons
+    modulator_spec[(1, 10)].append((1, 0.5))  # n1 potentiates its inhibitory connection
+    modulator_spec[(2, 10)].append((2, 0.5))  # n2 potentiates its inhibitory connection
+    modulator_spec[(3, 10)].append((3, 0.5))  # n3 potentiates its inhibitory connection
+    modulator_spec[(4, 10)].append((4, 0.5))  # n4 potentiates its inhibitory connection
+    
+    # n10 → n6-9: POTENTIATION triggered by n10
+    modulator_spec[(10, 6)].append((10, 0.5))  # n10 potentiates connection to n6
+    modulator_spec[(10, 7)].append((10, 0.5))  # n10 potentiates connection to n7
+    modulator_spec[(10, 8)].append((10, 0.5))  # n10 potentiates connection to n8
+    modulator_spec[(10, 9)].append((10, 0.5))  # n10 potentiates connection to n9
 
     return neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec
 

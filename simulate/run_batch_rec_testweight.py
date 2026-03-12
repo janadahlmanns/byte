@@ -24,13 +24,13 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/bidirectional_plasticity/rawdata/"
-SIMULATION_NAME   = "4dec_static_w_1_0"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/pipeline_check/"
+SIMULATION_NAME   = "C_w_noise_w_plasticity_no_regrow_hardcoded_eta_0_01"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
 BRAIN_INIT  = "4way_plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
 MAX_TICKS   = 2000
-N_RUNS      = 500
+N_RUNS      = 50
 
 
 # ============================================================
@@ -276,10 +276,36 @@ def main():
 
             reset_sim(world, feeding_cfg, rng_food, worm)
             
-            # DEBUG: Check initial connection weight on first run
-            if run_id == 0:
-                initial_weight = get_connection_weight(worm.brain, 1, 6)
-                print(f"[DEBUG run 0] Initial connection weight (1 to 6): {initial_weight:.6f}")
+            # DEBUG: Print brain wiring on first run
+            if run_id == 0 and brain_init_spec is not None:
+                print("\n" + "="*60)
+                print("BRAIN WIRING VERIFICATION (Run 0)")
+                print("="*60)
+                
+                # Print all connections
+                print("\nCONNECTIONS:")
+                neuron_params, connections, sensory_mapping, max_delay, eta, modulator_spec = brain_init_spec
+                for src in range(connections.shape[0]):
+                    for tgt in range(connections.shape[1]):
+                        weight = connections[src, tgt, 0]
+                        reliability = connections[src, tgt, 1]
+                        if weight != 0.0:
+                            conn_type = "EXCITATORY" if weight > 0 else "INHIBITORY"
+                            print(f"  n{src} → n{tgt}: weight={weight:.2f}, reliability={reliability:.2f} ({conn_type})")
+                
+                # Print modulation specifications
+                print("\nMODULATION:")
+                for (src, tgt), modulators in sorted(modulator_spec.items()):
+                    if modulators:
+                        mod_strs = []
+                        for mod_neuron, mod_weight in modulators:
+                            mod_type = "POTENTIATION" if mod_weight > 0 else "DEPRESSION"
+                            mod_strs.append(f"n{mod_neuron} ({mod_type}, weight={mod_weight:.2f})")
+                        print(f"  n{src} → n{tgt}: modulated by {', '.join(mod_strs)}")
+                    else:
+                        print(f"  n{src} → n{tgt}: NO MODULATION")
+                
+                print("\n" + "="*60 + "\n")
 
             # Setup world visualization (if enabled)
             renderer = None
