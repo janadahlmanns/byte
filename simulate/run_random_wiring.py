@@ -31,7 +31,7 @@ from .hdf5_utils import (
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/pipeline_check/rawdata/"
+EXPERIMENT_FOLDER = "data/convergence_check/"
 SIMULATION_NAME   = "random_lookup"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
@@ -46,14 +46,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 100                            # Number of randomized wiring variants to generate
+N_VARIANTS = 1                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 100
+N_RUNS      = 500
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -70,8 +70,8 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
-ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
+ENABLE_PER_TICK_TRACKING = False              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
+ENABLE_HEAT_MAP_TRACKING = False             # Enable tracking of Byte position heat map
 
 # ============================================================
 # helpers
