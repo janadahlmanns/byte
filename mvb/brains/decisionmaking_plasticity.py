@@ -333,9 +333,12 @@ def decide(world: World, worm, rng_decision, inputs: dict):
     # This is done at decision time to handle dynamic network changes
     warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(state)
     
-    # Track output history for stability detection
-    output_history = []
-    final_decision = None
+    # Track output history during propagation phase
+    propagation_history = []
+    # Track candidate neurons identified at end of propagation
+    candidate_neurons = None
+    # Track stability phase history
+    stability_history = []
     
     try:
         for tick in range(max_ticks):
@@ -349,20 +352,21 @@ def decide(world: World, worm, rng_decision, inputs: dict):
             for conn in state.connections:
                 conn.update(state.eta)
             
-            # Get current output state (without converting to decision yet)
+            # Get current output state
             current_output = _get_output_state(state)
-            
-            # Compute decision once from this output state (to ensure consistency)
-            current_decision = _output_to_decision(current_output, state, world, worm, rng_decision)
             
             # Build decision status message for visualization
             if tick < warmup_ticks:
                 decision_status = f"PROPAGATION PHASE ({tick+1}/{warmup_ticks})"
             else:
-                # Count how many ticks in the history match the current output
-                stable_count = sum(1 for h in output_history[-5:] if h == current_output) if output_history else 0
-                candidate_str = _format_decision_display(current_decision) if current_decision else "NONE"
-                decision_status = f"STABILITY CHECK ({stable_count}/3 stable): {candidate_str}"
+                # Identify candidates at start of stability phase
+                if candidate_neurons is None:
+                    candidate_neurons = _get_candidate_neurons(propagation_history)
+                
+                # Display candidate neurons
+                candidate_str = ",".join(str(n) for n in sorted(candidate_neurons)) if candidate_neurons else "NONE"
+                stability_tick = tick - warmup_ticks + 1
+                decision_status = f"STABILITY PHASE ({stability_tick}): candidates={candidate_str}"
             
             # ---------------- Single visualization per tick (after update, before commit) ----------------
             if _brain_renderer is not None:
@@ -382,18 +386,23 @@ def decide(world: World, worm, rng_decision, inputs: dict):
             for conn in state.connections:
                 conn.commit()
 
-            output_history.append(current_output)
+            # Store history in appropriate phase
+            if tick < warmup_ticks:
+                propagation_history.append(current_output)
+                # Keep only last 5 ticks of propagation
+                if len(propagation_history) > 5:
+                    propagation_history.pop(0)
+            else:
+                stability_history.append(current_output)
             
-            # Keep history to last 5 ticks
-            if len(output_history) > 5:
-                output_history.pop(0)
-            
-            # Only check for decision after warmup period
-            if tick >= warmup_ticks:
-                # Check for stability: same output in 3 out of last 5 ticks
-                if len(output_history) >= 3 and _is_output_stable(output_history):
-                    if current_decision is not None:
-                        return current_decision
+            # Check for decision during stability phase
+            if tick >= warmup_ticks and candidate_neurons:
+                # Check if candidates are stably active during stability phase
+                stable_neurons = _check_candidate_stability(candidate_neurons, stability_history)
+                if stable_neurons:
+                    stable_decision = _stable_outputs_to_decision(stable_neurons, state, world, worm, rng_decision)
+                    if stable_decision is not None:
+                        return stable_decision
             
             # CHECKPOINT 2: At end of each brain tick iteration
             try:
@@ -407,10 +416,13 @@ def decide(world: World, worm, rng_decision, inputs: dict):
         # User exited - return a random decision to avoid getting stuck
         return _get_random_decision(state, world, worm, rng_decision)
 
-    # Fallback: return decision based on final output state
-    final_output = _output_to_decision(output_history[-1] if output_history else None, state, world, worm, rng_decision)
-    if final_output is not None:
-        return final_output
+    # Fallback: check if candidates remained stable in stability phase
+    if candidate_neurons and stability_history:
+        stable_neurons = _check_candidate_stability(candidate_neurons, stability_history)
+        if stable_neurons:
+            stable_decision = _stable_outputs_to_decision(stable_neurons, state, world, worm, rng_decision)
+            if stable_decision is not None:
+                return stable_decision
     
     # No decision reached within max_ticks - pick a random movement to avoid getting stuck
     return _get_random_decision(state, world, worm, rng_decision)
@@ -428,59 +440,103 @@ def _get_output_state(state: BrainState) -> tuple:
     return tuple(state.neurons[i].activity for i in range(5, 10))
 
 
-def _is_output_stable(output_history: list) -> bool:
+def _get_candidate_neurons(propagation_history: list) -> set:
     """
-    Check if outputs are stable: same state in 3 out of last 5 ticks.
+    Identify candidate output neurons from propagation phase.
+    A neuron is a candidate if it was active in 3+ of the last 5 propagation ticks.
+    Returns a set of neuron IDs (5-9) that are candidates.
     """
-    if len(output_history) < 3:
-        return False
+    if len(propagation_history) < 3:
+        return set()
     
-    # Take last 5 (or fewer if not available yet)
-    recent = output_history[-5:] if len(output_history) >= 5 else output_history
+    # Take last 5 (or fewer if not available)
+    recent = propagation_history[-5:] if len(propagation_history) >= 5 else propagation_history
     
-    # Find the most common output state
-    from collections import Counter
-    state_counts = Counter(recent)
+    # Count how many times each neuron was active
+    neuron_counts = [0] * 5  # neurons 5-9 (indices 0-4 in output tuple)
+    for output_state in recent:
+        for i in range(5):
+            if output_state[i] > 0.0:
+                neuron_counts[i] += 1
     
-    # If any state appears 3+ times, we have stability
-    for state, count in state_counts.items():
-        if count >= 3:
-            return True
+    # A neuron is a candidate if active in 3+ ticks
+    candidates = set()
+    for i in range(5):
+        if neuron_counts[i] >= 3:
+            candidates.add(i + 5)  # Convert to actual neuron IDs (5-9)
     
-    return False
+    return candidates
 
 
-def _output_to_decision(output_state: tuple, state: BrainState, world: World, worm, rng_decision) -> tuple:
+def _check_candidate_stability(candidate_neurons: set, stability_history: list) -> set:
     """
-    Convert output state tuple to a decision.
+    Check which candidate neurons remain stably active during stability phase.
+    A candidate is deemed stable if it's active in the majority of stability phase ticks.
+    Returns a set of neuron IDs that are stably active.
     """
-    if output_state is None:
+    if not candidate_neurons or len(stability_history) < 3:
+        return set()
+    
+    # Count how many times each candidate was active during stability phase
+    neuron_counts = {neuron_id: 0 for neuron_id in candidate_neurons}
+    
+    for output_state in stability_history:
+        for neuron_id in candidate_neurons:
+            idx = neuron_id - 5  # Convert neuron ID to index in output tuple
+            if output_state[idx] > 0.0:
+                neuron_counts[neuron_id] += 1
+    
+    # A candidate is stable if active in majority (>50%) of stability ticks
+    stability_threshold = len(stability_history) / 2.0
+    stable = set()
+    for neuron_id, count in neuron_counts.items():
+        if count > stability_threshold:
+            stable.add(neuron_id)
+    
+    return stable
+
+
+def _stable_outputs_to_decision(stable_neurons: set, state: BrainState, world: World, worm, rng_decision) -> tuple:
+    """
+    Convert stable output neurons to a decision.
+    
+    Priority order:
+    1. If neuron 5 (stay) is stable → stay (regardless of other outputs)
+    2. Otherwise → randomly choose from stable movement neurons (6-9)
+    
+    Parameters
+    ----------
+    stable_neurons : set
+        Set of neuron IDs (5-9) that were:
+        1. Active in 3+ of last 5 propagation ticks (candidates)
+        2. Active in majority of stability phase ticks (confirmed stable)
+    """
+    if not stable_neurons:
         return None
     
-    # output_state is (neuron_5, neuron_6, neuron_7, neuron_8, neuron_9)
-    stay_neuron_activity = output_state[0]  # neuron 5
-    
-    if stay_neuron_activity > 0.0:
+    # Priority 1: If neuron 5 is stable, stay
+    if 5 in stable_neurons:
         return ("stay",)
-
-    move_map = {
-        1: "north",   # neuron 6
-        2: "east",    # neuron 7
-        3: "south",   # neuron 8
-        4: "west",    # neuron 9
-    }
-
-    active = []
-    for idx, direction in move_map.items():
-        if output_state[idx] > 0.0:
-            active.append((idx, direction))
     
-    if not active:
+    # Priority 2: Check stable movement neurons (6-9)
+    move_map = {
+        6: "north",
+        7: "east",
+        8: "south",
+        9: "west",
+    }
+    
+    active_movements = []
+    for neuron_id, direction in move_map.items():
+        if neuron_id in stable_neurons:
+            active_movements.append(direction)
+    
+    if not active_movements:
         return None
-
-    # Pick random active movement neuron
-    idx, direction = active[rng_decision.integers(len(active))]
-
+    
+    # Pick random stable movement
+    direction = active_movements[rng_decision.integers(len(active_movements))]
+    
     y, x = worm.y, worm.x
     dy, dx = {
         "north": (-1, 0),
@@ -488,10 +544,10 @@ def _output_to_decision(output_state: tuple, state: BrainState, world: World, wo
         "west": (0, -1),
         "east": (0, 1),
     }[direction]
-
+    
     ny = (y + dy) % world.height
     nx = (x + dx) % world.width
-
+    
     return ("move", (ny, nx), direction)
 
 
@@ -548,6 +604,3 @@ def _format_decision_display(decision: tuple) -> str:
     return str(decision)
 
 
-# ============================================================
-# (Old check_outputs function replaced by helper functions above)
-# ============================================================

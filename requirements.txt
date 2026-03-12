@@ -4,6 +4,9 @@ pyyaml
 pandas
 seaborn
 scipy
+scikit-posthocs
 pynput
 python-docx
 PySide6
+networkx
+networkx
