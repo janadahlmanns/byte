@@ -31,11 +31,11 @@ from .hdf5_utils import (
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/convergence_check/"
-SIMULATION_NAME   = "random_lookup"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/temp/"
+SIMULATION_NAME   = "random"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
+BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
 
 # ============================================================
 # WIRING RANDOMIZATION PARAMETERS
@@ -46,14 +46,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1                            # Number of randomized wiring variants to generate
+N_VARIANTS = 20                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 500
+N_RUNS      = 300
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -70,8 +70,8 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_TICK_TRACKING = False              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
-ENABLE_HEAT_MAP_TRACKING = False             # Enable tracking of Byte position heat map
+ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
+ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
 # ============================================================
 # helpers
@@ -282,6 +282,8 @@ class MetricsRecorder:
     food_sensed_east: int = 0
     food_sensed_south: int = 0
     food_sensed_west: int = 0
+    prev_on_food: bool = False  # Track if worm was on food before the action
+    prev_action_was_decision: bool = False  # Track if previous action was a decision
     decisions: int = 0
     correct_decisions: int = 0
 
@@ -342,6 +344,8 @@ class MetricsRecorder:
             food_sensed_east=0,
             food_sensed_south=0,
             food_sensed_west=0,
+            prev_on_food=False,
+            prev_action_was_decision=False,
             decisions=0,
             correct_decisions=0,
         )
@@ -378,27 +382,35 @@ class MetricsRecorder:
         if food_west:
             self.food_sensed_west += 1
         
-        # Track decision-making accuracy
-        # A decision only happens if food was sensed AND worm is not on food
+        # Track decision-making accuracy using new rules:
+        # Rule 1: Stay is a decision if worm is NOT on food CURRENTLY (before the stay action)
+        # Rule 2: Movement is a decision if ANY food is sensed on the 5 current sensing fields
+        # Rule 3: Decision is correct if it was deemed a decision AND worm is on food in NEXT tick
         on_food = sense.get("on_food", 0) > 0
         any_food_sensed = food_north or food_east or food_south or food_west
         
-        if any_food_sensed and not on_food:
-            # A decision opportunity exists (food was sensed)
+        # Check if the previous action was correct (in this tick after previous action)
+        if self.prev_action_was_decision and on_food:
+            self.correct_decisions += 1
+        
+        # Determine if current action (about to happen) is a decision
+        # We use prev_on_food because the decision is made BEFORE the action
+        stayed = (dy == 0 and dx == 0)
+        
+        is_decision = False
+        if stayed:
+            # Stay is a decision only if worm is NOT on food CURRENTLY (before the stay)
+            is_decision = not self.prev_on_food
+        else:
+            # Movement is a decision if ANY food is sensed on the 5 current sensing fields
+            is_decision = any_food_sensed
+        
+        if is_decision:
             self.decisions += 1
-            
-            # Check if movement direction matches a sensed direction
-            moved_north = dy < 0
-            moved_south = dy > 0
-            moved_east = dx > 0
-            moved_west = dx < 0
-            
-            # Correct decision: movement is in one of the sensed directions
-            if (moved_north and food_north) or \
-               (moved_south and food_south) or \
-               (moved_east and food_east) or \
-               (moved_west and food_west):
-                self.correct_decisions += 1
+        
+        # Update state for next tick
+        self.prev_on_food = on_food
+        self.prev_action_was_decision = is_decision
         
         # Track comprehensive per-tick data (if enabled)
         if ENABLE_PER_TICK_TRACKING and self.per_tick_data is not None:

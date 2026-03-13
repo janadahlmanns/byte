@@ -1282,8 +1282,7 @@ def draw_and_combine_networks(wiring_csv: str,
     
     # Save the combined image
     combined_img.save(output_path)
-    print(f"Combined network image saved to: {output_path}")
-    
+        
     # Clean up temporary files
     import os
     for tmp_path in individual_images:
