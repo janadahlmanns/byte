@@ -208,10 +208,14 @@ df_all = df_random.copy()
 # Load benchmark(s) if any
 benchmark_data = {}
 benchmark_names_map = {}  # Map HDF5 file to display name
+benchmark_wiring = {}  # Store wiring data for each benchmark
+benchmark_modulation = {}  # Store modulation data for each benchmark
 df_benchmarks = None
 
 if BENCHMARK_HDF5_FILES:
     benchmark_dfs = []
+    benchmark_hdf5_files = {}  # Track which file corresponds to which benchmark_group
+    
     for display_name, benchmark_hdf5_file in BENCHMARK_HDF5_FILES:
         if isinstance(benchmark_hdf5_file, str):
             benchmark_hdf5_file = Path(benchmark_hdf5_file)
@@ -234,7 +238,21 @@ if BENCHMARK_HDF5_FILES:
             df_benchmark["benchmark_folder_path"] = str(benchmark_hdf5_file.parent.resolve())
             benchmark_dfs.append(df_benchmark)
             benchmark_names_map[benchmark_group] = display_name  # Map for later lookup
+            benchmark_hdf5_files[benchmark_group] = benchmark_hdf5_file  # Store file path
             print(f"  Loaded {df_benchmark['variant'].nunique()} variants with {len(df_benchmark)} total runs")
+            
+            # Load wiring and modulation data for network visualization
+            try:
+                df_wiring = load_wiring_from_hdf5(benchmark_hdf5_file, "variant_01")
+                df_modulation = load_modulation_from_hdf5(benchmark_hdf5_file, "variant_01")
+                benchmark_wiring[benchmark_group] = df_wiring
+                benchmark_modulation[benchmark_group] = df_modulation
+                print(f"  Loaded network data: {len(df_wiring)} connections")
+            except Exception as e:
+                print(f"  Warning: Could not load network data for {display_name}: {e}")
+                benchmark_wiring[benchmark_group] = None
+                benchmark_modulation[benchmark_group] = None
+                
         except Exception as e:
             print(f"  Error loading benchmark: {e}")
             continue
@@ -851,29 +869,15 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
             cells[0].text = metric_name
             cells[1].text = value_str
         
-        # Add network visualization for this benchmark
-        doc.add_paragraph()  # Add spacing
-        
-        # Try to find and load benchmark HDF5 file
-        benchmark_hdf5_file = None
-        if df_benchmarks is not None and benchmark_name in df_benchmarks['benchmark_group'].values:
-            # Find the HDF5 file path from benchmark data
-            bench_sample = df_benchmarks[df_benchmarks['benchmark_group'] == benchmark_name].iloc[0]
-            if 'benchmark_folder_path' in bench_sample:
-                bench_folder = Path(bench_sample['benchmark_folder_path'])
-                # Look for .h5 file in that folder
-                h5_files = list(bench_folder.glob("*.h5"))
-                if h5_files:
-                    benchmark_hdf5_file = h5_files[0]
-        
-        if benchmark_hdf5_file and benchmark_hdf5_file.exists():
+        # Add network visualization for this benchmark if data was loaded
+        if benchmark_name in benchmark_wiring and benchmark_wiring[benchmark_name] is not None:
             try:
+                doc.add_paragraph()  # Add spacing
+                
                 # Load network configuration
                 neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
-                
-                # Load wiring and modulation from HDF5
-                df_wiring = load_wiring_from_hdf5(benchmark_hdf5_file, "variant_01")
-                df_modulation = load_modulation_from_hdf5(benchmark_hdf5_file, "variant_01")
+                df_wiring = benchmark_wiring[benchmark_name]
+                df_modulation = benchmark_modulation[benchmark_name]
                 
                 # Define which weight columns and labels to show
                 # Creates separate full-size figures then combines them
@@ -922,9 +926,7 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
             except FileNotFoundError as e:
                 print(f"Warning: Network config not found for benchmark {display_name}: {e}")
             except Exception as e:
-                print(f"Error loading network visualization for benchmark {display_name}: {e}")
-        else:
-            print(f"Warning: Could not find HDF5 file for benchmark {display_name}")
+                print(f"Error creating network visualization for benchmark {display_name}: {e}")
 
 #endregion  # closes 1.2
 #endregion  # closes 1
