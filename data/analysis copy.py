@@ -1,0 +1,1566 @@
+"""
+Analysis script for generating comprehensive simulation results report.
+
+This script generates a Word document report with analysis of simulation data,
+including statistical comparisons, visualizations, and descriptive statistics.
+"""
+
+# ==================================================================================================================================================
+# SECTION A) IMPORTS AND INPUTS
+# ==================================================================================================================================================
+
+import h5py
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from scipy.stats import skew, kurtosis, shapiro, f_oneway, kruskal, mannwhitneyu, ttest_ind, studentized_range
+try:
+    from scipy.integrate import trapezoid as trapz
+except ImportError:
+    from scipy.integrate import trapz
+from statsmodels.stats.multitest import multipletests
+from itertools import combinations
+import matplotlib.pyplot as plt
+
+# Add workspace root to path for imports
+_current_path = Path(__file__).resolve()
+_workspace_root = None
+while _current_path.parent != _current_path:
+    if (_current_path / "data").exists() and (_current_path / "simulate").exists():
+        _workspace_root = _current_path
+        break
+    _current_path = _current_path.parent
+
+if _workspace_root:
+    import sys
+    sys.path.insert(0, str(_workspace_root))
+    from analysis_tools.network_visualization import network_viz
+
+# =====================================================================
+# User Configuration and Data Selection
+# =====================================================================
+
+# Experiment name
+EXPERIMENT_NAME = "random_wiring"  # Used for file naming and report titles
+
+# HDF5 file containing variant data (omit .h5 extension)
+EXPERIMENT_HDF5 = "2026-03-13_09-51-21_random"
+
+# Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
+# Leave as empty list [] if no benchmarks to compare
+BENCHMARK_HDF5_FILES = [
+    ("Hard-wired Lookup", "2026-03-13_09-50-50_random_lookup"),
+]
+
+# Network visualization configuration (e.g., '11' for network_viz_11.yaml)
+NETWORK_VIZ_CONFIG = "11"
+RUNS_TO_SHOW_IN_DETAIL = [1,2,3]
+
+# Color scheme for visualizations
+PRIMARY_COLOR = "#0B3D2E"      # Dark green for successful variants
+SECONDARY_COLOR = "#8B3A3A"    # Wine red for unsuccessful variants
+TERTIARY_COLOR = "#4A7C8C"     # Grayish ice blue for benchmarks
+
+
+# ==================================================================================================================================================
+# SECTION B) HELPER FUNCTIONS
+# ==================================================================================================================================================
+
+
+def _find_hdf5_file(hdf5_name: str, search_dir: Path = None) -> Path:
+    """
+    Locate HDF5 file by name (with or without .h5 extension).
+    
+    Args:
+        hdf5_name: Filename without .h5 extension
+        search_dir: Directory to search in. If None, searches parent directory of script's directory
+    
+    Returns:
+        Path to the HDF5 file
+        
+    Raises:
+        FileNotFoundError: If file not found
+    """
+    if search_dir is None:
+        # Script is in data/temp/analysis/, search in data/temp/
+        search_dir = Path(__file__).resolve().parent.parent
+    
+    # Try with .h5 extension
+    hdf5_path = search_dir / f"{hdf5_name}.h5"
+    if hdf5_path.exists():
+        return hdf5_path
+    
+    # Try without modification (in case user included extension)
+    hdf5_path = search_dir / hdf5_name
+    if hdf5_path.exists():
+        return hdf5_path
+    
+    raise FileNotFoundError(f"HDF5 file not found: {hdf5_name} in {search_dir}")
+
+
+def _load_hdf5_variants_to_dataframe(hdf5_path: Path, source_label: str = None) -> pd.DataFrame:
+    """
+    Load all variants from HDF5 file into a single DataFrame.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        source_label: Optional label to add as 'source' column (e.g., 'random', 'benchmark_name')
+    
+    Returns:
+        DataFrame with columns from summary dataset, plus 'variant' and optional 'source' columns
+    """
+    all_data = []
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        # Find all variant groups (variant_01, variant_02, etc.)
+        variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
+        
+        for variant_name in variant_names:
+            variant_group = f[variant_name]
+            
+            # Load summary dataset if it exists
+            if 'summary' in variant_group:
+                summary_data = variant_group['summary'][:]
+                
+                # Convert structured array to DataFrame
+                df_variant = pd.DataFrame(summary_data)
+                
+                # Add variant identifier
+                df_variant['variant'] = variant_name
+                
+                # Add source label if provided
+                if source_label is not None:
+                    df_variant['source'] = source_label
+                
+                all_data.append(df_variant)
+    
+    if not all_data:
+        raise ValueError(f"No variant data found in {hdf5_path}")
+    
+    df = pd.concat(all_data, ignore_index=True)
+    return df
+
+
+def _calculate_overview_statistics(data_series: pd.Series) -> dict:
+    """
+    Calculate comprehensive overview statistics for a data series.
+    
+    Args:
+        data_series: Pandas Series of numeric data
+    
+    Returns:
+        Dictionary with all statistics
+    """
+    values = data_series.values
+    
+    return {
+        'mean': values.mean(),
+        'median': np.median(values),
+        'std': values.std(),
+        'min': values.min(),
+        'max': values.max(),
+        'range': values.max() - values.min(),
+        'iqr': np.percentile(values, 75) - np.percentile(values, 25),
+        'p5': np.percentile(values, 5),
+        'p25': np.percentile(values, 25),
+        'p75': np.percentile(values, 75),
+        'p95': np.percentile(values, 95),
+        'skewness': skew(values),
+        'kurtosis': kurtosis(values),
+        'cv': (values.std() / values.mean()) * 100,
+    }
+
+
+def _calculate_per_variant_statistics(df: pd.DataFrame, metric_col: str) -> dict:
+    """
+    Calculate statistics for each variant separately, returning min/max/avg of those values.
+    
+    Args:
+        df: DataFrame with variant column and metric column
+        metric_col: Column name to calculate statistics on
+    
+    Returns:
+        Dictionary with per-variant stats: {stat_key: {'min': (value, variant_name), 'max': (value, variant_name), 'avg': value}}
+    """
+    per_variant_stats = {}
+    
+    # Calculate each statistic for each variant
+    for variant_name in sorted(df['variant'].unique()):
+        variant_data = df[df['variant'] == variant_name][metric_col]
+        stats = _calculate_overview_statistics(variant_data)
+        per_variant_stats[variant_name] = stats
+    
+    # Aggregate: for each stat, find min/max/avg across variants
+    all_stat_keys = ['mean', 'median', 'std', 'min', 'max', 'range', 'iqr', 'p5', 'p25', 'p75', 'p95', 'skewness', 'kurtosis', 'cv']
+    aggregated = {}
+    
+    for stat_key in all_stat_keys:
+        values = [per_variant_stats[v][stat_key] for v in per_variant_stats.keys()]
+        variant_names = sorted(per_variant_stats.keys())
+        
+        min_value = min(values)
+        max_value = max(values)
+        avg_value = np.mean(values)
+        
+        min_variant = variant_names[values.index(min_value)]
+        max_variant = variant_names[values.index(max_value)]
+        
+        aggregated[stat_key] = {
+            'min': (min_value, min_variant),
+            'max': (max_value, max_variant),
+            'avg': avg_value,
+        }
+    
+    return aggregated
+
+
+def _get_variant_numbers(variant_list: list) -> str:
+    """
+    Convert variant names to simplified numbers for display.
+    
+    Args:
+        variant_list: List of variant names (e.g., ['variant_01', 'variant_03'])
+    
+    Returns:
+        Comma-separated string of variant numbers without leading zeros (e.g., '1, 3')
+    """
+    numbers = [v.replace('variant_', '') for v in variant_list]
+    # Remove leading zeros for cleaner display
+    numbers = [str(int(n)) for n in numbers]
+    return ", ".join(numbers)
+
+
+def analyze_per_group_metric(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str) -> None:
+    """
+    Box plot with jitter overlay per group, summary stats table, and comparative stats table.
+    Groups: unsuccessful, successful, plus each benchmark source as its own group.
+    """
+    # Helper function to classify effect sizes
+    def classify_effect_size(effect_size_value: float, effect_size_type: str) -> str:
+        """
+        Classify effect size as insignificant, small, medium, or large based on type.
+        """
+        es_abs = abs(effect_size_value)
+        
+        if effect_size_type == "Cohen's d":
+            if es_abs < 0.2:
+                return "insignificant"
+            elif es_abs < 0.5:
+                return "small"
+            elif es_abs < 0.8:
+                return "medium"
+            else:
+                return "large"
+        elif effect_size_type == "Rank-Biserial r":
+            if es_abs < 0.11:
+                return "insignificant"
+            elif es_abs < 0.28:
+                return "small"
+            elif es_abs < 0.43:
+                return "medium"
+            else:
+                return "large"
+        elif effect_size_type == "Eta-squared":
+            if es_abs < 0.01:
+                return "insignificant"
+            elif es_abs < 0.06:
+                return "small"
+            elif es_abs < 0.14:
+                return "medium"
+            else:
+                return "large"
+        elif effect_size_type == "Epsilon-squared":
+            if es_abs < 0.01:
+                return "insignificant"
+            elif es_abs < 0.08:
+                return "small"
+            elif es_abs < 0.26:
+                return "medium"
+            else:
+                return "large"
+        else:
+            return "unknown"
+    
+    # Dynamically discover and extract all groups from the data, excluding 'other'
+    all_unique_groups = [g for g in sorted(df_data['group'].unique()) if g != 'other']
+    
+    # Mapping for display names - capitalize experiment groups, keep benchmark names as-is
+    display_name_map = {
+        'unsuccessful': 'Unsuccessful',
+        'successful': 'Successful',
+        'other': 'Other',
+    }
+    
+    group_data = {}
+    group_order = []
+    
+    for group_name in all_unique_groups:
+        df_group = df_data[df_data['group'] == group_name]
+        if len(df_group) > 0:
+            # Use display name if available, otherwise use group name as-is (for benchmarks)
+            display_name = display_name_map.get(group_name, group_name)
+            group_data[display_name] = df_group[metric_col].values
+            group_order.append(display_name)
+    
+    # --- Plot: box plot with jitter ---
+    color_map = {
+        'Unsuccessful': SECONDARY_COLOR,
+        'Successful': PRIMARY_COLOR,
+    }
+    default_bench_color = TERTIARY_COLOR
+    
+    fig, ax = plt.subplots(figsize=(10, 7))
+    positions = list(range(len(group_order)))
+    
+    # Box plots
+    bp = ax.boxplot(
+        [group_data[g] for g in group_order],
+        positions=positions,
+        widths=0.5,
+        patch_artist=True,
+        showfliers=False,
+    )
+    for i, g in enumerate(group_order):
+        color = color_map.get(g, default_bench_color)
+        bp['boxes'][i].set_facecolor(color)
+        bp['boxes'][i].set_alpha(0.3)
+        bp['medians'][i].set_color('black')
+    
+    # Jitter overlay
+    for i, g in enumerate(group_order):
+        values = group_data[g]
+        color = color_map.get(g, default_bench_color)
+        jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
+        ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=3)
+    
+    ax.set_xticks(positions)
+    ax.set_xticklabels(group_order, fontsize=11)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} by Group', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    output_path = figures_dir / f'groups_{filename_str}.png'
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    doc.add_picture(str(output_path), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # --- Summary statistics table ---
+    from scipy.stats import sem as scipy_sem
+    
+    stat_names = ['N', 'Mean', 'Std Dev', 'SEM', 'Median', 'Min', 'Max', 'IQR', 'P25', 'P75', 'Skewness', 'Kurtosis']
+    stats_per_group = {}
+    for g in group_order:
+        v = group_data[g]
+        stats_per_group[g] = {
+            'N': len(v),
+            'Mean': np.mean(v),
+            'Std Dev': np.std(v, ddof=1),
+            'SEM': scipy_sem(v),
+            'Median': np.median(v),
+            'Min': np.min(v),
+            'Max': np.max(v),
+            'IQR': np.percentile(v, 75) - np.percentile(v, 25),
+            'P25': np.percentile(v, 25),
+            'P75': np.percentile(v, 75),
+            'Skewness': skew(v),
+            'Kurtosis': kurtosis(v),
+        }
+    
+    table = doc.add_table(rows=len(stat_names) + 1, cols=len(group_order) + 1)
+    table.style = 'Light Grid Accent 1'
+    table.rows[0].cells[0].text = 'Statistic'
+    for col_idx, g in enumerate(group_order, 1):
+        table.rows[0].cells[col_idx].text = g
+    for row_idx, stat_name in enumerate(stat_names, 1):
+        table.rows[row_idx].cells[0].text = stat_name
+        for col_idx, g in enumerate(group_order, 1):
+            val = stats_per_group[g][stat_name]
+            if stat_name == 'N':
+                table.rows[row_idx].cells[col_idx].text = str(int(val))
+            elif stat_name in ['Skewness', 'Kurtosis']:
+                table.rows[row_idx].cells[col_idx].text = f'{val:.3f}'
+            else:
+                table.rows[row_idx].cells[col_idx].text = f'{val:.2f}'
+    
+    doc.add_paragraph()
+    
+    # --- Comparative statistics ---
+    # Test normality per group (Shapiro-Wilk)
+    normality_results = {}
+    all_normal = True
+    for g in group_order:
+        v = group_data[g]
+        if len(v) >= 3:
+            stat_val, p_val = shapiro(v)
+            normality_results[g] = (stat_val, p_val)
+            if p_val < 0.05:
+                all_normal = False
+        else:
+            normality_results[g] = (np.nan, np.nan)
+            all_normal = False
+    
+    # Build normality results table
+    doc.add_paragraph('Normality Testing (Shapiro-Wilk):', style='Heading 3')
+    norm_table = doc.add_table(rows=len(group_order) + 1, cols=3)
+    norm_table.style = 'Light Grid Accent 1'
+    norm_table.rows[0].cells[0].text = 'Group'
+    norm_table.rows[0].cells[1].text = 'W statistic'
+    norm_table.rows[0].cells[2].text = 'p-value'
+    for row_idx, g in enumerate(group_order, 1):
+        norm_table.rows[row_idx].cells[0].text = g
+        w, p = normality_results[g]
+        norm_table.rows[row_idx].cells[1].text = f'{w:.4f}' if not np.isnan(w) else 'N/A'
+        norm_table.rows[row_idx].cells[2].text = f'{p:.2e}' if not np.isnan(p) else 'N/A'
+    
+    doc.add_paragraph()
+    
+    # Determine which tests to use based on group count and normality
+    group_arrays = [group_data[g] for g in group_order]
+    n_groups = len(group_order)
+    
+    if n_groups == 2:
+        # Two groups: t-test (normal) or Mann-Whitney U (non-normal)
+        if all_normal:
+            omnibus_name = "Welch's t-test"
+            omnibus_stat, omnibus_p = ttest_ind(group_arrays[0], group_arrays[1], equal_var=False)
+            
+            # Cohen's d effect size
+            mean_diff = np.mean(group_arrays[0]) - np.mean(group_arrays[1])
+            n1, n2 = len(group_arrays[0]), len(group_arrays[1])
+            var1, var2 = np.var(group_arrays[0], ddof=1), np.var(group_arrays[1], ddof=1)
+            pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
+            effect_size = mean_diff / pooled_std if pooled_std > 0 else 0
+            effect_size_label = "Cohen's d"
+        else:
+            omnibus_name = 'Mann-Whitney U'
+            omnibus_stat, omnibus_p = mannwhitneyu(group_arrays[0], group_arrays[1], alternative='two-sided')
+            
+            # Rank-biserial correlation as effect size
+            n1, n2 = len(group_arrays[0]), len(group_arrays[1])
+            effect_size = 1 - (2 * omnibus_stat) / (n1 * n2)
+            effect_size_label = 'Rank-Biserial r'
+    else:
+        # More than two groups: ANOVA (normal) or Kruskal-Wallis (non-normal)
+        if all_normal:
+            omnibus_name = 'One-way ANOVA'
+            omnibus_stat, omnibus_p = f_oneway(*group_arrays)
+            
+            # Eta-squared effect size
+            grand_mean = np.mean(np.concatenate(group_arrays))
+            ss_between = sum(len(arr) * (np.mean(arr) - grand_mean) ** 2 for arr in group_arrays)
+            ss_total = sum(np.sum((arr - grand_mean) ** 2) for arr in group_arrays)
+            effect_size = ss_between / ss_total if ss_total > 0 else 0
+            effect_size_label = "Eta-squared"
+        else:
+            omnibus_name = 'Kruskal-Wallis'
+            omnibus_stat, omnibus_p = kruskal(*group_arrays)
+            
+            # Epsilon-squared effect size
+            N = sum(len(arr) for arr in group_arrays)
+            k = len(group_arrays)
+            effect_size = (omnibus_stat - k + 1) / (N - k) if (N - k) > 0 else 0
+            effect_size_label = "Epsilon-squared"
+    
+    distribution_str = 'normally distributed' if all_normal else 'not normally distributed'
+    doc.add_paragraph(f'Data is {distribution_str} (alpha=0.05).')
+    doc.add_paragraph()
+    
+    doc.add_paragraph(f'{omnibus_name} (omnibus test):', style='Heading 3')
+    omnibus_table = doc.add_table(rows=2, cols=4)
+    omnibus_table.style = 'Light Grid Accent 1'
+    omnibus_table.rows[0].cells[0].text = 'Test Name'
+    omnibus_table.rows[0].cells[1].text = 'Test Statistic'
+    omnibus_table.rows[0].cells[2].text = 'p-value'
+    omnibus_table.rows[0].cells[3].text = effect_size_label
+    omnibus_table.rows[1].cells[0].text = omnibus_name
+    omnibus_table.rows[1].cells[1].text = f'{omnibus_stat:.4f}'
+    omnibus_table.rows[1].cells[2].text = f'{omnibus_p:.2e}'
+    omnibus_table.rows[1].cells[3].text = f'{effect_size:.4f} ({classify_effect_size(effect_size, effect_size_label)})'
+    doc.add_paragraph()
+    
+    # Post-hoc testing only if omnibus test is significant
+    if omnibus_p < 0.05:
+        # Determine post-hoc test
+        if n_groups == 2:
+            # For 2 groups, omnibus test IS the pairwise test
+            posthoc_name = omnibus_name
+            pairwise_results = [(group_order[0], group_order[1], omnibus_stat, omnibus_p, effect_size)]
+        else:
+            # For >2 groups, do pairwise comparisons
+            if all_normal:
+                posthoc_name = "Welch's t-test"
+                posthoc_func = lambda a, b: ttest_ind(a, b, equal_var=False)
+                
+                # Function to compute Cohen's d for pairwise
+                def compute_cohens_d(a, b):
+                    mean_diff = np.mean(a) - np.mean(b)
+                    n1, n2 = len(a), len(b)
+                    var1, var2 = np.var(a, ddof=1), np.var(b, ddof=1)
+                    pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
+                    return mean_diff / pooled_std if pooled_std > 0 else 0
+                
+                def effect_size_func(a, b, stat):
+                    return compute_cohens_d(a, b)
+                
+                effect_size_label_posthoc = "Cohen's d"
+            else:
+                posthoc_name = 'Mann-Whitney U'
+                posthoc_func = lambda a, b: mannwhitneyu(a, b, alternative='two-sided')
+                
+                # Function to compute rank-biserial for pairwise
+                def effect_size_func(a, b, stat):
+                    n1, n2 = len(a), len(b)
+                    return 1 - (2 * stat) / (n1 * n2)
+                
+                effect_size_label_posthoc = 'Rank-Biserial r'
+            
+            pairwise_results = []
+            for g1, g2 in combinations(group_order, 2):
+                stat_val, p_val = posthoc_func(group_data[g1], group_data[g2])
+                es = effect_size_func(group_data[g1], group_data[g2], stat_val)
+                pairwise_results.append((g1, g2, stat_val, p_val, es))
+            
+            # Apply appropriate multiple comparisons correction for >2 groups
+            if n_groups > 2:
+                if all_normal:
+                    # For parametric tests: Use Tukey's HSD
+                    k = n_groups
+                    N = sum(len(group_data[g]) for g in group_order)
+                    df_error = N - k
+                    
+                    corrected_results = []
+                    for (g1, g2, stat_val, p_val, es) in pairwise_results:
+                        # Apply Tukey's HSD correction using studentized range distribution
+                        corrected_p = studentized_range.sf(abs(stat_val), k, df_error)
+                        corrected_p = min(corrected_p, 1.0)
+                        corrected_results.append((g1, g2, stat_val, corrected_p, es))
+                    
+                    pairwise_results = corrected_results
+                    posthoc_name = f"{posthoc_name} (Tukey's HSD correction)"
+                else:
+                    # For non-parametric tests: Use Holm-Bonferroni correction
+                    p_values = [result[3] for result in pairwise_results]
+                    reject, corrected_p_values, _, _ = multipletests(p_values, alpha=0.05, method='holm')
+                    
+                    corrected_results = []
+                    for idx, (g1, g2, stat_val, p_val, es) in enumerate(pairwise_results):
+                        corrected_results.append((g1, g2, stat_val, corrected_p_values[idx], es))
+                    
+                    pairwise_results = corrected_results
+                    posthoc_name = f"{posthoc_name} (Holm-Bonferroni correction)"
+        
+        doc.add_paragraph(f'Pairwise Post-Hoc ({posthoc_name}):', style='Heading 3')
+        posthoc_table = doc.add_table(rows=len(pairwise_results) + 1, cols=5)
+        posthoc_table.style = 'Light Grid Accent 1'
+        posthoc_table.rows[0].cells[0].text = 'Group 1'
+        posthoc_table.rows[0].cells[1].text = 'Group 2'
+        posthoc_table.rows[0].cells[2].text = 'Statistic'
+        posthoc_table.rows[0].cells[3].text = 'p-value'
+        posthoc_table.rows[0].cells[4].text = effect_size_label_posthoc if n_groups > 2 else effect_size_label
+        for row_idx, result in enumerate(pairwise_results, 1):
+            g1, g2, stat_val, p_val, es = result
+            posthoc_table.rows[row_idx].cells[0].text = g1
+            posthoc_table.rows[row_idx].cells[1].text = g2
+            posthoc_table.rows[row_idx].cells[2].text = f'{stat_val:.4f}'
+            posthoc_table.rows[row_idx].cells[3].text = f'{p_val:.2e}'
+            es_label = effect_size_label_posthoc if n_groups > 2 else effect_size_label
+            posthoc_table.rows[row_idx].cells[4].text = f'{es:.4f} ({classify_effect_size(es, es_label)})'
+        doc.add_paragraph()
+    else:
+        doc.add_paragraph(f'Omnibus test not significant (p >= 0.05). No post-hoc testing performed.')
+        doc.add_paragraph()
+
+
+def analyze_survival_race(df_data: pd.DataFrame) -> None:
+    """
+    Plot cumulative survival for each variant.
+    Each line shows how many runs are still alive at each tick.
+    """
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    # Create unique identifier combining source and variant
+    df_data['unique_variant'] = df_data['source'] + '_' + df_data['variant']
+    
+    # Get all unique groups and separate into experiment groups and benchmarks
+    all_groups = sorted(df_data['group'].unique())
+    experiment_groups = [g for g in all_groups if g in ['successful', 'unsuccessful', 'other']]
+    benchmark_groups = [g for g in all_groups if g not in ['successful', 'unsuccessful', 'other', 'unknown']]
+    
+    # Color mapping by group - dynamic based on actual groups
+    color_map = {
+        'successful': PRIMARY_COLOR,
+        'unsuccessful': SECONDARY_COLOR,
+        'other': '#808080',
+    }
+    for benchmark_group in benchmark_groups:
+        color_map[benchmark_group] = TERTIARY_COLOR
+    
+    # Z-order mapping: higher for more important groups (benchmarks are always top)
+    zorder_map = {
+        'other': 1,
+        'unsuccessful': 2,
+        'successful': 3,
+    }
+    for idx, benchmark_group in enumerate(sorted(benchmark_groups)):
+        zorder_map[benchmark_group] = 4 + idx
+    
+    # Plot one line per unique variant
+    for unique_var in sorted(df_data['unique_variant'].unique()):
+        variant_data = df_data[df_data['unique_variant'] == unique_var]
+        survival_times = variant_data['lifetime_ticks'].values
+        group = variant_data['group'].iloc[0]
+        color = color_map.get(group, '#808080')
+        zorder = zorder_map.get(group, 1)
+        
+        # Create tick array from 0 to max lifetime
+        max_tick = int(survival_times.max())
+        ticks = np.arange(0, max_tick + 1)
+        
+        # Count how many runs are still alive at each tick
+        alive_counts = np.array([(survival_times >= t).sum() for t in ticks])
+        
+        # Plot this variant's survival curve with z-order
+        ax.plot(ticks, alive_counts, color=color, zorder=zorder)
+    
+    # Create custom legend dynamically based on actual groups
+    from matplotlib.lines import Line2D
+    legend_elements = []
+    
+    # Add experiment groups in order
+    if 'successful' in color_map:
+        legend_elements.append(Line2D([0], [0], color=PRIMARY_COLOR, linewidth=2, label='Successful'))
+    if 'unsuccessful' in color_map:
+        legend_elements.append(Line2D([0], [0], color=SECONDARY_COLOR, linewidth=2, label='Unsuccessful'))
+    if 'other' in color_map:
+        legend_elements.append(Line2D([0], [0], color='#808080', linewidth=2, label='Other'))
+    
+    # Add benchmark groups
+    for benchmark_group in sorted(benchmark_groups):
+        legend_elements.append(Line2D([0], [0], color=TERTIARY_COLOR, linewidth=2, label=benchmark_group))
+    
+    ax.legend(handles=legend_elements, loc='upper right')
+    
+    ax.set_xlabel('Ticks')
+    ax.set_ylabel('Runs Alive')
+    ax.set_title('Survival Race')
+    ax.grid(True, alpha=0.3)
+    
+    # Save figure
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    output_path = figures_dir / 'survival_race.png'
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Add to document
+    doc.add_picture(str(output_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+
+def analyze_wiring(wiring_data: dict, modulation_data: dict, runs_to_show: list, benchmark_name: str = "benchmark") -> None:
+    """
+    Analyze and visualize wiring data for specified runs.
+    
+    Generates a 2x2 grid of network plots (initial + 3 runs) with shared legend,
+    saves to file, and adds to the report.
+    
+    Args:
+        wiring_data: Dictionary mapping variant_name -> structured array with wiring
+        modulation_data: Dictionary mapping variant_name -> structured array with modulation
+        runs_to_show: List of run IDs to include in detailed analysis (e.g., [1, 2, 3])
+        benchmark_name: Name of the benchmark for file naming
+    """
+    import tempfile
+    
+    # Extract wiring data - assume single variant in dict
+    if not wiring_data:
+        return
+    
+    variant_name = list(wiring_data.keys())[0]
+    wiring_array = wiring_data[variant_name]
+    
+    # Convert structured array to DataFrame
+    df_wiring = pd.DataFrame(wiring_array)
+    
+    # Load modulation data if available
+    df_modulation = None
+    if modulation_data and variant_name in modulation_data:
+        modulation_array = modulation_data[variant_name]
+        df_modulation = pd.DataFrame(modulation_array)
+    
+    # Load network configuration
+    try:
+        neuron_positions, neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+    except Exception:
+        # Fallback if config loading fails
+        return
+    
+    # Define weight columns and labels for the 2x2 grid
+    weight_columns = ['weight_initial']
+    panel_labels = ['Initial Wiring']
+    
+    for run_id in runs_to_show[:3]:  # Up to 3 additional runs
+        weight_col = f'weight_final_run_{run_id:04d}'
+        if weight_col in df_wiring.columns:
+            weight_columns.append(weight_col)
+            panel_labels.append(f'Run {run_id} - Final')
+    
+    # Ensure we have exactly 4 panels (initial + up to 3 runs)
+    weight_columns = weight_columns[:4]
+    panel_labels = panel_labels[:4]
+    
+    # Create output directory for figures
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    
+    # Determine output filename - use the benchmark name
+    output_filename = f'wiring_{benchmark_name.replace(" ", "_")}.png'
+    output_path = figures_dir / output_filename
+    
+    # Temporarily save wiring and modulation data to CSV for network_viz function
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wiring_csv = Path(tmpdir) / "wiring.csv"
+        df_wiring.to_csv(wiring_csv, index=False)
+        
+        # Save modulation data if available
+        modulation_csv = None
+        if df_modulation is not None and len(df_modulation) > 0:
+            modulation_csv = Path(tmpdir) / "modulation.csv"
+            df_modulation.to_csv(modulation_csv, index=False)
+            modulation_csv = str(modulation_csv)
+        
+        # Generate network visualization with 2x2 grid and shared legend
+        network_viz.draw_and_combine_networks(
+            wiring_csv=str(wiring_csv),
+            weight_columns=weight_columns,
+            panel_labels=panel_labels,
+            output_path=str(output_path),
+            modulation_csv=modulation_csv,
+            neuron_positions=neuron_positions,
+            neuron_types=neuron_types,
+            title=f'Network Wiring - {benchmark_name}'
+        )
+    
+    doc.add_picture(str(output_path), width=6.5 * 914400)  # ~6.5 inches in EMUs
+    doc.add_paragraph()
+
+
+def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, filename_str: str, df_groups: pd.DataFrame) -> bool:
+    """
+    Analyze per-tick metrics (e.g., energy per tick) for different groups.
+    
+    Plots individual run curves with group means and 95% CI bands.
+    Calculates AUC for each run and performs statistical comparison between groups.
+    
+    Args:
+        hdf5_files: Dict mapping source (experiment/benchmark_name) -> path to HDF5 file
+        metric_name: Name of the metric column in per_tick data (e.g., 'energy')
+        y_label: Label for y-axis in plots
+        filename_str: Base name for output files
+        df_groups: DataFrame with group assignments (must have 'group' and 'variant' columns)
+    
+    Returns:
+        True if per_tick data was found and analyzed, False if skipped (no per_tick data)
+    """
+    
+    # Check if per_tick data exists by attempting to load from first variant/run of experiment
+    experiment_hdf5_path = None
+    for source, path in hdf5_files.items():
+        if source == 'experiment':
+            experiment_hdf5_path = path
+            break
+    
+    if not experiment_hdf5_path:
+        return False
+    
+    # Check if per_tick data exists in the first variant and first run
+    try:
+        with h5py.File(experiment_hdf5_path, 'r') as f:
+            # Get first variant
+            variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
+            if not variant_keys:
+                return False
+            
+            first_variant = variant_keys[0]
+            variant_group = f[first_variant]
+            
+            # Get first run
+            run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+            if not run_keys:
+                return False
+            
+            first_run = run_keys[0]
+            run_group = variant_group[first_run]
+            
+            # Check if per_tick data exists
+            if 'per_tick' not in run_group:
+                return False
+            
+            # Verify the metric column exists
+            per_tick_data = run_group['per_tick']
+            if isinstance(per_tick_data, h5py.Dataset):
+                # HDF5 table/dataset
+                if len(per_tick_data) == 0:
+                    return False
+                # Check if it has the metric column
+                if metric_name not in per_tick_data.dtype.names:
+                    return False
+    except Exception:
+        return False
+    
+    # Per-tick data exists, proceed with loading and analysis
+    per_tick_auc_data = []  # List of dicts: {run_id, source, variant, group, auc}
+    per_tick_curves = {}  # Dict: {run_id: (ticks, metric_values)}
+    
+    # Helper function to get group from df_groups
+    def get_group_for_run(source, variant):
+        """Look up group assignment from df_groups for a given source and variant"""
+        mask = (df_groups['source'] == source) & (df_groups['variant'] == variant)
+        if mask.any():
+            return df_groups.loc[mask, 'group'].iloc[0]
+        return None
+    
+    # Load per_tick data from experiment
+    try:
+        with h5py.File(experiment_hdf5_path, 'r') as f:
+            variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
+            for variant_name in variant_names:
+                variant_group = f[variant_name]
+                run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+                
+                for run_name in run_names:
+                    if 'per_tick' not in variant_group[run_name]:
+                        continue
+                    
+                    run_group = variant_group[run_name]
+                    per_tick_table = run_group['per_tick']
+                    
+                    # Extract metric data
+                    if isinstance(per_tick_table, h5py.Dataset):
+                        metric_values = per_tick_table[metric_name]
+                        ticks = np.arange(len(metric_values))
+                    else:
+                        continue
+                    
+                    # Calculate AUC using trapezoidal rule
+                    auc_value = trapz(metric_values, ticks)
+                    
+                    # Get group from df_groups
+                    group = get_group_for_run('experiment', variant_name)
+                    if group is None:
+                        continue
+                    
+                    per_tick_auc_data.append({
+                        'run_id': f"experiment_{variant_name}_{run_name}",
+                        'source': 'experiment',
+                        'variant': variant_name,
+                        'group': group,
+                        'auc': auc_value
+                    })
+                    
+                    per_tick_curves[f"experiment_{variant_name}_{run_name}"] = (ticks, metric_values)
+    except Exception as e:
+        print(f"Warning: Error loading experiment per_tick data: {e}")
+    
+    # Load per_tick data from benchmarks
+    for benchmark_name, benchmark_path in hdf5_files.items():
+        if benchmark_name == 'experiment':
+            continue
+        
+        try:
+            with h5py.File(benchmark_path, 'r') as f:
+                variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
+                for variant_name in variant_names:
+                    variant_group = f[variant_name]
+                    run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+                    
+                    for run_name in run_names:
+                        if 'per_tick' not in variant_group[run_name]:
+                            continue
+                        
+                        run_group = variant_group[run_name]
+                        per_tick_table = run_group['per_tick']
+                        
+                        # Extract metric data
+                        if isinstance(per_tick_table, h5py.Dataset):
+                            metric_values = per_tick_table[metric_name]
+                            ticks = np.arange(len(metric_values))
+                        else:
+                            continue
+                        
+                        # Calculate AUC
+                        auc_value = trapz(metric_values, ticks)
+                        
+                        # Get group from df_groups (group = benchmark_name since benchmarks are their own group)
+                        group = get_group_for_run(benchmark_name, variant_name)
+                        if group is None:
+                            continue
+                        
+                        per_tick_auc_data.append({
+                            'run_id': f"{benchmark_name}_{variant_name}_{run_name}",
+                            'source': benchmark_name,
+                            'variant': variant_name,
+                            'group': group,
+                            'auc': auc_value
+                        })
+                        
+                        per_tick_curves[f"{benchmark_name}_{variant_name}_{run_name}"] = (ticks, metric_values)
+        except Exception as e:
+            print(f"Warning: Error loading benchmark ({benchmark_name}) per_tick data: {e}")
+    
+    if len(per_tick_auc_data) == 0:
+        return False
+    
+    # Create DataFrame of AUC values for statistical analysis
+    df_auc = pd.DataFrame(per_tick_auc_data)
+    
+    # Discover all unique groups in df_auc
+    all_groups = sorted(df_auc['group'].unique())
+    
+    # Map display names for experiment groups
+    display_name_map = {
+        'unsuccessful': 'Unsuccessful',
+        'successful': 'Successful',
+        'other': 'Other',
+    }
+    
+    # Create color map dynamically for all groups
+    color_map = {
+        'unsuccessful': SECONDARY_COLOR,
+        'successful': PRIMARY_COLOR,
+        'other': '#808080',
+    }
+    default_bench_color = TERTIARY_COLOR
+    for group in all_groups:
+        if group not in color_map:
+            color_map[group] = default_bench_color
+    
+    # Plot: individual curves + group means with CI
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Plot individual curves with low alpha, grouped by group
+    for group in all_groups:
+        group_runs = df_auc[df_auc['group'] == group]['run_id'].values
+        color = color_map.get(group, '#808080')
+        
+        for run_id in group_runs:
+            if run_id in per_tick_curves:
+                ticks, metric_values = per_tick_curves[run_id]
+                ax.plot(ticks, metric_values, color=color, alpha=0.15, linewidth=0.8, zorder=1)
+    
+    # Calculate and plot group means with 95% CI
+    max_tick = 0
+    
+    for group in all_groups:
+        group_runs = df_auc[df_auc['group'] == group]['run_id'].values
+        
+        # Collect curves for this group
+        curves = []
+        for run_id in group_runs:
+            if run_id in per_tick_curves:
+                ticks, metric_values = per_tick_curves[run_id]
+                curves.append((ticks, metric_values))
+        
+        if len(curves) == 0:
+            continue
+        
+        # Find max tick across all curves in this group
+        max_tick_group = max(len(ticks) for ticks, _ in curves)
+        max_tick = max(max_tick, max_tick_group)
+        
+        # Interpolate all curves to same length for mean/CI calculation
+        aligned_curves = []
+        for ticks, metric_values in curves:
+            if len(ticks) < max_tick_group:
+                # Interpolate to max_tick_group
+                new_ticks = np.arange(max_tick_group)
+                interp_values = np.interp(new_ticks, ticks, metric_values)
+                aligned_curves.append(interp_values)
+            else:
+                aligned_curves.append(metric_values[:max_tick_group])
+        
+        aligned_curves = np.array(aligned_curves)
+        mean_curve = np.mean(aligned_curves, axis=0)
+        std_curve = np.std(aligned_curves, axis=0)
+        
+        # 95% CI = mean ± 1.96*SEM
+        n_curves = len(aligned_curves)
+        sem_curve = std_curve / np.sqrt(n_curves)
+        ci_lower = mean_curve - 1.96 * sem_curve
+        ci_upper = mean_curve + 1.96 * sem_curve
+        
+        group_ticks = np.arange(max_tick_group)
+        color = color_map.get(group, '#808080')
+        
+        # Use display name for legend if available
+        display_label = display_name_map.get(group, group)
+        
+        # Plot CI as shaded region
+        ax.fill_between(group_ticks, ci_lower, ci_upper, color=color, alpha=0.2, zorder=2)
+        
+        # Plot mean curve
+        ax.plot(group_ticks, mean_curve, color=color, linewidth=2.5, label=display_label, zorder=3)
+    
+    ax.set_xlabel('Ticks', fontsize=12)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} per Tick by Group', fontsize=14)
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Save figure
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    output_path = figures_dir / f'ticks_{filename_str}.png'
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Add to document
+    doc.add_picture(str(output_path), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # Perform statistical analysis on AUC values using analyze_per_group_metric
+    # Filter out 'other' group before statistical analysis
+    df_auc_for_stats = df_auc[df_auc['group'] != 'other']
+    if len(df_auc_for_stats) > 0:
+        analyze_per_group_metric(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str)
+    
+    return True
+
+
+# ==================================================================================================================================================
+# SECTION C) DATA LOADING
+# ==================================================================================================================================================
+
+# Load experiment data
+print(f"Loading experiment data from: {EXPERIMENT_HDF5}")
+experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
+df_experiment = _load_hdf5_variants_to_dataframe(experiment_hdf5_path, source_label="experiment")
+print(f"  Loaded {len(df_experiment)} runs across {df_experiment['variant'].nunique()} variants")
+df_all = df_experiment.copy()
+
+# Load benchmark data if specified
+df_benchmarks = None
+if BENCHMARK_HDF5_FILES:
+    benchmark_dfs = []
+    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
+        print(f"Loading benchmark '{benchmark_name}' from: {benchmark_hdf5}")
+        benchmark_path = _find_hdf5_file(benchmark_hdf5)
+        df_bench = _load_hdf5_variants_to_dataframe(benchmark_path, source_label=benchmark_name)
+        print(f"  Loaded {len(df_bench)} runs across {df_bench['variant'].nunique()} variants")
+        benchmark_dfs.append(df_bench)
+    
+    df_benchmarks = pd.concat(benchmark_dfs, ignore_index=True)
+    df_all = pd.concat([df_experiment, df_benchmarks], ignore_index=True)
+    print(f"\nCombined dataset: {len(df_all)} total runs")
+else:
+    df_all = df_experiment.copy()
+    print(f"\nDataset (experiment only): {len(df_all)} total runs")
+
+# Wiring data: {source: {variant: {run: data}}}
+wiring_data_experiment = {}
+modulation_data_experiment = {}
+
+with h5py.File(experiment_hdf5_path, 'r') as f:
+    variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
+    for variant_name in variant_names:
+        variant_group = f[variant_name]
+        if 'wiring' in variant_group:
+            wiring_data_experiment[variant_name] = variant_group['wiring'][:]
+        if 'modulation' in variant_group:
+            modulation_data_experiment[variant_name] = variant_group['modulation'][:]
+
+# Wiring data for benchmarks
+wiring_data_benchmarks = {}
+modulation_data_benchmarks = {}
+
+if BENCHMARK_HDF5_FILES:
+    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
+        benchmark_path = _find_hdf5_file(benchmark_hdf5)
+        wiring_data_benchmarks[benchmark_name] = {}
+        modulation_data_benchmarks[benchmark_name] = {}
+        
+        with h5py.File(benchmark_path, 'r') as f:
+            variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
+            for variant_name in variant_names:
+                variant_group = f[variant_name]
+                if 'wiring' in variant_group:
+                    wiring_data_benchmarks[benchmark_name][variant_name] = variant_group['wiring'][:]
+                if 'modulation' in variant_group:
+                    modulation_data_benchmarks[benchmark_name][variant_name] = variant_group['modulation'][:]
+
+
+# ==================================================================================================================================================
+# SECTION D) ANALYSIS
+# ==================================================================================================================================================
+
+from docx import Document
+
+doc = Document()
+doc.add_heading(f"Analysis Report: {EXPERIMENT_NAME}", level=0)
+
+#region 1 Experiment Information
+
+doc.add_heading("1. Experiment Information", level=1)
+
+# Experiment overview
+doc.add_paragraph("Experiment:", style="Heading 3")
+experiment_n_variants = df_experiment['variant'].nunique()
+experiment_total_runs = len(df_experiment)
+experiment_runs_per_variant = experiment_total_runs // experiment_n_variants if experiment_n_variants > 0 else 0
+doc.add_paragraph(f"Dataset: {EXPERIMENT_HDF5}.h5")
+doc.add_paragraph(f"Number of variants: {experiment_n_variants}")
+doc.add_paragraph(f"Runs per variant: {experiment_runs_per_variant}")
+doc.add_paragraph(f"Total data points: {experiment_total_runs}")
+
+
+
+if df_benchmarks is not None and len(df_benchmarks) > 0:
+    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
+        doc.add_paragraph(f"{benchmark_name}:", style="Heading 3")
+        benchmark_df = df_benchmarks[df_benchmarks['source'] == benchmark_name]
+        benchmark_n_variants = benchmark_df['variant'].nunique()
+        benchmark_total_runs = len(benchmark_df)
+        benchmark_runs_per_variant = benchmark_total_runs // benchmark_n_variants if benchmark_n_variants > 0 else 0
+        doc.add_paragraph(f"Dataset: {benchmark_hdf5}.h5")
+        doc.add_paragraph(f"Number of variants: {benchmark_n_variants}")
+        doc.add_paragraph(f"Runs per variant: {benchmark_runs_per_variant}")
+        doc.add_paragraph(f"Total data points: {benchmark_total_runs}")
+else:
+    doc.add_paragraph("No benchmark data loaded.")
+
+doc.add_paragraph()
+
+# Add statistical methodology section
+doc.add_heading("Statistical Analysis Methodology", level=2)
+methodology_text = """
+This report employs adaptive statistical analysis based on data distribution and group count. Four analytical scenarios are used:
+
+1. TWO GROUPS, NORMALLY DISTRIBUTED DATA
+   • Omnibus Test: Welch's t-test (compares means)
+   • Effect Size: Cohen's d (interpretation: small ≥ 0.2, medium ≥ 0.5, large ≥ 0.8)
+   • Post-hoc: Not applicable (omnibus test serves as pairwise comparison)
+   • Significance threshold: p < 0.05
+
+2. TWO GROUPS, NON-NORMALLY DISTRIBUTED DATA
+   • Omnibus Test: Mann-Whitney U test (compares distributions via ranks)
+   • Effect Size: Rank-Biserial r (interpretation: small ≥ 0.11, medium ≥ 0.28, large ≥ 0.43)
+   • Post-hoc: Not applicable (omnibus test serves as pairwise comparison)
+   • Significance threshold: p < 0.05
+
+3. MORE THAN TWO GROUPS, NORMALLY DISTRIBUTED DATA
+   • Omnibus Test: One-way ANOVA (tests if any group means differ)
+   • Effect Size: Eta-squared η² (interpretation: small ≥ 0.01, medium ≥ 0.06, large ≥ 0.14)
+   • Post-hoc Pairwise Test: Welch's t-test (all pairs compared)
+   • Multiple Comparisons Correction: Tukey's HSD (controls Type I error across pairwise comparisons)
+   • Post-hoc Effect Size: Cohen's d (interpretation: small ≥ 0.2, medium ≥ 0.5, large ≥ 0.8)
+   • Significance threshold: p < 0.05 (omnibus and post-hoc)
+
+4. MORE THAN TWO GROUPS, NON-NORMALLY DISTRIBUTED DATA
+   • Omnibus Test: Kruskal-Wallis (tests if any group distributions differ via ranks)
+   • Effect Size: Ordinal Epsilon-squared ε²R (interpretation: small ≥ 0.01, medium ≥ 0.08, large ≥ 0.26)
+   • Post-hoc Pairwise Test: Mann-Whitney U (all pairs compared)
+   • Multiple Comparisons Correction: Holm-Bonferroni (sequential adjustment of p-value thresholds)
+   • Post-hoc Effect Size: Rank-Biserial r (interpretation: small ≥ 0.11, medium ≥ 0.28, large ≥ 0.43)
+   • Significance threshold: p < 0.05 (omnibus and post-hoc)
+
+Normality is assessed using the Shapiro-Wilk test (alpha = 0.05) for each group independently. If any group fails the normality test, the analysis uses non-parametric methods.
+
+PER-TICK METRICS (TEMPORAL ANALYSIS)
+
+For metrics tracked per simulation tick (e.g., energy), per-tick data are analyzed using the Area Under the Curve (AUC) method:
+   • Each run's per-tick metric values (tick 0 to end of run) are integrated using the trapezoidal rule to produce a single AUC value per run
+   • AUC values are then compared across groups using the same adaptive statistical framework as above (Welch's t-test/Mann-Whitney U for 2 groups, ANOVA/Kruskal-Wallis for >2 groups)
+   • This approach is conservative and avoids temporal autocorrelation issues by summarizing the time-series into a single magnitude metric
+   • Visualizations show individual run curves (low opacity) overlaid with group mean curves (bold) and 95% confidence bands (shaded)
+"""
+doc.add_paragraph(methodology_text)
+
+doc.add_paragraph()
+
+#region 1.1 Overview Variants
+
+doc.add_heading("1.1. Overview Variants", level=2)
+
+# Calculate overview statistics for experiment variants
+df_experiment_data = df_all[df_all['source'] == 'experiment']
+stats_experiment = _calculate_overview_statistics(df_experiment_data['lifetime_ticks'])
+
+# Create statistics table for experiment variants
+stats_labels_and_units = [
+    ("Mean", stats_experiment['mean'], " ticks"),
+    ("Median", stats_experiment['median'], " ticks"),
+    ("Std Dev", stats_experiment['std'], " ticks"),
+    ("Min", stats_experiment['min'], " ticks"),
+    ("Max", stats_experiment['max'], " ticks"),
+    ("Range", stats_experiment['range'], " ticks"),
+    ("IQR (25th-75th percentile)", stats_experiment['iqr'], " ticks"),
+    ("5th Percentile", stats_experiment['p5'], " ticks"),
+    ("25th Percentile", stats_experiment['p25'], " ticks"),
+    ("75th Percentile", stats_experiment['p75'], " ticks"),
+    ("95th Percentile", stats_experiment['p95'], " ticks"),
+    ("Skewness", stats_experiment['skewness'], ""),
+    ("Kurtosis (excess)", stats_experiment['kurtosis'], ""),
+    ("Coefficient of Variation", stats_experiment['cv'], "%"),
+]
+
+# Build table
+table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=2)
+table.style = "Light Grid Accent 1"
+
+# Header row
+header_cells = table.rows[0].cells
+header_cells[0].text = "Statistic"
+header_cells[1].text = "Value"
+
+# Data rows
+for row_idx, (label, value, unit) in enumerate(stats_labels_and_units, 1):
+    cells = table.rows[row_idx].cells
+    cells[0].text = label
+    if unit == "%":
+        cells[1].text = f"{value:.2f} %"
+    elif label in ["Skewness", "Kurtosis (excess)"]:
+        cells[1].text = f"{value:.3f}"
+    else:
+        cells[1].text = f"{value:.2f}{unit}"
+
+# Per-variant statistics table
+doc.add_paragraph("Per-Variant Summary (Min, Max, Average across variants):", style="Heading 3")
+
+per_variant_agg = _calculate_per_variant_statistics(df_experiment_data, 'lifetime_ticks')
+
+# Define statistics to display
+stats_labels_and_units = [
+    ("Mean", 'mean', " ticks"),
+    ("Median", 'median', " ticks"),
+    ("Std Dev", 'std', " ticks"),
+    ("Min", 'min', " ticks"),
+    ("Max", 'max', " ticks"),
+    ("Range", 'range', " ticks"),
+    ("IQR (25th-75th percentile)", 'iqr', " ticks"),
+    ("5th Percentile", 'p5', " ticks"),
+    ("25th Percentile", 'p25', " ticks"),
+    ("75th Percentile", 'p75', " ticks"),
+    ("95th Percentile", 'p95', " ticks"),
+    ("Skewness", 'skewness', ""),
+    ("Kurtosis (excess)", 'kurtosis', ""),
+    ("Coefficient of Variation", 'cv', "%"),
+]
+
+# Build table with 4 columns: Statistic | Min | Max | Average
+table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=4)
+table.style = "Light Grid Accent 1"
+
+# Header row
+header_cells = table.rows[0].cells
+header_cells[0].text = "Statistic"
+header_cells[1].text = "Min (Variant)"
+header_cells[2].text = "Max (Variant)"
+header_cells[3].text = "Average"
+
+# Data rows
+for row_idx, (label, stat_key, unit) in enumerate(stats_labels_and_units, 1):
+    cells = table.rows[row_idx].cells
+    cells[0].text = label
+    
+    min_value, min_variant = per_variant_agg[stat_key]['min']
+    max_value, max_variant = per_variant_agg[stat_key]['max']
+    avg_value = per_variant_agg[stat_key]['avg']
+    
+    # Format min value
+    if unit == "%":
+        cells[1].text = f"{min_value:.2f} % ({min_variant})"
+    elif label in ["Skewness", "Kurtosis (excess)"]:
+        cells[1].text = f"{min_value:.3f} ({min_variant})"
+    else:
+        cells[1].text = f"{min_value:.2f}{unit} ({min_variant})"
+    
+    # Format max value
+    if unit == "%":
+        cells[2].text = f"{max_value:.2f} % ({max_variant})"
+    elif label in ["Skewness", "Kurtosis (excess)"]:
+        cells[2].text = f"{max_value:.3f} ({max_variant})"
+    else:
+        cells[2].text = f"{max_value:.2f}{unit} ({max_variant})"
+    
+    # Format average value
+    if unit == "%":
+        cells[3].text = f"{avg_value:.2f} %"
+    elif label in ["Skewness", "Kurtosis (excess)"]:
+        cells[3].text = f"{avg_value:.3f}"
+    else:
+        cells[3].text = f"{avg_value:.2f}{unit}"
+
+#table with statistics calculated per variant goes here
+
+#endregion # closes 1.1
+
+#region 1.2 Overview Benchmarks
+
+doc.add_heading("1.2. Overview Benchmarks", level=2)
+
+if df_benchmarks is not None and len(df_benchmarks) > 0:
+    # Calculate statistics for each benchmark
+    benchmark_stats_all = {}
+    for benchmark_name, _ in BENCHMARK_HDF5_FILES:
+        df_bench_data = df_all[df_all['source'] == benchmark_name]
+        if len(df_bench_data) > 0:
+            benchmark_stats_all[benchmark_name] = _calculate_overview_statistics(df_bench_data['lifetime_ticks'])
+    
+    if benchmark_stats_all:
+        # Define statistics to display
+        stats_labels_and_units = [
+            ("Mean", 'mean', " ticks"),
+            ("Median", 'median', " ticks"),
+            ("Std Dev", 'std', " ticks"),
+            ("Min", 'min', " ticks"),
+            ("Max", 'max', " ticks"),
+            ("Range", 'range', " ticks"),
+            ("IQR (25th-75th percentile)", 'iqr', " ticks"),
+            ("5th Percentile", 'p5', " ticks"),
+            ("25th Percentile", 'p25', " ticks"),
+            ("75th Percentile", 'p75', " ticks"),
+            ("95th Percentile", 'p95', " ticks"),
+            ("Skewness", 'skewness', ""),
+            ("Kurtosis (excess)", 'kurtosis', ""),
+            ("Coefficient of Variation", 'cv', "%"),
+        ]
+        
+        # Create table with one column per benchmark
+        n_benchmarks = len(benchmark_stats_all)
+        table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=n_benchmarks + 1)
+        table.style = "Light Grid Accent 1"
+        
+        # Header row: metric name + benchmark names
+        header_cells = table.rows[0].cells
+        header_cells[0].text = "Statistic"
+        for col_idx, benchmark_name in enumerate(sorted(benchmark_stats_all.keys()), 1):
+            header_cells[col_idx].text = benchmark_name
+        
+        # Data rows
+        for row_idx, (label, stat_key, unit) in enumerate(stats_labels_and_units, 1):
+            cells = table.rows[row_idx].cells
+            cells[0].text = label
+            
+            for col_idx, benchmark_name in enumerate(sorted(benchmark_stats_all.keys()), 1):
+                value = benchmark_stats_all[benchmark_name][stat_key]
+                if unit == "%":
+                    cells[col_idx].text = f"{value:.2f} %"
+                elif label in ["Skewness", "Kurtosis (excess)"]:
+                    cells[col_idx].text = f"{value:.3f}"
+                else:
+                    cells[col_idx].text = f"{value:.2f}{unit}"
+
+    # Analyze wiring for each benchmark
+    for benchmark_name, _ in BENCHMARK_HDF5_FILES:
+        if benchmark_name in wiring_data_benchmarks:
+            modulation_dict = modulation_data_benchmarks.get(benchmark_name, {})
+            analyze_wiring(wiring_data_benchmarks[benchmark_name], modulation_dict, RUNS_TO_SHOW_IN_DETAIL, benchmark_name)
+                    
+else:
+    doc.add_paragraph("No benchmark data loaded.")
+
+
+
+#endregion # closes 1.2
+
+#endregion # closes 1
+
+#region 2 Group Selection
+
+doc.add_heading("2. Group Selection", level=1)
+
+# Calculate median survival for each random variant
+median_by_variant = df_experiment.groupby('variant')['lifetime_ticks'].median().sort_values()
+
+# Get min and max medians
+min_median = median_by_variant.min()
+max_median = median_by_variant.max()
+median_range = max_median - min_median
+
+# Calculate thresholds at 10% and 90% of the range
+threshold_10_pct = min_median + (0.10 * median_range)
+threshold_90_pct = min_median + (0.90 * median_range)
+
+# Assign groups to experiment variants based on median survival
+variant_groups = {}
+successful_variants = []
+unsuccessful_variants = []
+other_variants = []
+
+for variant_name, median_val in median_by_variant.items():
+    if median_val < threshold_10_pct:
+        variant_groups[variant_name] = 'unsuccessful'
+        unsuccessful_variants.append(variant_name)
+    elif median_val > threshold_90_pct:
+        variant_groups[variant_name] = 'successful'
+        successful_variants.append(variant_name)
+    else:
+        variant_groups[variant_name] = 'other'
+        other_variants.append(variant_name)
+
+# Add group assignment to df_all
+def assign_group(row):
+    if row['source'] == 'experiment':
+        return variant_groups.get(row['variant'], 'unknown')
+    else:
+        return row['source']  # Use benchmark source name as the group
+
+df_all['group'] = df_all.apply(assign_group, axis=1)
+
+# Make df_all immutable to prevent accidental modifications
+df_all.flags.writeable = False
+
+# Add summary to document
+doc.add_paragraph(f"Thresholds based on median survival time (lifetime_ticks):")
+doc.add_paragraph(f"  Unsuccessful (bottom 10%): median < {threshold_10_pct:.2f} ticks", style="List Bullet")
+doc.add_paragraph(f"  Successful (top 10%): median > {threshold_90_pct:.2f} ticks", style="List Bullet")
+
+# Create table showing variant assignments
+table = doc.add_table(rows=1, cols=3)
+table.style = "Light Grid Accent 1"
+
+# Header row
+header_cells = table.rows[0].cells
+header_cells[0].text = "Group"
+header_cells[1].text = "Count"
+header_cells[2].text = "Variants"
+
+# Add successful variants row
+table.add_row()
+row = table.rows[1].cells
+row[0].text = "Successful (Top 10%)"
+row[1].text = str(len(successful_variants))
+row[2].text = _get_variant_numbers(successful_variants)
+
+# Add unsuccessful variants row
+table.add_row()
+row = table.rows[2].cells
+row[0].text = "Unsuccessful (Bottom 10%)"
+row[1].text = str(len(unsuccessful_variants))
+row[2].text = _get_variant_numbers(unsuccessful_variants)
+
+doc.add_paragraph()
+analyze_survival_race(df_all)
+doc.add_paragraph()
+
+#add a call to the analyze_wiring function for the first variant in the successful and unsuccessful groups
+
+# Get first variant from successful and unsuccessful groups
+first_successful = successful_variants[0] if successful_variants else None
+first_unsuccessful = unsuccessful_variants[0] if unsuccessful_variants else None
+
+# Analyze wiring for first successful variant
+if first_successful:
+    wiring_dict_success = {first_successful: wiring_data_experiment[first_successful]}
+    modulation_dict_success = {first_successful: modulation_data_experiment.get(first_successful, np.array([]))}
+    analyze_wiring(wiring_dict_success, modulation_dict_success, RUNS_TO_SHOW_IN_DETAIL, f"Exemplary successful variant - {first_successful}")
+
+# Analyze wiring for first unsuccessful variant
+if first_unsuccessful:
+    wiring_dict_unsuccess = {first_unsuccessful: wiring_data_experiment[first_unsuccessful]}
+    modulation_dict_unsuccess = {first_unsuccessful: modulation_data_experiment.get(first_unsuccessful, np.array([]))}
+    analyze_wiring(wiring_dict_unsuccess, modulation_dict_unsuccess, RUNS_TO_SHOW_IN_DETAIL, f"Exemplary unsuccessful variant - {first_unsuccessful}")
+
+#endregion # closes 2
+
+#region 3 Comparison Successful vs. Unsuccessful (vs. Benchmarks)
+
+doc.add_heading("3. Comparison Successful vs. Unsuccessful (vs. Benchmarks)", level=1)
+
+#region 3.1 Survival
+
+doc.add_heading("3.1. Survival", level=2)
+
+analyze_per_group_metric(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times')
+doc.add_paragraph('Description of survival time differences between groups, statistical test results, and interpretation goes here.', style='Normal')
+doc.add_paragraph()
+
+# Per-tick energy analysis
+hdf5_files_dict = {'experiment': experiment_hdf5_path}
+if BENCHMARK_HDF5_FILES:
+    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
+        benchmark_path = _find_hdf5_file(benchmark_hdf5)
+        hdf5_files_dict[benchmark_name] = benchmark_path
+
+analyze_per_tick_metric(hdf5_files_dict, 'energy', 'Energy [units]', 'energy', df_all)
+
+#endregion # closes 3.1
+
+#region 3.2 Food Consumption
+
+doc.add_heading("3.2. Food Consumption", level=2)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 3.2
+
+#region 3.3 Movement
+
+doc.add_heading("3.3. Movement", level=2)
+
+#region 3.3.1 Movements Made
+
+doc.add_heading("3.3.1. Movements Made", level=3)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 3.3.1
+
+#region 3.3.2 Ground Covered
+
+doc.add_heading("3.3.2. Ground Covered", level=3)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 3.3.2
+
+#endregion # closes 3.3
+
+#region 3.4 Decisions
+
+doc.add_heading("3.4. Decisions", level=2)
+
+#region 3.4.1 Decisions Made
+
+doc.add_heading("3.4.1. Decisions Made", level=3)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 3.4.1
+
+#region 3.4.2 Correct Decisions
+
+doc.add_heading("3.4.2. Correct Decisions", level=3)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 3.4.2
+
+#endregion # closes 3.4
+
+#endregion # closes 3
+
+#region 4 Summary
+
+doc.add_heading("4. Summary", level=1)
+
+doc.add_paragraph("TBD")
+
+#endregion # closes 4
+
+
+# ==================================================================================================================================================
+# SECTION E) WRAP UP
+# ==================================================================================================================================================
+
+# Save the report
+report_path = Path(__file__).resolve().parent / f"report_{EXPERIMENT_NAME}.docx"
+doc.save(report_path)
+print(f"\nReport saved to: {report_path}")
