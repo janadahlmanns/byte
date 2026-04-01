@@ -230,7 +230,7 @@ def _get_variant_numbers(variant_list: list) -> str:
     return ", ".join(numbers)
 
 
-def analyze_per_group_metric(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str) -> None:
+def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str) -> None:
     """
     Box plot with jitter overlay per group, summary stats table, and comparative stats table.
     Groups: unsuccessful, successful, plus each benchmark source as its own group.
@@ -574,6 +574,228 @@ def analyze_per_group_metric(df_data: pd.DataFrame, metric_col: str, y_label: st
     else:
         doc.add_paragraph(f'Omnibus test not significant (p >= 0.05). No post-hoc testing performed.')
         doc.add_paragraph()
+
+
+def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: str, filename_str: str) -> None:
+    """
+    Analyze a metric stratified by direction within groups.
+    Creates box plots and statistics for each group × direction combination.
+    
+    Args:
+        df_data: DataFrame with 'group' column and direction columns (e.g., 'food_sensed_north', 'food_sensed_east', etc.)
+        metric_base: Base name for metric columns (e.g., 'food_sensed' to match 'food_sensed_north', 'food_sensed_east', etc.)
+        y_label: Label for y-axis (e.g., 'Food Sensed per Tick')
+        filename_str: Base name for output files
+    """
+    
+    directions = ['north', 'east', 'south', 'west', 'stay']
+    
+    # Dynamically discover and extract all groups from the data, excluding 'other'
+    all_unique_groups = [g for g in sorted(df_data['group'].unique()) if g != 'other']
+    
+    # Mapping for display names - capitalize experiment groups, keep benchmark names as-is
+    display_name_map = {
+        'unsuccessful': 'Unsuccessful',
+        'successful': 'Successful',
+        'other': 'Other',
+    }
+    
+    # Prepare data: for each group and direction, collect normalized values
+    group_direction_data = {}  # {(display_name, direction): [values]}
+    group_order = []
+    
+    for group_name in all_unique_groups:
+        display_name = display_name_map.get(group_name, group_name)
+        if display_name not in group_order:
+            group_order.append(display_name)
+        
+        df_group = df_data[df_data['group'] == group_name]
+        
+        for direction in directions:
+            col_name = f"{metric_base}_{direction}"
+            if col_name in df_data.columns:
+                # Normalize by lifetime_ticks
+                normalized_values = df_group[col_name] / df_group['lifetime_ticks']
+                group_direction_data[(display_name, direction)] = normalized_values.values
+    
+    if not group_direction_data:
+        doc.add_paragraph(f"No direction data found for {metric_base}.")
+        return
+    
+    # --- Plot: box plot with directions stratified within groups ---
+    color_map = {
+        'Unsuccessful': SECONDARY_COLOR,
+        'Successful': PRIMARY_COLOR,
+        'Other': '#808080',
+    }
+    default_bench_color = TERTIARY_COLOR
+    
+    fig, ax = plt.subplots(figsize=(14, 7))
+    
+    # First pass: determine which directions actually have data
+    available_directions = set()
+    for group in group_order:
+        df_group = df_data[df_data['group'] == group]
+        for direction in directions:
+            col_name = f"{metric_base}_{direction}"
+            if col_name in df_data.columns and col_name in df_group.columns:
+                available_directions.add(direction)
+    
+    # Use only available directions
+    direction_order = [d for d in directions if d in available_directions]
+    
+    if not direction_order:
+        doc.add_paragraph(f"No direction data found for {metric_base}.")
+        return
+    
+    # Flatten data for boxplot and create positions
+    all_box_data = []
+    all_positions = []
+    all_labels = []
+    pos = 0
+    
+    for group_idx, group in enumerate(group_order):
+        group_start_pos = pos
+        for dir_idx, direction in enumerate(direction_order):
+            key = (group, direction)
+            if key in group_direction_data:
+                all_box_data.append(group_direction_data[key])
+                all_positions.append(pos)
+                # Create label with direction abbreviation
+                dir_abbr = direction[0].upper()  # N, E, S, W
+                if direction == 'stay':
+                    dir_abbr = 'St'
+                all_labels.append(dir_abbr)
+                pos += 1
+        pos += 1  # Add spacing between groups
+    
+    # Box plots
+    bp = ax.boxplot(
+        all_box_data,
+        positions=all_positions,
+        widths=0.6,
+        patch_artist=True,
+        showfliers=False,
+    )
+    
+    # Color boxes by group
+    box_idx = 0
+    for group_idx, group in enumerate(group_order):
+        color = color_map.get(group, default_bench_color)
+        for direction in direction_order:
+            key = (group, direction)
+            if key in group_direction_data:
+                if box_idx < len(bp['boxes']):
+                    bp['boxes'][box_idx].set_facecolor(color)
+                    bp['boxes'][box_idx].set_alpha(0.3)
+                    bp['medians'][box_idx].set_color('black')
+                box_idx += 1
+    
+    # Jitter overlay
+    box_idx = 0
+    for group_idx, group in enumerate(group_order):
+        for dir_idx, direction in enumerate(direction_order):
+            key = (group, direction)
+            if key in group_direction_data:
+                values = group_direction_data[key]
+                color = color_map.get(group, default_bench_color)
+                jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
+                ax.scatter(np.full(len(values), all_positions[box_idx]) + jitter, values, color=color, alpha=0.4, s=8, zorder=3)
+                box_idx += 1
+    
+    # Set x-axis labels: direction abbreviations
+    ax.set_xticks(all_positions)
+    ax.set_xticklabels(all_labels, fontsize=10)
+    
+    # Set group labels on a secondary level
+    group_positions = []
+    group_labels_text = []
+    pos = 0
+    for group_idx, group in enumerate(group_order):
+        group_start = pos
+        pos += len(direction_order)  # Move past this group's directions
+        group_center = (group_start + pos - 1) / 2
+        group_positions.append(group_center)
+        group_labels_text.append(group)
+        pos += 1  # Add spacing between groups
+    
+    # Add group labels as text above the plot
+    for group_pos, group_label in zip(group_positions, group_labels_text):
+        ax.text(group_pos, ax.get_ylim()[1] * 0.95, group_label, 
+                ha='center', va='top', fontsize=11, fontweight='bold')
+    
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} by Group and Direction', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add vertical separators between groups
+    pos = 0
+    for group_idx in range(len(group_order) - 1):
+        pos += len(direction_order) + 0.5  # Move to end of group + spacing
+        ax.axvline(x=pos - 0.5, color='gray', linestyle='--', alpha=0.3, linewidth=1)
+    
+    # Add legend for directions
+    from matplotlib.lines import Line2D
+    direction_full_names = {
+        'north': 'North (N)',
+        'east': 'East (E)',
+        'south': 'South (S)',
+        'west': 'West (W)',
+        'stay': 'Stay (St)'
+    }
+    
+    # Save figure
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    output_path = figures_dir / f'groups_direction_{filename_str}.png'
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    doc.add_picture(str(output_path), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # --- Summary statistics table ---
+    from scipy.stats import sem as scipy_sem
+    
+    stat_names = ['N', 'Mean', 'Std Dev', 'Median', 'Min', 'Max']
+    
+    # Create table with columns for each direction within each group
+    table = doc.add_table(rows=len(stat_names) + 1, cols=len(direction_order) + 1)
+    table.style = 'Light Grid Accent 1'
+    
+    # Header row
+    table.rows[0].cells[0].text = 'Statistic'
+    for dir_idx, direction in enumerate(direction_order, 1):
+        table.rows[0].cells[dir_idx].text = direction.capitalize()
+    
+    # Data rows
+    for stat_idx, stat_name in enumerate(stat_names, 1):
+        table.rows[stat_idx].cells[0].text = stat_name
+        for dir_idx, direction in enumerate(direction_order, 1):
+            # Average across all groups for this direction
+            values_all_groups = []
+            for group in group_order:
+                key = (group, direction)
+                if key in group_direction_data:
+                    values_all_groups.extend(group_direction_data[key])
+            
+            if values_all_groups:
+                v = np.array(values_all_groups)
+                if stat_name == 'N':
+                    table.rows[stat_idx].cells[dir_idx].text = str(len(v))
+                elif stat_name == 'Mean':
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.mean(v):.2f}'
+                elif stat_name == 'Std Dev':
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.std(v, ddof=1):.2f}'
+                elif stat_name == 'Median':
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.median(v):.2f}'
+                elif stat_name == 'Min':
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.min(v):.2f}'
+                elif stat_name == 'Max':
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.max(v):.2f}'
+    
+    doc.add_paragraph()
 
 
 def analyze_survival_race(df_data: pd.DataFrame) -> None:
@@ -920,6 +1142,9 @@ def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, fi
     # Create DataFrame of AUC values for statistical analysis
     df_auc = pd.DataFrame(per_tick_auc_data)
     
+    # Exclude 'other' group from per-tick analysis
+    df_auc = df_auc[df_auc['group'] != 'other']
+    
     # Discover all unique groups in df_auc
     all_groups = sorted(df_auc['group'].unique())
     
@@ -1025,11 +1250,11 @@ def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, fi
     doc.add_picture(str(output_path), width=6.5 * 914400)
     doc.add_paragraph()
     
-    # Perform statistical analysis on AUC values using analyze_per_group_metric
+    # Perform statistical analysis on AUC values using analyze_per_run
     # Filter out 'other' group before statistical analysis
     df_auc_for_stats = df_auc[df_auc['group'] != 'other']
     if len(df_auc_for_stats) > 0:
-        analyze_per_group_metric(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str)
+        analyze_per_run(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str)
     
     return True
 
@@ -1095,10 +1320,18 @@ if BENCHMARK_HDF5_FILES:
                 if 'modulation' in variant_group:
                     modulation_data_benchmarks[benchmark_name][variant_name] = variant_group['modulation'][:]
 
+# HDF5 files dictionary for per-tick analyses
+hdf5_files_dict = {'experiment': experiment_hdf5_path}
+if BENCHMARK_HDF5_FILES:
+    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
+        benchmark_path = _find_hdf5_file(benchmark_hdf5)
+        hdf5_files_dict[benchmark_name] = benchmark_path
+
 
 # ==================================================================================================================================================
 # SECTION D) ANALYSIS
 # ==================================================================================================================================================
+
 
 from docx import Document
 
@@ -1478,18 +1711,13 @@ doc.add_heading("3. Comparison Successful vs. Unsuccessful (vs. Benchmarks)", le
 
 doc.add_heading("3.1. Survival", level=2)
 
-analyze_per_group_metric(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times')
+analyze_per_run(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times')
 doc.add_paragraph('Description of survival time differences between groups, statistical test results, and interpretation goes here.', style='Normal')
 doc.add_paragraph()
 
 # Per-tick energy analysis
-hdf5_files_dict = {'experiment': experiment_hdf5_path}
-if BENCHMARK_HDF5_FILES:
-    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
-        benchmark_path = _find_hdf5_file(benchmark_hdf5)
-        hdf5_files_dict[benchmark_name] = benchmark_path
-
 analyze_per_tick_metric(hdf5_files_dict, 'energy', 'Energy [units]', 'energy', df_all)
+doc.add_paragraph("TBD")
 
 #endregion # closes 3.1
 
@@ -1497,7 +1725,25 @@ analyze_per_tick_metric(hdf5_files_dict, 'energy', 'Energy [units]', 'energy', d
 
 doc.add_heading("3.2. Food Consumption", level=2)
 
+analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods')
+
+
+# Calculate normalized food consumption (foods per tick)
+# Temporarily make df_all writable to add new column
+df_all.flags.writeable = True
+df_all['foods_norm'] = df_all['foods'] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze normalized food consumption
+analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm')
+
+doc.add_paragraph('Description of food consumption differences between groups, statistical test results, and interpretation goes here.', style='Normal')
+
+# Food sensing per tick stratified by direction
+analyze_per_run_direction(df_all, 'food_sensed', 'Food Sensed per direction (normalized to life time)', 'food_sensed')
 doc.add_paragraph("TBD")
+
+doc.add_paragraph()
 
 #endregion # closes 3.2
 
@@ -1509,6 +1755,25 @@ doc.add_heading("3.3. Movement", level=2)
 
 doc.add_heading("3.3.1. Movements Made", level=3)
 
+# Calculate total movements (sum across all directions)
+df_all.flags.writeable = True
+df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
+df_all.flags.writeable = False
+
+# Analyze total movements
+analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total')
+
+# Calculate normalized movements (movements per tick)
+df_all.flags.writeable = True
+df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze normalized movements
+analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm')
+doc.add_paragraph("TBD")
+
+# Movements per direction
+analyze_per_run_direction(df_all, 'moves', 'Movements Made per direction (normalized to life time)', 'moves')
 doc.add_paragraph("TBD")
 
 #endregion # closes 3.3.1
@@ -1517,7 +1782,12 @@ doc.add_paragraph("TBD")
 
 doc.add_heading("3.3.2. Ground Covered", level=3)
 
+# Per-tick manhattan distance analysis
+analyze_per_tick_metric(hdf5_files_dict, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', df_all)
+
 doc.add_paragraph("TBD")
+
+# heatmaps go here
 
 #endregion # closes 3.3.2
 
