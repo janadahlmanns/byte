@@ -21,6 +21,7 @@ except ImportError:
 from statsmodels.stats.multitest import multipletests
 from itertools import combinations
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Add workspace root to path for imports
 _current_path = Path(__file__).resolve()
@@ -798,6 +799,139 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     doc.add_paragraph()
 
 
+def analyze_heatmaps(heatmap_data: dict, df_groups: pd.DataFrame) -> None:
+    """
+    Generate and display heatmaps (staying and entering) for groups and variants.
+    
+    Skips 'other' group. For each variant in selected groups, creates a figure showing:
+    - Top-left: Averaged heatmap across all runs (with own colorbar)
+    - Other 3 panels: Raw data heatmaps from first 3 runs (with shared colorbar, if available)
+    
+    Args:
+        heatmap_data: Dict mapping source -> variant -> {'staying': [...], 'entering': [...]}
+        df_groups: DataFrame with group assignments (must have 'source', 'variant', 'group' columns)
+    """
+    
+    # Return early if no heatmap data
+    if not heatmap_data:
+        return
+    
+    # Build group -> (source, variants) mapping, excluding 'other' group
+    group_variants = {}  # {group_name: [(source, variant_name), ...]}
+    for source in sorted(heatmap_data.keys()):
+        for variant_name in sorted(heatmap_data[source].keys()):
+            # Find group for this source/variant
+            if source == 'experiment':
+                mask = (df_groups['source'] == source) & (df_groups['variant'] == variant_name)
+                if mask.any():
+                    group = df_groups.loc[mask, 'group'].iloc[0]
+                else:
+                    continue
+            else:
+                # For benchmarks, the group is the source name
+                group = source
+            
+            # Skip 'other' group entirely
+            if group == 'other':
+                continue
+            
+            if group not in group_variants:
+                group_variants[group] = []
+            group_variants[group].append((source, variant_name))
+    
+    # For each group and variant, create a figure
+    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir.mkdir(exist_ok=True)
+    
+    for group_name in sorted(group_variants.keys()):
+        source_variant_pairs = group_variants[group_name]
+        
+        # Limit to first 3 variants per group
+        variants_to_process = source_variant_pairs[:3]
+        
+        # Process each variant in the group (create separate figure for each)
+        for source, variant_name in variants_to_process:
+            
+            # Create figures for both staying and entering
+            for heatmap_type in ['staying', 'entering']:
+                
+                # Get all runs for this variant
+                arrays = heatmap_data[source][variant_name].get(heatmap_type, [])
+                if len(arrays) == 0:
+                    continue
+                
+                fig = plt.figure(figsize=(14, 12))
+                
+                # Panel 0: Averaged heatmap
+                averaged_heatmap = np.mean(arrays, axis=0)
+                avg_values = averaged_heatmap.flatten()
+                avg_vmin = 0  # Minimum is always 0 for counts
+                avg_vmax = np.max(avg_values)  # Use actual maximum, not percentile
+                
+                # Panels 1-3: Raw run data (first 3 runs)
+                raw_arrays = []
+                for run_idx in range(min(3, len(arrays))):
+                    raw_arrays.append(arrays[run_idx])
+                
+                # Calculate shared colormap for raw data
+                raw_values = np.concatenate([arr.flatten() for arr in raw_arrays])
+                raw_vmin = 0  # Minimum is always 0 for counts
+                raw_vmax = np.max(raw_values)  # Use actual maximum, not percentile
+                
+                # Create panels
+                for pane_idx in range(4):
+                    ax = fig.add_subplot(2, 2, pane_idx + 1)
+                    
+                    if pane_idx == 0:
+                        # Averaged heatmap
+                        im = ax.imshow(averaged_heatmap, cmap='RdYlBu_r', vmin=avg_vmin, vmax=avg_vmax, aspect='auto', origin='upper')
+                        variant_num = variant_name.replace('variant_', '')
+                        ax.set_title(f'{group_name} (variant {variant_num}, all runs averaged)', fontsize=11, fontweight='bold')
+                        
+                        # Add colorbar below this panel
+                        divider = make_axes_locatable(ax)
+                        cax = divider.append_axes("bottom", size="10%", pad=0.1)
+                        cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
+                        cbar.set_label('Value', fontsize=9)
+                    
+                    else:
+                        # Raw run data
+                        run_idx = pane_idx - 1
+                        if run_idx < len(raw_arrays):
+                            im = ax.imshow(raw_arrays[run_idx], cmap='RdYlBu_r', vmin=raw_vmin, vmax=raw_vmax, aspect='auto', origin='upper')
+                            variant_num = variant_name.replace('variant_', '')
+                            ax.set_title(f'{group_name} (variant {variant_num}, run {run_idx + 1})', fontsize=11, fontweight='bold')
+                            
+                            # Add colorbar below this panel
+                            divider = make_axes_locatable(ax)
+                            cax = divider.append_axes("bottom", size="10%", pad=0.1)
+                            cbar = fig.colorbar(im, cax=cax, orientation='horizontal')
+                            cbar.set_label('Value', fontsize=9)
+                        else:
+                            # Empty panel
+                            ax.set_title(f'Run {run_idx + 1} (N/A)', fontsize=11)
+                    
+                    # Remove axes labels and ticks
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    ax.set_xticklabels([])
+                    ax.set_yticklabels([])
+                
+                # Adjust layout
+                fig.subplots_adjust(left=0.08, right=0.95, top=0.92, hspace=0.5, wspace=0.25)
+                
+                # Save figure
+                group_display_name = group_name.replace(' ', '_')
+                output_filename = f'heatmap_{group_display_name}_{variant_name}_{heatmap_type}.png'
+                output_path = figures_dir / output_filename
+                fig.savefig(output_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                
+                # Add to document
+                doc.add_picture(str(output_path), width=5.0 * 914400)
+    doc.add_paragraph()
+
+
 def analyze_survival_race(df_data: pd.DataFrame) -> None:
     """
     Plot cumulative survival for each variant.
@@ -1327,6 +1461,54 @@ if BENCHMARK_HDF5_FILES:
         benchmark_path = _find_hdf5_file(benchmark_hdf5)
         hdf5_files_dict[benchmark_name] = benchmark_path
 
+# Heatmap data: {source: {variant: {'staying': [arrays...], 'entering': [arrays...]}}}
+# Check if heatmap data exists first
+heatmap_data_exists = False
+try:
+    with h5py.File(experiment_hdf5_path, 'r') as f:
+        variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
+        if variant_keys:
+            first_variant = variant_keys[0]
+            variant_group = f[first_variant]
+            run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+            if run_keys:
+                first_run = run_keys[0]
+                run_group = variant_group[first_run]
+                if 'staying' in run_group and 'entering' in run_group:
+                    heatmap_data_exists = True
+except Exception:
+    heatmap_data_exists = False
+
+# Load heatmap data if it exists
+heatmap_data = {}  # {source: {variant: {'staying': [arrays...], 'entering': [arrays...]}}}
+if heatmap_data_exists:
+    for source, hdf5_path in hdf5_files_dict.items():
+        heatmap_data[source] = {}
+        try:
+            with h5py.File(hdf5_path, 'r') as f:
+                variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
+                for variant_name in variant_keys:
+                    variant_group = f[variant_name]
+                    run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+                    
+                    staying_arrays = []
+                    entering_arrays = []
+                    
+                    for run_name in run_keys:
+                        run_group = variant_group[run_name]
+                        if 'staying' in run_group:
+                            staying_arrays.append(run_group['staying'][:])
+                        if 'entering' in run_group:
+                            entering_arrays.append(run_group['entering'][:])
+                    
+                    if staying_arrays or entering_arrays:
+                        heatmap_data[source][variant_name] = {
+                            'staying': staying_arrays,
+                            'entering': entering_arrays
+                        }
+        except Exception:
+            continue
+
 
 # ==================================================================================================================================================
 # SECTION D) ANALYSIS
@@ -1784,10 +1966,10 @@ doc.add_heading("3.3.2. Ground Covered", level=3)
 
 # Per-tick manhattan distance analysis
 analyze_per_tick_metric(hdf5_files_dict, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', df_all)
-
 doc.add_paragraph("TBD")
 
-# heatmaps go here
+# Heatmaps: staying and entering
+analyze_heatmaps(heatmap_data, df_all)
 
 #endregion # closes 3.3.2
 
