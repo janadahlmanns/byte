@@ -1238,18 +1238,18 @@ def analyze_wiring(wiring_data: dict, modulation_data: dict, runs_to_show: list,
 
 def track_decision_precision(df_per_tick: pd.DataFrame, df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculate decision precision per direction for each run (VECTORIZED).
+    Calculate decision precision per direction for each run (ULTRA-OPTIMIZED).
     
-    Efficiently processes per-tick data by vectorizing movement decoding,
-    lookahead operations, and aggregation instead of tick-by-tick loops.
+    Uses the fact that food can only be consumed during stay decisions.
+    Skips first tick to avoid boundary checks and ensure safe lookback within runs.
+    Pure counting approach: no filtering, just vectorized aggregation.
     
     Args:
         df_per_tick: Per-tick DataFrame with columns: tick, decision_made, movement, food_consumed, run_id, variant, group, source
-        df_all: Run-level DataFrame to add precision columns to (must have run_id column)
+        df_all: Run-level DataFrame to add precision columns to
     
     Returns:
         df_all with added decision_precision_{direction} columns (north, east, south, west, stay)
-        Unmatched rows in df_all remain NaN (intentional)
     """
     
     # Initialize precision columns with NaN
@@ -1257,63 +1257,50 @@ def track_decision_precision(df_per_tick: pd.DataFrame, df_all: pd.DataFrame) ->
     for direction in ['north', 'east', 'south', 'west', 'stay']:
         df_all[f'decision_precision_{direction}'] = np.nan
     
-    # === STEP 1: Filter to decision rows only ===
-    df_decisions = df_per_tick[df_per_tick['decision_made'] == 1].copy()
+    # Skip first tick (no decisions in tick 0, ensures safe lookback)
+    df = df_per_tick.iloc[1:].copy()
     
-    if len(df_decisions) == 0:
+    if len(df) == 0:
         df_all.flags.writeable = False
         return df_all
     
-    # === STEP 2: Vectorize movement decoding ===
-    # Convert bytes to string if needed, then map to directions
+    # === Create lookahead column for food in next tick (within each run) ===
+    df['food_next'] = df.groupby(['variant', 'source', 'run_id'])['food_consumed'].shift(-1).fillna(0).astype(int)
+    
+    # === Vectorize movement decoding ===
     def decode_movement_vec(movement_series):
-        # Handle bytes or string
         decoded = movement_series.apply(
             lambda x: x.decode('utf-8').lower() if isinstance(x, bytes) else str(x).lower()
         )
         direction_map = {'n': 'north', 'e': 'east', 's': 'south', 'w': 'west', 'stay': 'stay'}
         return decoded.map(direction_map)
     
-    df_decisions['direction'] = decode_movement_vec(df_decisions['movement'])
+    df['direction'] = decode_movement_vec(df['movement'])
+    df = df[df['direction'].notna()]  # Remove unmapped directions
     
-    # Remove rows with unmapped directions
-    df_decisions = df_decisions[df_decisions['direction'].notna()]
+    # === Process each direction ===
+    results = {}
     
-    # === STEP 3: Create lookahead column for food in next tick ===
-    # Group by run to ensure lookahead is within same run
-    df_decisions['food_consumed_next'] = df_decisions.groupby(['variant', 'source', 'run_id'])['food_consumed'].shift(-1)
-    
-    # === STEP 4: Process each direction ===
-    direction_list = ['north', 'east', 'south', 'west', 'stay']
-    results = {}  # {direction: Series indexed by (variant, source, run_id)}
-    
-    for direction in direction_list:
-        # Filter to this direction
-        df_dir = df_decisions[df_decisions['direction'] == direction]
-        
-        if len(df_dir) == 0:
-            continue
-        
-        # Determine correctness: stay uses current tick food, movement uses next tick food
+    for direction in ['north', 'east', 'south', 'west', 'stay']:
         if direction == 'stay':
-            df_dir['is_correct'] = (df_dir['food_consumed'] == 1)
+            # Food can only be consumed during stay: food_consumed = correct stays
+            total_counts = df.groupby(['variant', 'source', 'run_id'])['decision_made'].sum()
+            correct_counts = df.groupby(['variant', 'source', 'run_id'])['food_consumed'].sum()
         else:
-            df_dir['is_correct'] = (df_dir['food_consumed_next'] == 1)
+            # Movement decisions followed by food consumption in next tick
+            df_dir = df[df['direction'] == direction]
+            
+            if len(df_dir) == 0:
+                continue
+            
+            total_counts = df_dir.groupby(['variant', 'source', 'run_id']).size()
+            correct_counts = df_dir.groupby(['variant', 'source', 'run_id'])['food_next'].sum()
         
-        # === STEP 5: Aggregate per run ===
-        # Count total decisions and correct decisions
-        agg_result = df_dir.groupby(['variant', 'source', 'run_id']).agg({
-            'food_consumed': 'count',  # Total decision count
-            'is_correct': 'sum'  # Correct decision count
-        }).rename(columns={'food_consumed': 'total', 'is_correct': 'correct'})
-        
-        # Calculate precision (handles division by zero by keeping NaN)
-        agg_result['precision'] = agg_result['correct'] / agg_result['total']
-        
-        results[direction] = agg_result['precision']
+        # Calculate precision (avoid division by zero)
+        precision = correct_counts / total_counts.replace(0, np.nan)
+        results[direction] = precision
     
-    # === STEP 6: Batch update df_all using index alignment ===
-    # Create MultiIndex on df_all for fast alignment
+    # === Batch update df_all using index alignment ===
     df_all_indexed = df_all.set_index(['variant', 'source', 'run_id'])
     
     for direction, precision_series in results.items():
