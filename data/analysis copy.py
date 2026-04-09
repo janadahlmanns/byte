@@ -1464,6 +1464,104 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     doc.add_picture(str(output_path), width=6.5 * 914400)
     doc.add_paragraph()
     
+    # ===== SECOND PLOT: Normalized by percentage of lifespan, averaged per variant =====
+    # Create normalized curves where x-axis is % of total lifespan (0-100)
+    # and average curves are created per variant instead of per group
+    
+    normalized_curves = {}  # {(source, variant, run_id): (percent_ticks, metric_values)}
+    
+    # Build normalized data for each run
+    for (source, variant, run_id), group_data in df_per_tick.groupby(['source', 'variant', 'run_id']):
+        group_data = group_data.sort_values('tick') if 'tick' in group_data.columns else group_data
+        metric_values = group_data[metric_name].values
+        
+        # Get lifetime (total ticks) for this run
+        lifetime = len(metric_values)
+        if lifetime == 0:
+            continue
+        
+        # Create normalized x-axis: 0 to 100% of lifespan
+        percent_ticks = np.linspace(0, 100, lifetime)
+        
+        normalized_curves[(source, variant, run_id)] = (percent_ticks, metric_values)
+    
+    # Create color map for variants (group-based color, but each variant gets a line)
+    variant_color_map = {}
+    variant_group_map = {}  # Map variant to its group for color assignment
+    
+    for group in all_groups:
+        group_data = df_auc[df_auc['group'] == group]
+        for variant in sorted(group_data['variant'].unique()):
+            variant_group_map[variant] = group
+            variant_color_map[variant] = color_map.get(group, '#808080')
+    
+    # Plot: per-variant means with CI (no individual runs)
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Calculate and plot per-variant means with 95% CI
+    all_variants = sorted(variant_color_map.keys())
+    groups_added_to_legend = set()  # Track which groups we've already added to legend
+    
+    for variant in all_variants:
+        # Collect all normalized curves for this variant
+        variant_curves = []
+        for (source, var, run_id), (percent_ticks, metric_values) in normalized_curves.items():
+            if var == variant:
+                variant_curves.append((percent_ticks, metric_values))
+        
+        if len(variant_curves) == 0:
+            continue
+        
+        # Interpolate all curves to a common grid (0-100%) for averaging
+        common_percent = np.linspace(0, 100, 100)  # 100 points along 0-100%
+        interpolated_curves = []
+        
+        for percent_ticks, metric_values in variant_curves:
+            # Use linear interpolation to resample each curve to the common grid
+            interp_values = np.interp(common_percent, percent_ticks, metric_values)
+            interpolated_curves.append(interp_values)
+        
+        # Calculate mean and 95% CI
+        interpolated_curves = np.array(interpolated_curves)
+        mean_curve = np.mean(interpolated_curves, axis=0)
+        std_curve = np.std(interpolated_curves, axis=0)
+        n = len(interpolated_curves)
+        sem_curve = std_curve / np.sqrt(n)
+        ci_lower = mean_curve - 1.96 * sem_curve
+        ci_upper = mean_curve + 1.96 * sem_curve
+        
+        color = variant_color_map.get(variant, '#808080')
+        group = variant_group_map.get(variant, 'Unknown')
+        display_label = display_name_map.get(group, group)
+        
+        # Add legend label only on first variant of each group
+        legend_label = display_label if group not in groups_added_to_legend else None
+        if legend_label:
+            groups_added_to_legend.add(group)
+        
+        # Plot CI as shaded region
+        ax.fill_between(common_percent, ci_lower, ci_upper, color=color, alpha=0.2, zorder=2)
+        
+        # Plot mean curve
+        ax.plot(common_percent, mean_curve, color=color, linewidth=2.5, label=legend_label, zorder=3)
+    
+    ax.set_xlabel('Percentage of Lifespan (%)', fontsize=12)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} across Lifespan per Variant', fontsize=14)
+    ax.set_xlim(0, 100)
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Save figure
+    output_path_normalized = figures_dir / f'ticks_normalized_{filename_str}.png'
+    fig.tight_layout()
+    fig.savefig(output_path_normalized, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Add to document
+    doc.add_picture(str(output_path_normalized), width=6.5 * 914400)
+    doc.add_paragraph()
+    
     # Perform statistical analysis on AUC values using analyze_per_run
     # Filter out 'other' group before statistical analysis
     df_auc_for_stats = df_auc[df_auc['group'] != 'other']
