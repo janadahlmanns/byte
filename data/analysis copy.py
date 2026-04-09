@@ -668,7 +668,19 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                 pos += 1
         pos += 1  # Add spacing between groups
     
-    # Box plots
+    # Jitter overlay (draw first so it appears behind boxplots)
+    box_idx = 0
+    for group_idx, group in enumerate(group_order):
+        for dir_idx, direction in enumerate(direction_order):
+            key = (group, direction)
+            if key in group_direction_data:
+                values = group_direction_data[key]
+                color = color_map.get(group, default_bench_color)
+                jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
+                ax.scatter(np.full(len(values), all_positions[box_idx]) + jitter, values, color=color, alpha=0.4, s=8, zorder=1)
+                box_idx += 1
+    
+    # Box plots (draw second so they appear on top)
     bp = ax.boxplot(
         all_box_data,
         positions=all_positions,
@@ -688,18 +700,6 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                     bp['boxes'][box_idx].set_facecolor(color)
                     bp['boxes'][box_idx].set_alpha(0.3)
                     bp['medians'][box_idx].set_color('black')
-                box_idx += 1
-    
-    # Jitter overlay
-    box_idx = 0
-    for group_idx, group in enumerate(group_order):
-        for dir_idx, direction in enumerate(direction_order):
-            key = (group, direction)
-            if key in group_direction_data:
-                values = group_direction_data[key]
-                color = color_map.get(group, default_bench_color)
-                jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
-                ax.scatter(np.full(len(values), all_positions[box_idx]) + jitter, values, color=color, alpha=0.4, s=8, zorder=3)
                 box_idx += 1
     
     # Set x-axis labels: direction abbreviations
@@ -795,6 +795,136 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                 elif stat_name == 'Max':
                     table.rows[stat_idx].cells[dir_idx].text = f'{np.nanmax(v):.2f}'
     
+    doc.add_paragraph()
+    
+    # --- Second Plot: Variant-level lines stratified by direction ---
+    # Prepare variant-level data: for each group, variant, and direction, store values and calculate stats
+    variant_direction_values = {}  # {(group, variant, direction): [values]}
+    variant_direction_stats = {}  # {(group, variant, direction): (mean, ci_lower, ci_upper)}
+    variants_per_group = {}  # {group: [list of variants]}
+    variant_to_group = {}  # {variant: group} for color mapping
+    
+    # Build the mapping from original data
+    for group_name in all_unique_groups:
+        display_name = display_name_map.get(group_name, group_name)
+        df_group = df_data[df_data['group'] == group_name]
+        
+        variants_in_group = sorted(df_group['variant'].unique())
+        variants_per_group[display_name] = variants_in_group
+        
+        for variant in variants_in_group:
+            variant_to_group[variant] = display_name
+            df_variant = df_group[df_group['variant'] == variant]
+            
+            for direction in direction_order:
+                col_name = f"{metric_base}_{direction}"
+                if col_name in df_variant.columns:
+                    values = df_variant[col_name].values
+                    values_clean = values[~np.isnan(values)]
+                    
+                    # Store raw values
+                    variant_direction_values[(display_name, variant, direction)] = values_clean
+                    
+                    # Calculate mean and 95% CI
+                    mean_val = np.mean(values_clean) if len(values_clean) > 0 else np.nan
+                    if len(values_clean) > 1:
+                        se = np.std(values_clean, ddof=1) / np.sqrt(len(values_clean))
+                        ci_delta = 1.96 * se  # 95% CI
+                        ci_lower = mean_val - ci_delta
+                        ci_upper = mean_val + ci_delta
+                    else:
+                        ci_lower = ci_upper = mean_val
+                    
+                    variant_direction_stats[(display_name, variant, direction)] = (mean_val, ci_lower, ci_upper)
+    
+    if not variant_direction_stats:
+        doc.add_paragraph(f"No variant-level direction data found for {metric_base}.")
+        return
+    
+    # Create faceted plot: one subplot per group
+    n_groups = len(group_order)
+    fig, axes = plt.subplots(1, n_groups, figsize=(5 * n_groups, 5), sharey=True)
+    
+    # Handle case where there's only one group (axes would be a 1D array)
+    if n_groups == 1:
+        axes = [axes]
+    
+    # Direction abbreviations for x-axis labels
+    direction_abbr_map = {
+        'north': 'N',
+        'east': 'E',
+        'south': 'S',
+        'west': 'W',
+        'stay': 'Stay'
+    }
+    
+    direction_labels = [direction_abbr_map.get(d, d) for d in direction_order]
+    x_positions = np.arange(len(direction_order))
+    
+    # Color mapping by group
+    group_color_map = {}
+    for group in group_order:
+        if group == 'Successful':
+            group_color_map[group] = PRIMARY_COLOR
+        elif group == 'Unsuccessful':
+            group_color_map[group] = SECONDARY_COLOR
+        else:
+            # Benchmark groups
+            group_color_map[group] = TERTIARY_COLOR
+    
+    # Plot each group in its own facet
+    for group_idx, group in enumerate(group_order):
+        ax = axes[group_idx]
+        variants = sorted(variants_per_group.get(group, []))
+        
+        # Plot one line per variant with confidence band
+        for variant in variants:
+            means = []
+            ci_lowers = []
+            ci_uppers = []
+            
+            for direction in direction_order:
+                key = (group, variant, direction)
+                if key in variant_direction_stats:
+                    mean_val, ci_lower, ci_upper = variant_direction_stats[key]
+                    means.append(mean_val)
+                    ci_lowers.append(ci_lower)
+                    ci_uppers.append(ci_upper)
+                else:
+                    means.append(np.nan)
+                    ci_lowers.append(np.nan)
+                    ci_uppers.append(np.nan)
+            
+            # Use group color for the variant line
+            color = group_color_map.get(group, TERTIARY_COLOR)
+            
+            # Plot confidence band
+            ax.fill_between(x_positions, ci_lowers, ci_uppers, color=color, alpha=0.15, zorder=1)
+            
+            # Plot line for this variant
+            ax.plot(x_positions, means, color=color, marker='o', linewidth=1.5, markersize=4, alpha=0.8, zorder=2)
+        
+        # Formatting
+        ax.set_xlabel('Direction', fontsize=10)
+        if group_idx == 0:
+            ax.set_ylabel(y_label, fontsize=10)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(direction_labels, fontsize=9)
+        ax.set_title(f'{group}', fontsize=11, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+    
+    # Overall title
+    fig.suptitle(f'{y_label} per Variant', 
+                 fontsize=13, fontweight='bold', y=1.00)
+    fig.tight_layout()
+    
+    # Save figure
+    output_path_variants = figures_dir / f'groups_direction_variants_{filename_str}.png'
+    fig.savefig(output_path_variants, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Add to document
+    doc.add_picture(str(output_path_variants), width=6.5 * 914400)
     doc.add_paragraph()
 
 
@@ -1288,7 +1418,7 @@ def load_per_tick_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_fi
     return df_all_per_tick
 
 
-def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str) -> bool:
+def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str) -> bool:  
     """
     Analyze per-tick metrics (e.g., energy per tick) for different groups.
     
