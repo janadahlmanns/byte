@@ -28,11 +28,11 @@ from .hdf5_utils import (
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/temp/"
-SIMULATION_NAME   = "random"  # descriptive name for this batch of runs, used in output folder and file names
+EXPERIMENT_FOLDER = "data/random_vs_lookup/"
+SIMULATION_NAME   = "lookup"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
+BRAIN_INIT  = "random_lookup"  # Set to "random" for randomized wiring
 
 # ============================================================
 # WIRING RANDOMIZATION PARAMETERS
@@ -43,7 +43,7 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 10                            # Number of randomized wiring variants to generate
+N_VARIANTS = 1                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
