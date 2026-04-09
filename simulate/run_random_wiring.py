@@ -786,7 +786,7 @@ def main():
             
             print()
             
-            for variant_id in range(N_VARIANTS):
+            for variant_id in range(N_VARIANTS): 
                 (
                     returned_variant_id,
                     wiring_array,
