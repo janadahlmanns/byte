@@ -615,9 +615,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
         for direction in directions:
             col_name = f"{metric_base}_{direction}"
             if col_name in df_data.columns:
-                # Normalize by lifetime_ticks
-                normalized_values = df_group[col_name] / df_group['lifetime_ticks']
-                group_direction_data[(display_name, direction)] = normalized_values.values
+                group_direction_data[(display_name, direction)] = df_group[col_name].values
     
     if not group_direction_data:
         doc.add_paragraph(f"No direction data found for {metric_base}.")
@@ -784,17 +782,18 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
             if values_all_groups:
                 v = np.array(values_all_groups)
                 if stat_name == 'N':
-                    table.rows[stat_idx].cells[dir_idx].text = str(len(v))
+                    # Count non-NaN values
+                    table.rows[stat_idx].cells[dir_idx].text = str(np.sum(~np.isnan(v)))
                 elif stat_name == 'Mean':
-                    table.rows[stat_idx].cells[dir_idx].text = f'{np.mean(v):.2f}'
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.nanmean(v):.2f}'
                 elif stat_name == 'Std Dev':
-                    table.rows[stat_idx].cells[dir_idx].text = f'{np.std(v, ddof=1):.2f}'
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.nanstd(v, ddof=1):.2f}'
                 elif stat_name == 'Median':
-                    table.rows[stat_idx].cells[dir_idx].text = f'{np.median(v):.2f}'
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.nanmedian(v):.2f}'
                 elif stat_name == 'Min':
-                    table.rows[stat_idx].cells[dir_idx].text = f'{np.min(v):.2f}'
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.nanmin(v):.2f}'
                 elif stat_name == 'Max':
-                    table.rows[stat_idx].cells[dir_idx].text = f'{np.max(v):.2f}'
+                    table.rows[stat_idx].cells[dir_idx].text = f'{np.nanmax(v):.2f}'
     
     doc.add_paragraph()
 
@@ -1107,86 +1106,119 @@ def analyze_wiring(wiring_data: dict, modulation_data: dict, runs_to_show: list,
     doc.add_paragraph()
 
 
-def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, filename_str: str, df_groups: pd.DataFrame) -> bool:
+def track_decision_precision(df_per_tick: pd.DataFrame, df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    Analyze per-tick metrics (e.g., energy per tick) for different groups.
+    Calculate decision precision per direction for each run.
     
-    Plots individual run curves with group means and 95% CI bands.
-    Calculates AUC for each run and performs statistical comparison between groups.
+    For each run in df_all_per_tick, tracks decisions and their correctness.
+    Adds decision_precision_{direction} columns to df_all.
     
     Args:
-        hdf5_files: Dict mapping source (experiment/benchmark_name) -> path to HDF5 file
-        metric_name: Name of the metric column in per_tick data (e.g., 'energy')
-        y_label: Label for y-axis in plots
-        filename_str: Base name for output files
-        df_groups: DataFrame with group assignments (must have 'group' and 'variant' columns)
+        df_per_tick: Per-tick DataFrame with columns: tick, decision_made, movement, food_consumed, run_id, variant, group, source
+        df_all: Run-level DataFrame to add precision columns to (must have run_id column)
     
     Returns:
-        True if per_tick data was found and analyzed, False if skipped (no per_tick data)
+        df_all with added decision_precision_{direction} columns (north, east, south, west, stay)
+        Unmatched rows in df_all remain NaN (intentional)
     """
     
-    # Check if per_tick data exists by attempting to load from first variant/run of experiment
-    experiment_hdf5_path = None
-    for source, path in hdf5_files.items():
-        if source == 'experiment':
-            experiment_hdf5_path = path
-            break
+    # Initialize precision columns with NaN
+    df_all.flags.writeable = True
+    for direction in ['north', 'east', 'south', 'west', 'stay']:
+        df_all[f'decision_precision_{direction}'] = np.nan
     
-    if not experiment_hdf5_path:
-        return False
+    # Process all runs in df_per_tick, grouping by (variant, source, run_id) 
+    # because run_id 1-300 appears in each variant/source combo
+    for (variant, source, run_id), group_data in df_per_tick.groupby(['variant', 'source', 'run_id']):
+        run_data = group_data.reset_index(drop=True)
+        
+        # Track decisions and correctness by direction
+        decision_counts = {'north': 0, 'east': 0, 'south': 0, 'west': 0, 'stay': 0}
+        correct_counts = {'north': 0, 'east': 0, 'south': 0, 'west': 0, 'stay': 0}
+        
+        # Step through ticks
+        for tick_idx in range(len(run_data)):
+            tick_row = run_data.iloc[tick_idx]
+            
+            # Check if a decision was made
+            if tick_row['decision_made'] == 1:
+                # Get the movement/decision type
+                movement = tick_row['movement']
+                
+                # Decode if bytes, convert to string and lowercase
+                if isinstance(movement, bytes):
+                    movement = movement.decode('utf-8')
+                direction = movement.lower()
+                
+                # Map single letters to full direction names
+                direction_map = {'n': 'north', 'e': 'east', 's': 'south', 'w': 'west', 'stay': 'stay'}
+                direction = direction_map.get(direction, direction)
+                
+                # Ensure valid direction
+                if direction not in decision_counts:
+                    continue
+                
+                # Tally the decision
+                decision_counts[direction] += 1
+                
+                # Check correctness
+                is_correct = False
+                if direction == 'stay':
+                    # Stay is correct if food was consumed in same tick
+                    is_correct = tick_row['food_consumed'] == 1
+                else:
+                    # Movement is correct if food was consumed in NEXT tick
+                    if tick_idx + 1 < len(run_data):
+                        next_row = run_data.iloc[tick_idx + 1]
+                        is_correct = next_row['food_consumed'] == 1
+                
+                # Increment correct counter if applicable
+                if is_correct:
+                    correct_counts[direction] += 1
+        
+        # Calculate precision for each direction and add to df_all
+        for direction in ['north', 'east', 'south', 'west', 'stay']:
+            if decision_counts[direction] > 0:
+                precision = correct_counts[direction] / decision_counts[direction]
+                # Match by variant, source, AND run_id to update the specific run
+                mask = (df_all['variant'] == variant) & (df_all['source'] == source) & (df_all['run_id'] == run_id)
+                df_all.loc[mask, f'decision_precision_{direction}'] = precision
     
-    # Check if per_tick data exists in the first variant and first run
-    try:
-        with h5py.File(experiment_hdf5_path, 'r') as f:
-            # Get first variant
-            variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
-            if not variant_keys:
-                return False
-            
-            first_variant = variant_keys[0]
-            variant_group = f[first_variant]
-            
-            # Get first run
-            run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
-            if not run_keys:
-                return False
-            
-            first_run = run_keys[0]
-            run_group = variant_group[first_run]
-            
-            # Check if per_tick data exists
-            if 'per_tick' not in run_group:
-                return False
-            
-            # Verify the metric column exists
-            per_tick_data = run_group['per_tick']
-            if isinstance(per_tick_data, h5py.Dataset):
-                # HDF5 table/dataset
-                if len(per_tick_data) == 0:
-                    return False
-                # Check if it has the metric column
-                if metric_name not in per_tick_data.dtype.names:
-                    return False
-    except Exception:
-        return False
+    df_all.flags.writeable = False
+    return df_all
+
+
+def load_per_tick_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_files_dict: dict) -> pd.DataFrame:
+    """
+    Load per_tick data from HDF5 files for successful, unsuccessful, and benchmark variants.
     
-    # Per-tick data exists, proceed with loading and analysis
-    per_tick_auc_data = []  # List of dicts: {run_id, source, variant, group, auc}
-    per_tick_curves = {}  # Dict: {run_id: (ticks, metric_values)}
+    Args:
+        experiment_hdf5_path: Path to experiment HDF5 file
+        variant_groups: Dict mapping variant names to their group assignments (successful/unsuccessful/other)
+        hdf5_files_dict: Dict mapping source labels to HDF5 file paths
     
-    # Helper function to get group from df_groups
-    def get_group_for_run(source, variant):
-        """Look up group assignment from df_groups for a given source and variant"""
-        mask = (df_groups['source'] == source) & (df_groups['variant'] == variant)
-        if mask.any():
-            return df_groups.loc[mask, 'group'].iloc[0]
-        return None
+    Returns:
+        DataFrame with per_tick data, including source, variant, group, and run_id columns.
+        DataFrame is sealed immutable.
+    
+    Raises:
+        ValueError: If no per_tick data found in any of the specified groups
+    """
+    all_per_tick_data = []
+    
+    # Define which groups to include
+    groups_to_include = {'successful', 'unsuccessful'}
     
     # Load per_tick data from experiment
     try:
         with h5py.File(experiment_hdf5_path, 'r') as f:
             variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
             for variant_name in variant_names:
+                # Check if this variant is in one of the groups we want
+                variant_group_assignment = variant_groups.get(variant_name)
+                if variant_group_assignment not in groups_to_include:
+                    continue  # Skip 'other' variants
+                
                 variant_group = f[variant_name]
                 run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
                 
@@ -1197,42 +1229,30 @@ def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, fi
                     run_group = variant_group[run_name]
                     per_tick_table = run_group['per_tick']
                     
-                    # Extract metric data
+                    # Convert to DataFrame
                     if isinstance(per_tick_table, h5py.Dataset):
-                        metric_values = per_tick_table[metric_name]
-                        ticks = np.arange(len(metric_values))
-                    else:
-                        continue
-                    
-                    # Calculate AUC using trapezoidal rule
-                    auc_value = trapz(metric_values, ticks)
-                    
-                    # Get group from df_groups
-                    group = get_group_for_run('experiment', variant_name)
-                    if group is None:
-                        continue
-                    
-                    per_tick_auc_data.append({
-                        'run_id': f"experiment_{variant_name}_{run_name}",
-                        'source': 'experiment',
-                        'variant': variant_name,
-                        'group': group,
-                        'auc': auc_value
-                    })
-                    
-                    per_tick_curves[f"experiment_{variant_name}_{run_name}"] = (ticks, metric_values)
+                        per_tick_df = pd.DataFrame(per_tick_table[:])
+                        per_tick_df['source'] = 'experiment'
+                        per_tick_df['variant'] = variant_name
+                        per_tick_df['group'] = variant_group_assignment
+                        # Extract numeric run_id from run_name (e.g., "run_1" -> 1) to match df_all
+                        run_id_numeric = int(run_name.split('_')[1])
+                        per_tick_df['run_id'] = run_id_numeric
+                        all_per_tick_data.append(per_tick_df)
     except Exception as e:
         print(f"Warning: Error loading experiment per_tick data: {e}")
+        raise ValueError("Failed to load experiment per_tick data") from e
     
     # Load per_tick data from benchmarks
-    for benchmark_name, benchmark_path in hdf5_files.items():
-        if benchmark_name == 'experiment':
+    for source, benchmark_path in hdf5_files_dict.items():
+        if source == 'experiment':
             continue
         
         try:
             with h5py.File(benchmark_path, 'r') as f:
                 variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
                 for variant_name in variant_names:
+                    # Benchmarks are their own group
                     variant_group = f[variant_name]
                     run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
                     
@@ -1243,34 +1263,88 @@ def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, fi
                         run_group = variant_group[run_name]
                         per_tick_table = run_group['per_tick']
                         
-                        # Extract metric data
+                        # Convert to DataFrame
                         if isinstance(per_tick_table, h5py.Dataset):
-                            metric_values = per_tick_table[metric_name]
-                            ticks = np.arange(len(metric_values))
-                        else:
-                            continue
-                        
-                        # Calculate AUC
-                        auc_value = trapz(metric_values, ticks)
-                        
-                        # Get group from df_groups (group = benchmark_name since benchmarks are their own group)
-                        group = get_group_for_run(benchmark_name, variant_name)
-                        if group is None:
-                            continue
-                        
-                        per_tick_auc_data.append({
-                            'run_id': f"{benchmark_name}_{variant_name}_{run_name}",
-                            'source': benchmark_name,
-                            'variant': variant_name,
-                            'group': group,
-                            'auc': auc_value
-                        })
-                        
-                        per_tick_curves[f"{benchmark_name}_{variant_name}_{run_name}"] = (ticks, metric_values)
+                            per_tick_df = pd.DataFrame(per_tick_table[:])
+                            per_tick_df['source'] = source
+                            per_tick_df['variant'] = variant_name
+                            per_tick_df['group'] = source
+                            # Extract numeric run_id from run_name (e.g., "run_1" -> 1) to match df_all
+                            run_id_numeric = int(run_name.split('_')[1])
+                            per_tick_df['run_id'] = run_id_numeric
+                            all_per_tick_data.append(per_tick_df)
         except Exception as e:
-            print(f"Warning: Error loading benchmark ({benchmark_name}) per_tick data: {e}")
+            print(f"Warning: Error loading benchmark '{source}' per_tick data: {e}")
+    
+    # Combine all per_tick data
+    if not all_per_tick_data:
+        raise ValueError("No per_tick data found")
+    
+    df_all_per_tick = pd.concat(all_per_tick_data, ignore_index=True)
+    # Make immutable
+    df_all_per_tick.flags.writeable = False
+    print(f"\nPer-tick dataset: {len(df_all_per_tick)} total ticks across {df_all_per_tick['variant'].nunique()} variants")
+    
+    return df_all_per_tick
+
+
+def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str) -> bool:
+    """
+    Analyze per-tick metrics (e.g., energy per tick) for different groups.
+    
+    Uses pre-loaded per_tick data from df_all_per_tick.
+    Plots individual run curves with group means and 95% CI bands.
+    Calculates AUC for each run and performs statistical comparison between groups.
+    
+    Args:
+        df_per_tick: Pre-loaded per-tick DataFrame with columns: tick-level metrics, source, variant, group, run_id
+        metric_name: Name of the metric column in per_tick data (e.g., 'energy', 'manhattan_dist')
+        y_label: Label for y-axis in plots
+        filename_str: Base name for output files
+    
+    Returns:
+        True if metric successfully analyzed, False if metric column not found
+    """
+    
+    # Check if metric column exists in the dataframe
+    if metric_name not in df_per_tick.columns:
+        print(f"Warning: Metric '{metric_name}' not found in per_tick data columns")
+        return False
+    
+    # Build per_tick_auc_data and per_tick_curves from the dataframe
+    per_tick_auc_data = []  # List of dicts: {run_id, source, variant, group, auc}
+    per_tick_curves = {}  # Dict: {(source, variant, run_id): (ticks, metric_values)}
+    
+    # Group by (source, variant, run_id) to extract curves and calculate AUC
+    # This avoids collisions when same run_id appears in different sources/variants
+    for (source, variant, run_id), group_data in df_per_tick.groupby(['source', 'variant', 'run_id']):
+        # Sort by tick to ensure correct order (if there's a tick column)
+        group_data = group_data.sort_values('tick') if 'tick' in group_data.columns else group_data
+        
+        # Extract metric values
+        metric_values = group_data[metric_name].values
+        ticks = np.arange(len(metric_values))
+        
+        # Calculate AUC using trapezoidal rule
+        auc_value = trapz(metric_values, ticks)
+        
+        # Get group info from first row
+        first_row = group_data.iloc[0]
+        group = first_row['group']
+        
+        per_tick_auc_data.append({
+            'run_id': run_id,
+            'source': source,
+            'variant': variant,
+            'group': group,
+            'auc': auc_value
+        })
+        
+        # Use composite key to store curves
+        per_tick_curves[(source, variant, run_id)] = (ticks, metric_values)
     
     if len(per_tick_auc_data) == 0:
+        print(f"Warning: No per_tick curves found for metric '{metric_name}'")
         return False
     
     # Create DataFrame of AUC values for statistical analysis
@@ -1305,59 +1379,65 @@ def analyze_per_tick_metric(hdf5_files: dict, metric_name: str, y_label: str, fi
     
     # Plot individual curves with low alpha, grouped by group
     for group in all_groups:
-        group_runs = df_auc[df_auc['group'] == group]['run_id'].values
+        group_data = df_auc[df_auc['group'] == group]
         color = color_map.get(group, '#808080')
         
-        for run_id in group_runs:
-            if run_id in per_tick_curves:
-                ticks, metric_values = per_tick_curves[run_id]
+        for _, row in group_data.iterrows():
+            source = row['source']
+            variant = row['variant']
+            run_id = row['run_id']
+            curve_key = (source, variant, run_id)
+            
+            if curve_key in per_tick_curves:
+                ticks, metric_values = per_tick_curves[curve_key]
                 ax.plot(ticks, metric_values, color=color, alpha=0.15, linewidth=0.8, zorder=1)
     
-    # Calculate and plot group means with 95% CI
-    max_tick = 0
-    
+    # Calculate and plot group means with 95% CI (NO INTERPOLATION - raw data only)
     for group in all_groups:
-        group_runs = df_auc[df_auc['group'] == group]['run_id'].values
+        group_data = df_auc[df_auc['group'] == group]
         
-        # Collect curves for this group
+        # Collect curves for this group (raw data only)
         curves = []
-        for run_id in group_runs:
-            if run_id in per_tick_curves:
-                ticks, metric_values = per_tick_curves[run_id]
-                curves.append((ticks, metric_values))
+        for _, row in group_data.iterrows():
+            source = row['source']
+            variant = row['variant']
+            run_id = row['run_id']
+            curve_key = (source, variant, run_id)
+            
+            if curve_key in per_tick_curves:
+                ticks, metric_values = per_tick_curves[curve_key]
+                curves.append(metric_values)
         
         if len(curves) == 0:
             continue
         
-        # Find max tick across all curves in this group
-        max_tick_group = max(len(ticks) for ticks, _ in curves)
-        max_tick = max(max_tick, max_tick_group)
+        # Calculate mean at each tick without any interpolation
+        # For each tick position, average only runs that have data at that tick
+        max_length = max(len(c) for c in curves)
+        mean_curve = []
+        ci_lower_list = []
+        ci_upper_list = []
         
-        # Interpolate all curves to same length for mean/CI calculation
-        aligned_curves = []
-        for ticks, metric_values in curves:
-            if len(ticks) < max_tick_group:
-                # Interpolate to max_tick_group
-                new_ticks = np.arange(max_tick_group)
-                interp_values = np.interp(new_ticks, ticks, metric_values)
-                aligned_curves.append(interp_values)
-            else:
-                aligned_curves.append(metric_values[:max_tick_group])
+        for tick_idx in range(max_length):
+            # Get values from all runs that have this tick (some runs may have ended earlier)
+            values_at_tick = [c[tick_idx] for c in curves if tick_idx < len(c)]
+            
+            if values_at_tick:
+                mean_val = np.mean(values_at_tick)
+                std_val = np.std(values_at_tick)
+                n = len(values_at_tick)
+                sem = std_val / np.sqrt(n)
+                
+                mean_curve.append(mean_val)
+                ci_lower_list.append(mean_val - 1.96 * sem)
+                ci_upper_list.append(mean_val + 1.96 * sem)
         
-        aligned_curves = np.array(aligned_curves)
-        mean_curve = np.mean(aligned_curves, axis=0)
-        std_curve = np.std(aligned_curves, axis=0)
+        mean_curve = np.array(mean_curve)
+        ci_lower = np.array(ci_lower_list)
+        ci_upper = np.array(ci_upper_list)
+        group_ticks = np.arange(len(mean_curve))
         
-        # 95% CI = mean ± 1.96*SEM
-        n_curves = len(aligned_curves)
-        sem_curve = std_curve / np.sqrt(n_curves)
-        ci_lower = mean_curve - 1.96 * sem_curve
-        ci_upper = mean_curve + 1.96 * sem_curve
-        
-        group_ticks = np.arange(max_tick_group)
         color = color_map.get(group, '#808080')
-        
-        # Use display name for legend if available
         display_label = display_name_map.get(group, group)
         
         # Plot CI as shaded region
@@ -1883,6 +1963,36 @@ if first_unsuccessful:
     modulation_dict_unsuccess = {first_unsuccessful: modulation_data_experiment.get(first_unsuccessful, np.array([]))}
     analyze_wiring(wiring_dict_unsuccess, modulation_dict_unsuccess, RUNS_TO_SHOW_IN_DETAIL, f"Exemplary unsuccessful variant - {first_unsuccessful}")
 
+# ==================================================================================================================================================
+# Check if per_tick data is available and load it
+# ==================================================================================================================================================
+
+per_tick_included = False
+
+# Check if per_tick data exists by looking at first successful variant
+if first_successful:
+    try:
+        with h5py.File(experiment_hdf5_path, 'r') as f:
+            if first_successful in f:
+                variant_group = f[first_successful]
+                # Get first run
+                run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+                if run_names:
+                    first_run = run_names[0]
+                    run_group = variant_group[first_run]
+                    # Check for per_tick table
+                    if 'per_tick' in run_group:
+                        per_tick_included = True
+    except Exception:
+        per_tick_included = False
+
+# Load per_tick data if available
+if per_tick_included:
+    try:
+        df_all_per_tick = load_per_tick_data(experiment_hdf5_path, variant_groups, hdf5_files_dict)
+    except ValueError:
+        per_tick_included = False
+
 #endregion # closes 2
 
 #region 3 Comparison Successful vs. Unsuccessful (vs. Benchmarks)
@@ -1898,7 +2008,8 @@ doc.add_paragraph('Description of survival time differences between groups, stat
 doc.add_paragraph()
 
 # Per-tick energy analysis
-analyze_per_tick_metric(hdf5_files_dict, 'energy', 'Energy [units]', 'energy', df_all)
+if per_tick_included:
+    analyze_per_tick_metric(df_all_per_tick, 'energy', 'Energy [units]', 'energy')
 doc.add_paragraph("TBD")
 
 #endregion # closes 3.1
@@ -1921,8 +2032,16 @@ analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)'
 
 doc.add_paragraph('Description of food consumption differences between groups, statistical test results, and interpretation goes here.', style='Normal')
 
-# Food sensing per tick stratified by direction
-analyze_per_run_direction(df_all, 'food_sensed', 'Food Sensed per direction (normalized to life time)', 'food_sensed')
+# Food sensing per direction (normalized by lifetime_ticks)
+df_all.flags.writeable = True
+for direction in ['north', 'east', 'south', 'west', 'stay']:
+    col_name = f"food_sensed_{direction}"
+    if col_name in df_all.columns:
+        df_all[f"food_sensed_norm_{direction}"] = df_all[col_name] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze food sensing per direction
+analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed')
 doc.add_paragraph("TBD")
 
 doc.add_paragraph()
@@ -1954,8 +2073,16 @@ df_all.flags.writeable = False
 analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm')
 doc.add_paragraph("TBD")
 
-# Movements per direction
-analyze_per_run_direction(df_all, 'moves', 'Movements Made per direction (normalized to life time)', 'moves')
+# Movements per direction (normalized by lifetime_ticks)
+df_all.flags.writeable = True
+for direction in ['north', 'east', 'south', 'west', 'stay']:
+    col_name = f"moves_{direction}"
+    if col_name in df_all.columns:
+        df_all[f"moves_norm_{direction}"] = df_all[col_name] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze movements per direction
+analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves')
 doc.add_paragraph("TBD")
 
 #endregion # closes 3.3.1
@@ -1965,11 +2092,13 @@ doc.add_paragraph("TBD")
 doc.add_heading("3.3.2. Ground Covered", level=3)
 
 # Per-tick manhattan distance analysis
-analyze_per_tick_metric(hdf5_files_dict, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', df_all)
+if per_tick_included:
+    analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance')
 doc.add_paragraph("TBD")
 
 # Heatmaps: staying and entering
 analyze_heatmaps(heatmap_data, df_all)
+doc.add_paragraph("TBD")
 
 #endregion # closes 3.3.2
 
@@ -1983,6 +2112,16 @@ doc.add_heading("3.4. Decisions", level=2)
 
 doc.add_heading("3.4.1. Decisions Made", level=3)
 
+# Analyze total decisions
+analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions')
+
+# Calculate normalized decisions (decisions per tick)
+df_all.flags.writeable = True
+df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze normalized decisions
+analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm')
 doc.add_paragraph("TBD")
 
 #endregion # closes 3.4.1
@@ -1991,7 +2130,23 @@ doc.add_paragraph("TBD")
 
 doc.add_heading("3.4.2. Correct Decisions", level=3)
 
+# Analyze total correct decisions
+analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions')
+
+# Calculate normalized correct decisions (correct decisions per tick)
+df_all.flags.writeable = True
+df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
+df_all.flags.writeable = False
+
+# Analyze normalized correct decisions
+analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm')
 doc.add_paragraph("TBD")
+
+# Analyze correct decisions by direction
+if per_tick_included:
+    df_all = track_decision_precision(df_all_per_tick, df_all)
+    analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision')
+    doc.add_paragraph("TBD")
 
 #endregion # closes 3.4.2
 
