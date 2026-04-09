@@ -104,7 +104,7 @@ def create_hdf5_file(hdf5_path: Path, comprehensive_config: dict):
         hdf5_path: Path to create the HDF5 file
         comprehensive_config: Dict with experiment config to store as attributes
     """
-    with h5py.File(hdf5_path, 'w') as f:
+    with h5py.File(hdf5_path, 'w', libver='latest') as f:
         # Flatten the entire config and store as individual attributes
         flattened = _flatten_config(comprehensive_config)
         
@@ -116,10 +116,67 @@ def create_hdf5_file(hdf5_path: Path, comprehensive_config: dict):
                 f.attrs[attr_name] = str(attr_value)
 
 
+def write_variant_to_hdf5(hdf5_path: Path, variant_id: int, write_lock, 
+                          wiring_array, modulation_array, summary_array, 
+                          per_tick_all_runs=None, heatmaps_all_runs=None,
+                          enable_per_tick_tracking=False, enable_heat_map_tracking=False):
+    """Write all variant data to HDF5 with lock serialization."""
+    with write_lock:
+        with h5py.File(hdf5_path, 'r+', libver='latest') as f:
+            # Create or access variant group
+            group_name = f'variant_{variant_id:02d}'
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            
+            # Write wiring
+            if 'wiring' in grp:
+                del grp['wiring']
+            grp.create_dataset('wiring', data=wiring_array, compression='gzip', compression_opts=4)
+            
+            # Write modulation
+            if 'modulation' in grp:
+                del grp['modulation']
+            grp.create_dataset('modulation', data=modulation_array, compression='gzip', compression_opts=4)
+            
+            # Write summary
+            if 'summary' in grp:
+                del grp['summary']
+            grp.create_dataset('summary', data=summary_array, compression='gzip', compression_opts=4)
+            
+            # Write per-tick data
+            if enable_per_tick_tracking and per_tick_all_runs:
+                for run_id, per_tick_data in per_tick_all_runs.items():
+                    run_group = f'run_{run_id}'
+                    if run_group not in grp:
+                        grp_run = grp.create_group(run_group)
+                    else:
+                        grp_run = grp[run_group]
+                    if 'per_tick' in grp_run:
+                        del grp_run['per_tick']
+                    grp_run.create_dataset('per_tick', data=per_tick_data, compression='gzip', compression_opts=4)
+            
+            # Write heatmaps
+            if enable_heat_map_tracking and heatmaps_all_runs:
+                for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
+                    run_group = f'run_{run_id}'
+                    if run_group not in grp:
+                        grp_run = grp.create_group(run_group)
+                    else:
+                        grp_run = grp[run_group]
+                    if 'entering' in grp_run:
+                        del grp_run['entering']
+                    if 'staying' in grp_run:
+                        del grp_run['staying']
+                    grp_run.create_dataset('entering', data=entering_heatmap, compression='gzip', compression_opts=4)
+                    grp_run.create_dataset('staying', data=staying_heatmap, compression='gzip', compression_opts=4)
+
+
 def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array: np.ndarray):
     """Save variant summary stats to HDF5."""
     group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
+    with h5py.File(hdf5_path, 'r+', libver='latest') as f:
         if group_name not in f:
             grp = f.create_group(group_name)
         else:
@@ -132,7 +189,7 @@ def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array
 def save_wiring_to_hdf5(hdf5_path: Path, variant_id: int, wiring_array: np.ndarray):
     """Save wiring (initial and final weights per run) to HDF5."""
     group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
+    with h5py.File(hdf5_path, 'r+', libver='latest') as f:
         if group_name not in f:
             grp = f.create_group(group_name)
         else:
@@ -145,7 +202,7 @@ def save_wiring_to_hdf5(hdf5_path: Path, variant_id: int, wiring_array: np.ndarr
 def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: np.ndarray):
     """Save modulation specs to HDF5."""
     group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
+    with h5py.File(hdf5_path, 'r+', libver='latest') as f:
         if group_name not in f:
             grp = f.create_group(group_name)
         else:
@@ -159,7 +216,7 @@ def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, enterin
     """Save heatmaps (2D arrays) to HDF5."""
     variant_group = f'variant_{variant_id:02d}'
     run_group = f'run_{run_id}'
-    with h5py.File(hdf5_path, 'a') as f:
+    with h5py.File(hdf5_path, 'r+', libver='latest') as f:
         if variant_group not in f:
             grp_variant = f.create_group(variant_group)
         else:
@@ -180,7 +237,7 @@ def save_per_tick_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, per_tic
     """Save per-tick tracking data to HDF5."""
     variant_group = f'variant_{variant_id:02d}'
     run_group = f'run_{run_id}'
-    with h5py.File(hdf5_path, 'a') as f:
+    with h5py.File(hdf5_path, 'r+', libver='latest') as f:
         if variant_group not in f:
             grp_variant = f.create_group(variant_group)
         else:

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Manager
 
 import yaml
 import numpy as np
@@ -19,11 +20,7 @@ from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
 from .hdf5_utils import (
     create_hdf5_file,
-    save_variant_summary_to_hdf5,
-    save_wiring_to_hdf5,
-    save_modulation_to_hdf5,
-    save_heatmaps_to_hdf5,
-    save_per_tick_to_hdf5,
+    write_variant_to_hdf5,
 )
 
 
@@ -31,7 +28,7 @@ from .hdf5_utils import (
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/random_vs_lookup/"
+EXPERIMENT_FOLDER = "data/temp/"
 SIMULATION_NAME   = "random"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
@@ -46,7 +43,7 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1000                            # Number of randomized wiring variants to generate
+N_VARIANTS = 10                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
@@ -482,6 +479,9 @@ def run_variant_worker(
     brain_module_name,
     cfg,
     hdf5_path,
+    write_lock,
+    enable_per_tick_tracking,
+    enable_heat_map_tracking,
 ):
     """Execute a single variant's simulation runs and return data for HDF5 write."""
     
@@ -597,14 +597,21 @@ def run_variant_worker(
         summary_array[run_id]['decisions'] = rec.decisions
         summary_array[run_id]['correct_decisions'] = rec.correct_decisions
     
-    return (
-        variant_id,
+    # WRITE DIRECTLY TO HDF5 BEFORE RETURNING (with lock serialization)
+    write_variant_to_hdf5(
+        hdf5_path, 
+        variant_id + 1, 
+        write_lock,
         wiring_array,
         modulation_array,
         summary_array,
-        heatmaps_all_runs,
-        per_tick_all_runs,
+        per_tick_all_runs=per_tick_all_runs,
+        heatmaps_all_runs=heatmaps_all_runs,
+        enable_per_tick_tracking=enable_per_tick_tracking,
+        enable_heat_map_tracking=enable_heat_map_tracking,
     )
+    
+    return variant_id
 
 
 # ============================================================
@@ -729,85 +736,51 @@ def main():
         # Run simulation
         
         if num_workers is None:
-            for variant_id in range(N_VARIANTS):
-                print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
+            with Manager() as manager:
+                write_lock = manager.Lock()
                 
-                (
-                    returned_variant_id,
-                    wiring_array,
-                    modulation_array,
-                    summary_array,
-                    heatmaps_all_runs,
-                    per_tick_all_runs,
-                ) = run_variant_worker(
-                    variant_id,
-                    brain_module_name,
-                    cfg,
-                    hdf5_path,
-                )
-                
-                # Write to HDF5
-                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
-                
-                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
-                    for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-                
-                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
-                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
-                
-                print(" done")
-        
-        else:
-            results_by_variant = {}
-            completed = 0
-            
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {}
                 for variant_id in range(N_VARIANTS):
-                    future = executor.submit(
-                        run_variant_worker,
+                    print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
+                    
+                    run_variant_worker(
                         variant_id,
                         brain_module_name,
                         cfg,
                         hdf5_path,
+                        write_lock,
+                        ENABLE_PER_TICK_TRACKING,
+                        ENABLE_HEAT_MAP_TRACKING,
                     )
-                    futures[future] = variant_id
-                
-                for future in as_completed(futures):
-                    variant_id = futures[future]
-                    completed += 1
-                    result = future.result()
-                    results_by_variant[result[0]] = result
-                    print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
+                    
+                    print(" done")
+        
+        else:
+            completed = 0
             
-            print()
-            
-            for variant_id in range(N_VARIANTS): 
-                (
-                    returned_variant_id,
-                    wiring_array,
-                    modulation_array,
-                    summary_array,
-                    heatmaps_all_runs,
-                    per_tick_all_runs,
-                ) = results_by_variant[variant_id]
+            with Manager() as manager:
+                write_lock = manager.Lock()
                 
-                # Write to HDF5
-                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    futures = {}
+                    for variant_id in range(N_VARIANTS):
+                        future = executor.submit(
+                            run_variant_worker,
+                            variant_id,
+                            brain_module_name,
+                            cfg,
+                            hdf5_path,
+                            write_lock,
+                            ENABLE_PER_TICK_TRACKING,
+                            ENABLE_HEAT_MAP_TRACKING,
+                        )
+                        futures[future] = variant_id
+                    
+                    for future in as_completed(futures):
+                        completed += 1
+                        variant_id = future.result()  # Only returns variant_id after HDF5 write complete
+                        print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
                 
-                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
-                    for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-                
-                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
-                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+                print()
         
         print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
     
