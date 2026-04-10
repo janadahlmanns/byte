@@ -313,6 +313,13 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     fig, ax = plt.subplots(figsize=(10, 7))
     positions = list(range(len(group_order)))
     
+    # Jitter overlay (draw first so it appears behind boxplots)
+    for i, g in enumerate(group_order):
+        values = group_data[g]
+        color = color_map.get(g, default_bench_color)
+        jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
+        ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=1)
+    
     # Box plots
     bp = ax.boxplot(
         [group_data[g] for g in group_order],
@@ -326,13 +333,6 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         bp['boxes'][i].set_facecolor(color)
         bp['boxes'][i].set_alpha(0.3)
         bp['medians'][i].set_color('black')
-    
-    # Jitter overlay
-    for i, g in enumerate(group_order):
-        values = group_data[g]
-        color = color_map.get(g, default_bench_color)
-        jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
-        ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=3)
     
     ax.set_xticks(positions)
     ax.set_xticklabels(group_order, fontsize=11)
