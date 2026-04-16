@@ -1700,7 +1700,7 @@ experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
 df_experiment = _load_hdf5_variants_to_dataframe(experiment_hdf5_path, source_label="experiment")
 print(f"  Loaded {len(df_experiment)} runs across {df_experiment['variant'].nunique()} variants")
 df_all = df_experiment.copy()
-
+  
 print("Experiment data loaded.")
 print("Loading benchmark data...")
 

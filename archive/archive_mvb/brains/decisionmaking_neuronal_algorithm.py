@@ -1,6 +1,6 @@
 import numpy as np
 import importlib
-from ..world import World
+from ....mvb.world import World
 
 try:
     from simulate.pause_manager import get_pause_manager, PauseManagerExit

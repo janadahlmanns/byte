@@ -50,7 +50,7 @@ N_VARIANTS = 1                            # Number of randomized wiring variants
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 300                           # 300 runs per variant as determined by convergence analysis
+N_RUNS      = 3                           # 300 runs per variant as determined by convergence analysis
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
