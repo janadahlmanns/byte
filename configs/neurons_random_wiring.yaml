@@ -31,44 +31,11 @@ decisionmaking:
 # ============================================================
 brain:
   n_neurons: 11
+  threshold: 0.5          # Applied to all neurons
+  noise_level: 0.05       # Applied to all neurons
   
-  # Per-neuron properties (threshold, noise_level)
-  # Index must match neuron_id (0-indexed)
   # Neurons 0-4: sensory input, 5-9: output, 10: always-on
-  neuron_properties:
-    - id: 0
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 1
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 2
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 3
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 4
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 5
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 6
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 7
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 8
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 9
-      threshold: 0.5
-      noise_level: 0.05
-    - id: 10
-      threshold: 0.5
-      noise_level: 0.05
+  # Tonic levels are set in genome generation (1.0 for neuron 10, random for others)
   
   # Sensory input mappings: which neuron receives which sensor
   # Format: sensor_key: [target_neuron_id, weight, reliability]
