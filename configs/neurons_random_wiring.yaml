@@ -30,10 +30,11 @@ decisionmaking:
 # BRAIN STRUCTURE & PROPERTIES
 # ============================================================
 brain:
-  n_neurons: 10
+  n_neurons: 11
   
   # Per-neuron properties (threshold, noise_level)
   # Index must match neuron_id (0-indexed)
+  # Neurons 0-4: sensory input, 5-9: output, 10: always-on
   neuron_properties:
     - id: 0
       threshold: 0.5
@@ -63,6 +64,9 @@ brain:
       threshold: 0.5
       noise_level: 0.05
     - id: 9
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 10
       threshold: 0.5
       noise_level: 0.05
   
