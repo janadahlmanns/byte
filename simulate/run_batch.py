@@ -14,7 +14,7 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
-from mvb.generate_genome_random import generate_random_genome
+from mvb.genome import generate_random_genome
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
