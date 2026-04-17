@@ -71,9 +71,9 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
-ENABLE_PER_TICK_TRACKING = False              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
-ENABLE_HEAT_MAP_TRACKING = False             # Enable tracking of Byte position heat map
+ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
+ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
 # ============================================================
 # helpers
@@ -305,60 +305,59 @@ class MetricsRecorder:
         
         grid_height = worm.world.cfg.grid_height
         grid_width = worm.world.cfg.grid_width
+                
+        if ENABLE_PER_RUN_TRACKING:
+            kwargs = {
+            'per_tick_count': 0,
+            'connections_to_track': connections_to_track,
+            'start_y': worm.y,
+            'start_x': worm.x,
+            'prev_y': worm.y,
+            'prev_x': worm.x,
+            'prev_eats': worm.eats,
+            'prev_action': None,
+            'grid_height': grid_height,
+            'grid_width': grid_width,
+            'moves_north': 0,
+            'moves_south': 0,
+            'moves_east': 0,
+            'moves_west': 0,
+            'food_sensed_north': 0,
+            'food_sensed_east': 0,
+            'food_sensed_south': 0,
+            'food_sensed_west': 0,
+            'prev_on_food': False,
+            'prev_action_was_decision': False,
+            'decisions': 0,
+            'correct_decisions': 0,
+            }
+            if ENABLE_PER_TICK_TRACKING:
+                dtype_fields = [
+                    ('tick', 'i4'),
+                    ('food_sensed_N', 'u1'),
+                    ('food_sensed_E', 'u1'),
+                    ('food_sensed_S', 'u1'),
+                    ('food_sensed_W', 'u1'),
+                    ('movement', 'S4'),
+                    ('food_consumed', 'u1'),
+                    ('energy', 'f4'),
+                    ('manhattan_dist', 'u2'),
+                    ('decision_made', 'u1'),
+                ]
+                for src, tgt in connections_to_track:
+                    dtype_fields.append((f'{src}_{tgt}', 'f4'))
+                kwargs['per_tick_data'] = np.zeros(MAX_TICKS, dtype=dtype_fields)
+            
+            if ENABLE_HEAT_MAP_TRACKING:
+                entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+                staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+                entering_heatmap[worm.y, worm.x] = 1
+                kwargs['entering_heatmap'] = entering_heatmap
+                kwargs['staying_heatmap'] = staying_heatmap
+            return cls(**kwargs)
+        else:
+            return cls()        
         
-        # Only allocate detailed tracking arrays if ENABLE_PER_RUN_TRACKING is True
-        per_tick_data = None
-        if ENABLE_PER_RUN_TRACKING and ENABLE_PER_TICK_TRACKING:
-            dtype_fields = [
-                ('tick', 'i4'),
-                ('food_sensed_N', 'u1'),
-                ('food_sensed_E', 'u1'),
-                ('food_sensed_S', 'u1'),
-                ('food_sensed_W', 'u1'),
-                ('movement', 'S4'),
-                ('food_consumed', 'u1'),
-                ('energy', 'f4'),
-                ('manhattan_dist', 'u2'),
-                ('decision_made', 'u1'),
-            ]
-            for src, tgt in connections_to_track:
-                dtype_fields.append((f'{src}_{tgt}', 'f4'))
-            per_tick_data = np.zeros(MAX_TICKS, dtype=dtype_fields)
-        
-        entering_heatmap = None
-        staying_heatmap = None
-        if ENABLE_PER_RUN_TRACKING and ENABLE_HEAT_MAP_TRACKING:
-            entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-            staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-            entering_heatmap[worm.y, worm.x] = 1
-        
-        return cls(
-            per_tick_data=per_tick_data,
-            per_tick_count=0,
-            connections_to_track=connections_to_track,
-            start_y=worm.y,
-            start_x=worm.x,
-            prev_y=worm.y,
-            prev_x=worm.x,
-            prev_eats=worm.eats,
-            prev_action=None,
-            grid_height=grid_height,
-            grid_width=grid_width,
-            entering_heatmap=entering_heatmap,
-            staying_heatmap=staying_heatmap,
-            moves_north=0,
-            moves_south=0,
-            moves_east=0,
-            moves_west=0,
-            food_sensed_north=0,
-            food_sensed_east=0,
-            food_sensed_south=0,
-            food_sensed_west=0,
-            prev_on_food=False,
-            prev_action_was_decision=False,
-            decisions=0,
-            correct_decisions=0,
-        )
 
     def record(self, worm: Worm):
         """Record metrics for this tick."""
@@ -528,32 +527,34 @@ def run_variant_worker(
             if connections[src, tgt, 0] != 0.0:
                 connections_to_track.append((src, tgt))
     
-    # Pre-allocate wiring array with columns for all run final weights
-    dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
-    for run_id in range(1, N_RUNS + 1):
-        dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
-    wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
-    
-    for idx, (src, tgt) in enumerate(connections_to_track):
-        wiring_array[idx]['src'] = src
-        wiring_array[idx]['tgt'] = tgt
-        wiring_array[idx]['weight_initial'] = connections[src, tgt, 0]
-    
-    # Pre-allocate modulation array
-    dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
-    modulation_list = []
-    for (target_src, target_tgt), modulators in modulator_spec.items():
-        for mod_src, mod_weight in modulators:
-            modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
-    modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
-    
-    # Pre-allocate summary array
+    # Pre-allocate summary array (always needed for lifetime tracking)
     dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'), 
                      ('distance', 'i4'), ('final_energy', 'f4'),
                      ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
                      ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
                      ('decisions', 'i4'), ('correct_decisions', 'i4')]
     summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
+    
+    # Only allocate tracking structures if per-run tracking is enabled
+    if ENABLE_PER_RUN_TRACKING:
+        # Pre-allocate wiring array with columns for all run final weights
+        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
+        for run_id in range(1, N_RUNS + 1):
+            dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
+        wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
+        
+        for idx, (src, tgt) in enumerate(connections_to_track):
+            wiring_array[idx]['src'] = src
+            wiring_array[idx]['tgt'] = tgt
+            wiring_array[idx]['weight_initial'] = connections[src, tgt, 0]
+        
+        # Pre-allocate modulation array
+        dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
+        modulation_list = []
+        for (target_src, target_tgt), modulators in modulator_spec.items():
+            for mod_src, mod_weight in modulators:
+                modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
+        modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
     
     # Accumulate per-tick and heatmap data for batch write after all runs
     per_tick_all_runs = {}
@@ -598,9 +599,10 @@ def run_variant_worker(
         if ENABLE_HEAT_MAP_TRACKING and rec.entering_heatmap is not None:
             heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
         
-        for idx, (src, tgt) in enumerate(connections_to_track):
-            w = get_connection_weight(worm.brain, src, tgt)
-            wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
+        if ENABLE_PER_RUN_TRACKING:
+            for idx, (src, tgt) in enumerate(connections_to_track):
+                w = get_connection_weight(worm.brain, src, tgt)
+                wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
         
         summary_array[run_id]['run_id'] = run_id + 1
         summary_array[run_id]['lifetime_ticks'] = worm.ticks
@@ -824,8 +826,6 @@ def main():
         if ENABLE_PER_RUN_TRACKING:
             create_hdf5_file(hdf5_path, comprehensive_config)
             print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
-        else:
-            print(f"[config] Per-run tracking disabled. Simulations will run without data recording.\n")
         
         # Create manager and lock for parallel HDF5 writing
         manager = Manager()
