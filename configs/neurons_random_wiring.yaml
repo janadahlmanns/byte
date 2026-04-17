@@ -5,19 +5,84 @@ world:
   - 26
   - 26
   rng_seed: 1
+
 food:
   feeding_paradigm:
     initial: true
     regrow: false
+
 worm:
   speed: 1
   energy_capacity: 30
   metabolic_rate: 1
+
 sensors:
   active:
   - current_field
   - adjacent_binary
+
 decisionmaking:
   version: plasticity
   brain: true
+
+# ============================================================
+# BRAIN STRUCTURE & PROPERTIES
+# ============================================================
+brain:
+  n_neurons: 10
+  
+  # Per-neuron properties (threshold, noise_level)
+  # Index must match neuron_id (0-indexed)
+  neuron_properties:
+    - id: 0
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 1
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 2
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 3
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 4
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 5
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 6
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 7
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 8
+      threshold: 0.5
+      noise_level: 0.05
+    - id: 9
+      threshold: 0.5
+      noise_level: 0.05
+  
+  # Sensory input mappings: which neuron receives which sensor
+  # Format: sensor_key: [target_neuron_id, weight, reliability]
+  sensory_mapping:
+    on_food: [0, 1.0, 0.9]
+    food_north: [1, 0.8, 0.9]
+    food_east: [2, 0.8, 0.9]
+    food_south: [3, 0.8, 0.9]
+    food_west: [4, 0.8, 0.9]
+  
+  # Output mappings: which neurons drive which actions
+  # Format: neuron_id: action_name
+  output_mapping:
+    5: stay
+    6: move_north
+    7: move_east
+    8: move_south
+    9: move_west
+  
+  # Decision-making parameters
+  max_decision_delay: 2.0  # Factor for calculating max_ticks from warmup
 

@@ -14,10 +14,12 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
-from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
+from mvb.generate_genome_random import generate_random_genome
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
+from mvb.brain_renderer_qt import BrainQtRenderer
+from .pause_manager import init_pause_manager, cleanup_pause_manager, get_pause_manager, PauseManagerExit
 from .hdf5_utils import (
     create_hdf5_file,
     save_variant_summary_to_hdf5,
@@ -54,7 +56,7 @@ N_VARIANTS = 1                            # Number of randomized wiring variants
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 3                           # 300 runs per variant as determined by convergence analysis
+N_RUNS      = 1                           # 300 runs per variant as determined by convergence analysis
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -62,16 +64,16 @@ REGROW_TIME = 3000                           # Time for food to regrow
 # VISUALIZATION PARAMETERS
 # ============================================================
 
-VIZ_ENABLED = False                        # Enable visualization
+VIZ_ENABLED = True                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
+VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
 
 # ============================================================
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
@@ -290,17 +292,17 @@ class MetricsRecorder:
     correct_decisions: int = 0
 
     @classmethod
-    def empty(cls, worm: Worm, brain_init_spec):
-        """Initialize recorder with brain init spec and worm state.
+    def empty(cls, worm: Worm, genome):
+        """Initialize recorder with genome and worm state.
         
         If ENABLE_PER_RUN_TRACKING is False, only lifetime metrics are tracked.
         """
-        neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
+        connection_weights = genome["connection_weights"]
         
         connections_to_track = []
-        for src in range(connections.shape[0]):
-            for tgt in range(connections.shape[1]):
-                if connections[src, tgt, 0] != 0.0:
+        for src in range(connection_weights.shape[0]):
+            for tgt in range(connection_weights.shape[1]):
+                if connection_weights[src, tgt, 0] != 0.0:
                     connections_to_track.append((src, tgt))
         
         grid_height = worm.world.cfg.grid_height
@@ -489,42 +491,32 @@ class MetricsRecorder:
 def run_variant_worker(
     variant_id,
     brain_module_name,
+    genome,
     cfg,
     hdf5_path,
     hdf5_lock=None,
+    viz_enabled=False,
 ):
     """Execute a single variant's simulation runs and write data directly to HDF5.
     
     Args:
         variant_id: Index of this variant
         brain_module_name: Name of brain module to import
+        genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
         cfg: Configuration dict
         hdf5_path: Path to HDF5 file to write to
         hdf5_lock: Optional multiprocessing.Lock() for synchronized writes
+        viz_enabled: Whether to create and display renderer visualization
     """
     
     brain_module = load_brain_module(brain_module_name)
     
-    # Calculate wiring seed for this variant
-    wiring_seed = WIRING_RANDOMIZATION_SEED + variant_id
-    
-    brain_init_spec = load_brain_init(
-        BRAIN_INIT,
-        wiring_seed=wiring_seed,
-        connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
-        connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
-        modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
-        modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
-    )
-    
-    # Extract brain spec components
-    neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
-    
-    # Identify non-zero connections at initialization
+    # Extract genome components for tracking
+    connection_weights = genome["connection_weights"]
     connections_to_track = []
-    for src in range(connections.shape[0]):
-        for tgt in range(connections.shape[1]):
-            if connections[src, tgt, 0] != 0.0:
+    for src in range(connection_weights.shape[0]):
+        for tgt in range(connection_weights.shape[1]):
+            if connection_weights[src, tgt, 0] != 0.0:
                 connections_to_track.append((src, tgt))
     
     # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
@@ -551,11 +543,12 @@ def run_variant_worker(
         for idx, (src, tgt) in enumerate(connections_to_track):
             wiring_array[idx]['src'] = src
             wiring_array[idx]['tgt'] = tgt
-            wiring_array[idx]['weight_initial'] = connections[src, tgt, 0]
+            wiring_array[idx]['weight_initial'] = connection_weights[src, tgt, 0]
         
         # Pre-allocate modulation array
         dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
         modulation_list = []
+        modulator_spec = genome["modulation_spec"]
         for (target_src, target_tgt), modulators in modulator_spec.items():
             for mod_src, mod_weight in modulators:
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
@@ -579,23 +572,64 @@ def run_variant_worker(
         worm = make_worm(world, cfg)
         worm.active_sensors = make_sensor_cfg(cfg)
         worm.brain = brain_module
-        if hasattr(worm.brain, "init"):
-            if brain_init_spec is not None:
-                worm.brain.init(worm, cfg, rng_neuron_noise, brain_init_spec=brain_init_spec)
-            else:
-                worm.brain.init(worm, cfg, rng_neuron_noise)
+        
+        # Initialize brain with genome
+        brain_module.init_brain(genome, cfg, rng_neuron_noise)
         
         reset_sim(world, feeding_cfg, rng_food, worm)
-        worm.renderer = None
         
-        rec = MetricsRecorder.empty(worm, brain_init_spec)
+        # Create renderers if visualization is enabled
+        if viz_enabled:
+            try:
+                viz_fps = cfg.get("viz", {}).get("fps", 4)
+                brain_viz_fps = cfg.get("viz", {}).get("brain_fps", 4)
+                
+                # Create world renderer
+                worm.renderer = QtRenderer(world, worm, viz_fps)
+                
+                # Create brain renderer and link it to the brain module
+                if cfg.get("viz", {}).get("brain_enabled", False):
+                    brain_renderer = BrainQtRenderer(fps=brain_viz_fps)
+                    brain_module._brain_renderer = brain_renderer
+            except Exception as e:
+                print(f"[WARNING] Failed to create renderer: {e}. Running without visualization.")
+                worm.renderer = None
+                brain_module._brain_renderer = None
+        else:
+            worm.renderer = None
+            brain_module._brain_renderer = None
+        
+        rec = MetricsRecorder.empty(worm, genome)
         rec.record(worm)
         
-        while worm.alive and worm.ticks < MAX_TICKS:
-            world.step()
-            worm.step_day(rng_decision)
-            worm.ticks += 1
-            rec.record(worm)
+        # Get pause manager for checkpoints (if visualization enabled)
+        pause_mgr = None
+        if viz_enabled:
+            try:
+                pause_mgr = get_pause_manager()
+            except RuntimeError:
+                pass
+        
+        try:
+            while worm.alive and worm.ticks < MAX_TICKS:
+                # Check pause/exit at start of each tick
+                if pause_mgr is not None:
+                    pause_mgr.check_pause()
+                
+                world.step()
+                worm.step_day(rng_decision)
+                worm.ticks += 1
+                rec.record(worm)
+                
+                # Double-check exit flag after each step
+                if pause_mgr is not None and pause_mgr.should_exit():
+                    raise PauseManagerExit("Exit requested during simulation")
+                
+                # Wait to maintain FPS if visualization is enabled
+                if worm.renderer is not None:
+                    worm.renderer.wait_frame()
+        except PauseManagerExit:
+            pass  # Exit simulation gracefully
         
         if ENABLE_PER_TICK_TRACKING and rec.per_tick_data is not None:
             per_tick_data = rec.per_tick_data[:rec.per_tick_count]
@@ -649,6 +683,26 @@ def run_variant_worker(
             if heatmaps_all_runs:
                 for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
                     save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+    
+    # Keep visualization window open if it was created (but not if exit was requested)
+    should_show_event_loop = viz_enabled
+    if should_show_event_loop:
+        try:
+            pause_mgr_check = get_pause_manager()
+            if pause_mgr_check.should_exit():
+                should_show_event_loop = False
+        except RuntimeError:
+            pass
+    
+    if should_show_event_loop:
+        try:
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                print("[INFO] Visualization complete. Close the window to continue.")
+                app.exec()
+        except Exception as e:
+            pass  # Silently fail if no Qt window exists
     
     return (variant_id, lifespan_vector)
 
@@ -770,26 +824,26 @@ def main():
     # ============================================================
     try:
         brain_module_name = make_decision_cfg(cfg)
-        brain_init_spec_test = load_brain_init(
-            BRAIN_INIT,
-            wiring_seed=WIRING_RANDOMIZATION_SEED,
-            connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
-            connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
-            modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
-            modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
-        )
         
-        neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec_test
-        n_neurons = neuron_params.shape[0]
+        # Generate test genome for HDF5 metadata
+        test_genome = generate_random_genome(cfg, rng_seed=WIRING_RANDOMIZATION_SEED)
+        connection_weights = test_genome["connection_weights"]
+        n_neurons = connection_weights.shape[0]
+        
+        # Extract example weights for metadata
         excitatory_weight = None
         inhibitory_weight = None
         for src in range(n_neurons):
             for tgt in range(n_neurons):
-                w = connections[src, tgt, 0]
+                w = connection_weights[src, tgt, 0]
                 if w > 0 and excitatory_weight is None:
                     excitatory_weight = float(w)
                 elif w < 0 and inhibitory_weight is None:
                     inhibitory_weight = float(w)
+        
+        brain_cfg = cfg.get("brain", {})
+        max_decision_delay = brain_cfg.get("max_decision_delay", 2.0)
+        eta = test_genome["eta"]
         
         comprehensive_config = {
             "experiment_metadata": {
@@ -836,6 +890,14 @@ def main():
             create_hdf5_file(hdf5_path, comprehensive_config)
             print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
         
+        # Generate all genomes before dispatching workers
+        print("[genome] Generating {} random genomes...".format(N_VARIANTS), flush=True)
+        genomes = []
+        for variant_id in range(N_VARIANTS):
+            genome = generate_random_genome(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
+            genomes.append(genome)
+        print("[genome] Done.\n", flush=True)
+        
         # Create manager and lock for parallel HDF5 writing
         manager = Manager()
         hdf5_lock = manager.Lock()
@@ -850,9 +912,11 @@ def main():
                 returned_variant_id, lifespan_vector = run_variant_worker(
                     variant_id,
                     brain_module_name,
+                    genomes[variant_id],
                     cfg,
                     hdf5_path,
                     hdf5_lock=hdf5_lock,
+                    viz_enabled=viz_enabled,
                 )
                 
                 all_lifespans[variant_id] = lifespan_vector
@@ -868,9 +932,11 @@ def main():
                         run_variant_worker,
                         variant_id,
                         brain_module_name,
+                        genomes[variant_id],
                         cfg,
                         hdf5_path,
                         hdf5_lock=hdf5_lock,
+                        viz_enabled=False,  # Never viz in parallel execution
                     )
                     futures[future] = variant_id
                 

@@ -157,6 +157,124 @@ class BrainState:
 # Initialization
 # ============================================================
 
+def init_brain(genome, yaml_config, rng_neuron_noise):
+    """
+    Initialize brain from genome and YAML configuration.
+    
+    This is the new clean interface replacing the old init() function.
+    
+    Parameters
+    ----------
+    genome : dict
+        Dictionary with keys:
+        - 'connection_weights': np.ndarray (n_neurons, n_neurons, 2)
+        - 'modulation_spec': dict
+        - 'tonic_activations': np.ndarray (n_neurons,)
+        - 'eta': float
+    
+    yaml_config : dict
+        Configuration with 'brain' section containing:
+        - 'n_neurons': int
+        - 'neuron_properties': list of dicts with 'id', 'threshold', 'noise_level'
+        - 'sensory_mapping': dict
+        - 'output_mapping': dict
+        - 'max_decision_delay': float
+    
+    rng_neuron_noise : np.random.Generator
+        RNG for neuron noise
+    
+    Returns
+    -------
+    None (modifies module-level _brain_state)
+    """
+    global _brain_state, _brain_renderer
+    
+    brain_cfg = yaml_config.get("brain", {})
+    n_neurons = brain_cfg.get("n_neurons", 10)
+    neuron_properties = brain_cfg.get("neuron_properties", [])
+    sensory_mapping = brain_cfg.get("sensory_mapping", {})
+    max_decision_delay = brain_cfg.get("max_decision_delay", 2.0)
+    
+    # Extract genome components
+    connection_weights = genome["connection_weights"]
+    modulation_spec = genome["modulation_spec"]
+    tonic_activations = genome["tonic_activations"]
+    eta = genome["eta"]
+    
+    # Build neuron lookup for properties
+    neuron_props_map = {}
+    for prop in neuron_properties:
+        neuron_id = prop.get("id", len(neuron_props_map))
+        neuron_props_map[neuron_id] = prop
+    
+    # Create neurons with properties from YAML
+    neurons = []
+    for i in range(n_neurons):
+        prop = neuron_props_map.get(i, {})
+        threshold = prop.get("threshold", 0.5)
+        noise_level = prop.get("noise_level", 0.05)
+        tonic_level = float(tonic_activations[i])
+        
+        neuron = Neuron(
+            neuron_id=i,
+            threshold=threshold,
+            noise_level=noise_level,
+            tonic_level=tonic_level,
+        )
+        neurons.append(neuron)
+    
+    # Create input sources for sensory inputs
+    input_keys = list(sensory_mapping.keys())
+    input_sources = [InputSource(k) for k in input_keys]
+    
+    # Wire sensory inputs to neurons
+    connections = []
+    cid = 0
+    for sense_key, (target_neuron_id, weight, reliability) in sensory_mapping.items():
+        # Find the InputSource with this key
+        source_obj = None
+        for inp in input_sources:
+            if inp.key == sense_key:
+                source_obj = inp
+                break
+        
+        if source_obj is not None:
+            conn = Connection(cid, source_obj, weight, reliability)
+            neurons[target_neuron_id].incoming.append(conn)
+            connections.append(conn)
+            cid += 1
+    
+    # Wire neurons to neurons from genome connection weights
+    for src in range(n_neurons):
+        for tgt in range(n_neurons):
+            weight, reliability = connection_weights[src, tgt]
+            if weight == 0.0:
+                continue
+            
+            # Check if this connection has modulators
+            modulating_inputs = None
+            if (src, tgt) in modulation_spec:
+                modulating_inputs = [(neurons[mod_id], mod_weight) 
+                                    for mod_id, mod_weight in modulation_spec[(src, tgt)]]
+            
+            conn = Connection(cid, neurons[src], weight, reliability, modulating_inputs)
+            neurons[tgt].incoming.append(conn)
+            connections.append(conn)
+            cid += 1
+    
+    # Create brain state
+    _brain_state = BrainState(neurons, connections, input_sources, eta=eta)
+    _brain_state.max_decision_delay = max_decision_delay
+    
+    # Calculate warmup and max ticks
+    warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(_brain_state)
+    _brain_state.warmup_ticks = warmup_ticks
+    _brain_state.max_ticks = max_ticks
+    
+    # Store RNG for neuron noise
+    _brain_state.rng_neuron_noise = rng_neuron_noise
+
+
 def _calculate_warmup_and_max_ticks(state: BrainState) -> tuple:
     """
     Calculate warmup period and max ticks based on current circuit topology.
@@ -413,8 +531,8 @@ def decide(world: World, worm, rng_decision, inputs: dict):
                 pass
     
     except PauseManagerExit:
-        # User exited - return a random decision to avoid getting stuck
-        return _get_random_decision(state, world, worm, rng_decision)
+        # User exited - re-raise to propagate to simulation loop
+        raise
 
     # Fallback: check if candidates remained stable in stability phase
     if candidate_neurons and stability_history:
