@@ -71,8 +71,8 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
-ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
+ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_TICK_TRACKING = False              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = False             # Enable tracking of Byte position heat map
 
 # ============================================================
@@ -618,6 +618,9 @@ def run_variant_worker(
         summary_array[run_id]['decisions'] = rec.decisions
         summary_array[run_id]['correct_decisions'] = rec.correct_decisions
     
+    # Extract lifespan vector (lifetime_ticks for each run)
+    lifespan_vector = summary_array['lifetime_ticks']
+    
     # Batch write all variant data after all runs complete
     with hdf5_lock:
         # Write variant summary, wiring, and modulation only if per-run tracking is enabled
@@ -636,7 +639,7 @@ def run_variant_worker(
             for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
                 save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
     
-    return (variant_id, summary_array)
+    return (variant_id, lifespan_vector)
 
 
 # ============================================================
@@ -668,46 +671,31 @@ def validate_tracking_flags():
     return True
 
 
-def print_lifespan_summary(all_summaries: dict):
-    """Print lifespan metrics from all variants to terminal."""
-    print("\n" + "="*100)
-    print("[lifespan] SIMULATION SUMMARY (All Variants)")
-    print("="*100)
+def print_lifespan_summary(all_lifespans: dict):
+    """Print lifespan (lifetime ticks) from all variants to terminal.
     
-    for variant_id in sorted(all_summaries.keys()):
-        summary_array = all_summaries[variant_id]
+    Args:
+        all_lifespans: Dict mapping variant_id to lifespan_vector (1D array of lifetime_ticks)
+    """
+    print("\n" + "="*80)
+    print("[lifespan] SIMULATION SUMMARY")
+    print("="*80)
+    
+    for variant_id in sorted(all_lifespans.keys()):
+        lifespan_vector = all_lifespans[variant_id]
         print(f"\nVariant {variant_id:02d}:")
-        print("-" * 100)
-        print(f"{'Run':>4} {'Ticks':>6} {'Foods':>6} {'Distance':>10} {'Energy':>8} "
-              f"{'N/S/E/W':>13} {'Decisions':>9} {'Correct':>8}")
-        print("-" * 100)
+        print("-" * 80)
+        print(f"{'Run':>4} {'Ticks':>10}")
+        print("-" * 80)
         
-        for run_idx, run_data in enumerate(summary_array):
-            run_id = int(run_data['run_id'])
-            ticks = int(run_data['lifetime_ticks'])
-            foods = int(run_data['foods'])
-            distance = int(run_data['distance'])
-            energy = float(run_data['final_energy'])
-            moves = (int(run_data['moves_north']), int(run_data['moves_south']), 
-                    int(run_data['moves_east']), int(run_data['moves_west']))
-            decisions = int(run_data['decisions'])
-            correct = int(run_data['correct_decisions'])
-            
-            moves_str = f"{moves[0]}/{moves[1]}/{moves[2]}/{moves[3]}"
-            print(f"{run_id:>4} {ticks:>6} {foods:>6} {distance:>10} {energy:>8.1f} "
-                  f"{moves_str:>13} {decisions:>9} {correct:>8}")
+        for run_idx, ticks in enumerate(lifespan_vector, start=1):
+            print(f"{run_idx:>4} {int(ticks):>10}")
         
-        # Print variant averages
-        avg_ticks = np.mean(summary_array['lifetime_ticks'])
-        avg_foods = np.mean(summary_array['foods'])
-        avg_distance = np.mean(summary_array['distance'])
-        avg_energy = np.mean(summary_array['final_energy'])
-        avg_decisions = np.mean(summary_array['decisions'])
-        
-        print("-" * 100)
-        print(f"{'AVG':>4} {avg_ticks:>6.1f} {avg_foods:>6.1f} {avg_distance:>10.1f} "
-              f"{avg_energy:>8.1f} {' '*13} {avg_decisions:>9.1f}")
-        print("=" * 100)
+        # Print variant average
+        avg_ticks = np.mean(lifespan_vector)
+        print("-" * 80)
+        print(f"{'AVG':>4} {avg_ticks:>10.1f}")
+        print("=" * 80)
 
 
 # ============================================================
@@ -844,13 +832,13 @@ def main():
         hdf5_lock = manager.Lock()
         
         # Run simulation
-        all_summaries = {}
+        all_lifespans = {}
         
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
                 
-                returned_variant_id, summary_array = run_variant_worker(
+                returned_variant_id, lifespan_vector = run_variant_worker(
                     variant_id,
                     brain_module_name,
                     cfg,
@@ -858,7 +846,7 @@ def main():
                     hdf5_lock=hdf5_lock,
                 )
                 
-                all_summaries[variant_id] = summary_array
+                all_lifespans[variant_id] = lifespan_vector
                 print(" done")
         
         else:
@@ -880,8 +868,8 @@ def main():
                 for future in as_completed(futures):
                     variant_id = futures[future]
                     completed += 1
-                    returned_variant_id, summary_array = future.result()
-                    all_summaries[returned_variant_id] = summary_array
+                    returned_variant_id, lifespan_vector = future.result()
+                    all_lifespans[returned_variant_id] = lifespan_vector
                     print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
             
             print()
@@ -890,8 +878,8 @@ def main():
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
         else:
             print(f"[batch] Simulation completed. (No data recording)")
-            if all_summaries:
-                print_lifespan_summary(all_summaries)
+            if all_lifespans:
+                print_lifespan_summary(all_lifespans)
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
