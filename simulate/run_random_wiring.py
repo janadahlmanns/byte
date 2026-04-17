@@ -71,7 +71,7 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
@@ -527,16 +527,21 @@ def run_variant_worker(
             if connections[src, tgt, 0] != 0.0:
                 connections_to_track.append((src, tgt))
     
-    # Pre-allocate summary array (always needed for lifetime tracking)
-    dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'), 
-                     ('distance', 'i4'), ('final_energy', 'f4'),
-                     ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
-                     ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
-                     ('decisions', 'i4'), ('correct_decisions', 'i4')]
-    summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
+    # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
+    dtype_lifespan = [('lifetime_ticks', 'i4')]
+    lifespan_array = np.zeros(N_RUNS, dtype=dtype_lifespan)
     
-    # Only allocate tracking structures if per-run tracking is enabled
+    # Conditionally allocate full summary array (only if per-run tracking enabled)
     if ENABLE_PER_RUN_TRACKING:
+        summary_array = None
+        dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'), 
+                         ('distance', 'i4'), ('final_energy', 'f4'),
+                         ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
+                         ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
+                         ('decisions', 'i4'), ('correct_decisions', 'i4')]
+        summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
+    
+        # Only allocate tracking structures if per-run tracking is enabled
         # Pre-allocate wiring array with columns for all run final weights
         dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
         for run_id in range(1, N_RUNS + 1):
@@ -556,9 +561,9 @@ def run_variant_worker(
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
     
-    # Accumulate per-tick and heatmap data for batch write after all runs
-    per_tick_all_runs = {}
-    heatmaps_all_runs = {}
+        # Accumulate per-tick and heatmap data for batch write after all runs
+        per_tick_all_runs = {}
+        heatmaps_all_runs = {}
     
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
@@ -599,47 +604,51 @@ def run_variant_worker(
         if ENABLE_HEAT_MAP_TRACKING and rec.entering_heatmap is not None:
             heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
         
+        # Always record lifespan
+        lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
+        
+        # Conditionally record full summary metrics
         if ENABLE_PER_RUN_TRACKING:
             for idx, (src, tgt) in enumerate(connections_to_track):
                 w = get_connection_weight(worm.brain, src, tgt)
                 wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
-        
-        summary_array[run_id]['run_id'] = run_id + 1
-        summary_array[run_id]['lifetime_ticks'] = worm.ticks
-        summary_array[run_id]['foods'] = worm.eats
-        summary_array[run_id]['distance'] = worm.distance
-        summary_array[run_id]['final_energy'] = worm.energy
-        summary_array[run_id]['moves_north'] = rec.moves_north
-        summary_array[run_id]['moves_south'] = rec.moves_south
-        summary_array[run_id]['moves_east'] = rec.moves_east
-        summary_array[run_id]['moves_west'] = rec.moves_west
-        summary_array[run_id]['food_sensed_north'] = rec.food_sensed_north
-        summary_array[run_id]['food_sensed_east'] = rec.food_sensed_east
-        summary_array[run_id]['food_sensed_south'] = rec.food_sensed_south
-        summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
-        summary_array[run_id]['decisions'] = rec.decisions
-        summary_array[run_id]['correct_decisions'] = rec.correct_decisions
+            
+            summary_array[run_id]['run_id'] = run_id + 1
+            summary_array[run_id]['lifetime_ticks'] = worm.ticks
+            summary_array[run_id]['foods'] = worm.eats
+            summary_array[run_id]['distance'] = worm.distance
+            summary_array[run_id]['final_energy'] = worm.energy
+            summary_array[run_id]['moves_north'] = rec.moves_north
+            summary_array[run_id]['moves_south'] = rec.moves_south
+            summary_array[run_id]['moves_east'] = rec.moves_east
+            summary_array[run_id]['moves_west'] = rec.moves_west
+            summary_array[run_id]['food_sensed_north'] = rec.food_sensed_north
+            summary_array[run_id]['food_sensed_east'] = rec.food_sensed_east
+            summary_array[run_id]['food_sensed_south'] = rec.food_sensed_south
+            summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
+            summary_array[run_id]['decisions'] = rec.decisions
+            summary_array[run_id]['correct_decisions'] = rec.correct_decisions
     
-    # Extract lifespan vector (lifetime_ticks for each run)
-    lifespan_vector = summary_array['lifetime_ticks']
+    # Extract lifespan vector (always available)
+    lifespan_vector = lifespan_array['lifetime_ticks']
     
     # Batch write all variant data after all runs complete
     with hdf5_lock:
-        # Write variant summary, wiring, and modulation only if per-run tracking is enabled
-        if ENABLE_PER_RUN_TRACKING:
+        # Write summary array only if per-run tracking is enabled
+        if ENABLE_PER_RUN_TRACKING and summary_array is not None:
             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
             save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
             save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-        
-        # Write accumulated per-tick data if any
-        if per_tick_all_runs:
-            for run_id, per_tick_data in per_tick_all_runs.items():
-                save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-        
-        # Write accumulated heatmap data if any
-        if heatmaps_all_runs:
-            for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+            
+            # Write accumulated per-tick data if any
+            if per_tick_all_runs:
+                for run_id, per_tick_data in per_tick_all_runs.items():
+                    save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
+            
+            # Write accumulated heatmap data if any
+            if heatmaps_all_runs:
+                for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
+                    save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
     
     return (variant_id, lifespan_vector)
 
