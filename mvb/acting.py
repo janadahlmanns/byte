@@ -32,7 +32,7 @@ def do_move(world: World, worm, pos, *args):
     """
     ny, nx = pos
     worm.y, worm.x = ny, nx
-    worm.energy = max(0, worm.energy - 1)  # movement cost
+    worm.energy = max(0, worm.energy - worm.cfg.movement_cost)
     worm.distance += 1
 
 

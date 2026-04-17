@@ -15,6 +15,7 @@ worm:
   speed: 1
   energy_capacity: 30
   metabolic_rate: 1
+  movement_cost: 1
 
 sensors:
   active:

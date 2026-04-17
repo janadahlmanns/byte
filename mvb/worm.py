@@ -8,6 +8,7 @@ class WormConfig:
     speed: int          # cells per tick (must be 1 in v1)
     energy_capacity: int
     metabolic_rate: int # energy per tick
+    movement_cost: int  # energy cost per move
 
 class Worm:
     def __init__(self, cfg: WormConfig, world: World, renderer=None):

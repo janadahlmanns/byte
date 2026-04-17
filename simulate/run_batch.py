@@ -49,14 +49,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1                            # Number of randomized wiring variants to generate
+N_VARIANTS = 100                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 1                           # 300 runs per variant as determined by convergence analysis
+N_RUNS      = 100                           # 300 runs per variant as determined by convergence analysis
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -64,7 +64,7 @@ REGROW_TIME = 3000                           # Time for food to regrow
 # VISUALIZATION PARAMETERS
 # ============================================================
 
-VIZ_ENABLED = True                        # Enable visualization
+VIZ_ENABLED = False                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
 VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
@@ -73,7 +73,7 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
@@ -149,6 +149,7 @@ def make_worm(world, cfg_yaml):
             speed=int(w["speed"]),
             energy_capacity=int(w["energy_capacity"]),
             metabolic_rate=int(w["metabolic_rate"]),
+            movement_cost=int(w.get("movement_cost", 1)),
         ),
         world,
     )
