@@ -66,7 +66,7 @@ REGROW_TIME = 3000                           # Time for food to regrow
 
 VIZ_ENABLED = True                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
+VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
 
 # ============================================================
@@ -495,7 +495,7 @@ def run_variant_worker(
     cfg,
     hdf5_path,
     hdf5_lock=None,
-    viz_enabled=False,
+    viz_enabled = False,
 ):
     """Execute a single variant's simulation runs and write data directly to HDF5.
     
@@ -584,10 +584,11 @@ def run_variant_worker(
                 viz_fps = cfg.get("viz", {}).get("fps", 4)
                 brain_viz_fps = cfg.get("viz", {}).get("brain_fps", 4)
                 
-                # Create world renderer
-                worm.renderer = QtRenderer(world, worm, viz_fps)
+                # Create world renderer (if world visualization is enabled)
+                if cfg.get("viz", {}).get("enabled", False):
+                    worm.renderer = QtRenderer(world, worm, viz_fps)
                 
-                # Create brain renderer and link it to the brain module
+                # Create brain renderer and link it to the brain module (if brain visualization is enabled)
                 if cfg.get("viz", {}).get("brain_enabled", False):
                     brain_renderer = BrainQtRenderer(fps=brain_viz_fps)
                     brain_module._brain_renderer = brain_renderer
@@ -804,8 +805,9 @@ def main():
             viz_enabled = False
     
     num_workers = None
-    if viz_enabled and VIZ_BRAIN_ENABLED:
-        print("[INFO] Brain visualization enabled. Running serially.")
+    # Force serial execution if any visualization is enabled
+    if viz_enabled or VIZ_BRAIN_ENABLED:
+        print("[INFO] Visualization enabled. Running serially.")
     else:
         num_workers = get_num_workers()
         if num_workers is None:
@@ -817,7 +819,7 @@ def main():
     brain = load_brain_module(make_decision_cfg(cfg))
     hdf5_path = make_experiment_dir()
     print(f"[batch] writing to {hdf5_path}\n")
-    pause_mgr = init_pause_manager() if viz_enabled else None
+    pause_mgr = init_pause_manager() if (viz_enabled or VIZ_BRAIN_ENABLED) else None
 
     # ============================================================
     # INITIALIZE HDF5 FILE
@@ -905,6 +907,9 @@ def main():
         # Run simulation
         all_lifespans = {}
         
+        # viz_enabled should be True if any visualization is requested
+        worker_viz_enabled = viz_enabled or VIZ_BRAIN_ENABLED
+        
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
@@ -916,7 +921,7 @@ def main():
                     cfg,
                     hdf5_path,
                     hdf5_lock=hdf5_lock,
-                    viz_enabled=viz_enabled,
+                    viz_enabled=worker_viz_enabled,
                 )
                 
                 all_lifespans[variant_id] = lifespan_vector
@@ -936,7 +941,7 @@ def main():
                         cfg,
                         hdf5_path,
                         hdf5_lock=hdf5_lock,
-                        viz_enabled=False,  # Never viz in parallel execution
+                        viz_enabled = False,  # Never viz in parallel (serial only)
                     )
                     futures[future] = variant_id
                 
