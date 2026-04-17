@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import Manager
 
 import yaml
 import numpy as np
@@ -70,8 +71,9 @@ VIZ_BRAIN_FPS = 4                          # Frames per second for brain visuali
 # DATA TRACKING PARAMETERS
 # ============================================================
 
+ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
-ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
+ENABLE_HEAT_MAP_TRACKING = False             # Enable tracking of Byte position heat map
 
 # ============================================================
 # helpers
@@ -289,7 +291,10 @@ class MetricsRecorder:
 
     @classmethod
     def empty(cls, worm: Worm, brain_init_spec):
-        """Initialize recorder with brain init spec and worm state."""
+        """Initialize recorder with brain init spec and worm state.
+        
+        If ENABLE_PER_RUN_TRACKING is False, only lifetime metrics are tracked.
+        """
         neuron_params, connections, sensory_mapping, max_decision_delay, eta, modulator_spec = brain_init_spec
         
         connections_to_track = []
@@ -300,12 +305,10 @@ class MetricsRecorder:
         
         grid_height = worm.world.cfg.grid_height
         grid_width = worm.world.cfg.grid_width
-        entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-        staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-        entering_heatmap[worm.y, worm.x] = 1
         
+        # Only allocate detailed tracking arrays if ENABLE_PER_RUN_TRACKING is True
         per_tick_data = None
-        if ENABLE_PER_TICK_TRACKING:
+        if ENABLE_PER_RUN_TRACKING and ENABLE_PER_TICK_TRACKING:
             dtype_fields = [
                 ('tick', 'i4'),
                 ('food_sensed_N', 'u1'),
@@ -321,6 +324,13 @@ class MetricsRecorder:
             for src, tgt in connections_to_track:
                 dtype_fields.append((f'{src}_{tgt}', 'f4'))
             per_tick_data = np.zeros(MAX_TICKS, dtype=dtype_fields)
+        
+        entering_heatmap = None
+        staying_heatmap = None
+        if ENABLE_PER_RUN_TRACKING and ENABLE_HEAT_MAP_TRACKING:
+            entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+            staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
+            entering_heatmap[worm.y, worm.x] = 1
         
         return cls(
             per_tick_data=per_tick_data,
@@ -454,7 +464,7 @@ class MetricsRecorder:
             
             self.per_tick_count = tick_idx + 1
         
-        if ENABLE_HEAT_MAP_TRACKING:
+        if ENABLE_HEAT_MAP_TRACKING and self.staying_heatmap is not None:
             self.staying_heatmap[worm.y, worm.x] += 1
             position_changed = (worm.y != self.prev_y) or (worm.x != self.prev_x)
             food_consumed = worm.eats > self.prev_eats
@@ -482,8 +492,17 @@ def run_variant_worker(
     brain_module_name,
     cfg,
     hdf5_path,
+    hdf5_lock=None,
 ):
-    """Execute a single variant's simulation runs and return data for HDF5 write."""
+    """Execute a single variant's simulation runs and write data directly to HDF5.
+    
+    Args:
+        variant_id: Index of this variant
+        brain_module_name: Name of brain module to import
+        cfg: Configuration dict
+        hdf5_path: Path to HDF5 file to write to
+        hdf5_lock: Optional multiprocessing.Lock() for synchronized writes
+    """
     
     brain_module = load_brain_module(brain_module_name)
     
@@ -536,8 +555,9 @@ def run_variant_worker(
                      ('decisions', 'i4'), ('correct_decisions', 'i4')]
     summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
     
-    heatmaps_all_runs = {}
+    # Accumulate per-tick and heatmap data for batch write after all runs
     per_tick_all_runs = {}
+    heatmaps_all_runs = {}
     
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
@@ -572,9 +592,10 @@ def run_variant_worker(
             rec.record(worm)
         
         if ENABLE_PER_TICK_TRACKING and rec.per_tick_data is not None:
-            per_tick_all_runs[run_id+1] = rec.per_tick_data[:rec.per_tick_count]
+            per_tick_data = rec.per_tick_data[:rec.per_tick_count]
+            per_tick_all_runs[run_id+1] = per_tick_data
         
-        if ENABLE_HEAT_MAP_TRACKING:
+        if ENABLE_HEAT_MAP_TRACKING and rec.entering_heatmap is not None:
             heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
         
         for idx, (src, tgt) in enumerate(connections_to_track):
@@ -597,14 +618,96 @@ def run_variant_worker(
         summary_array[run_id]['decisions'] = rec.decisions
         summary_array[run_id]['correct_decisions'] = rec.correct_decisions
     
-    return (
-        variant_id,
-        wiring_array,
-        modulation_array,
-        summary_array,
-        heatmaps_all_runs,
-        per_tick_all_runs,
-    )
+    # Batch write all variant data after all runs complete
+    with hdf5_lock:
+        # Write variant summary, wiring, and modulation only if per-run tracking is enabled
+        if ENABLE_PER_RUN_TRACKING:
+            save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+            save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
+            save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
+        
+        # Write accumulated per-tick data if any
+        if per_tick_all_runs:
+            for run_id, per_tick_data in per_tick_all_runs.items():
+                save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
+        
+        # Write accumulated heatmap data if any
+        if heatmaps_all_runs:
+            for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
+                save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+    
+    return (variant_id, summary_array)
+
+
+# ============================================================
+# TRACKING VALIDATION
+# ============================================================
+
+def validate_tracking_flags():
+    """
+    Validate tracking flags and adjust if necessary.
+    
+    If ENABLE_PER_RUN_TRACKING is False but other tracking flags are True,
+    warn the user and ask whether to disable them or exit.
+    
+    Returns: True to continue, False to exit
+    """
+    if not ENABLE_PER_RUN_TRACKING and (ENABLE_PER_TICK_TRACKING or ENABLE_HEAT_MAP_TRACKING):
+        print("\n[WARNING] Conflicting tracking configuration:")
+        print(f"  ENABLE_PER_RUN_TRACKING = {ENABLE_PER_RUN_TRACKING}")
+        print(f"  ENABLE_PER_TICK_TRACKING = {ENABLE_PER_TICK_TRACKING}")
+        print(f"  ENABLE_HEAT_MAP_TRACKING = {ENABLE_HEAT_MAP_TRACKING}")
+        print("\nWhen per-run tracking is disabled, detailed per-tick and heatmap")
+        print("tracking are useless. Only lifespan metrics will be recorded.")
+        response = input("\nDisable all detailed tracking and continue? (y/n): ").strip().lower()
+        if response == 'y':
+            return True
+        else:
+            print("[EXIT] User cancelled due to tracking configuration conflict.")
+            return False
+    return True
+
+
+def print_lifespan_summary(all_summaries: dict):
+    """Print lifespan metrics from all variants to terminal."""
+    print("\n" + "="*100)
+    print("[lifespan] SIMULATION SUMMARY (All Variants)")
+    print("="*100)
+    
+    for variant_id in sorted(all_summaries.keys()):
+        summary_array = all_summaries[variant_id]
+        print(f"\nVariant {variant_id:02d}:")
+        print("-" * 100)
+        print(f"{'Run':>4} {'Ticks':>6} {'Foods':>6} {'Distance':>10} {'Energy':>8} "
+              f"{'N/S/E/W':>13} {'Decisions':>9} {'Correct':>8}")
+        print("-" * 100)
+        
+        for run_idx, run_data in enumerate(summary_array):
+            run_id = int(run_data['run_id'])
+            ticks = int(run_data['lifetime_ticks'])
+            foods = int(run_data['foods'])
+            distance = int(run_data['distance'])
+            energy = float(run_data['final_energy'])
+            moves = (int(run_data['moves_north']), int(run_data['moves_south']), 
+                    int(run_data['moves_east']), int(run_data['moves_west']))
+            decisions = int(run_data['decisions'])
+            correct = int(run_data['correct_decisions'])
+            
+            moves_str = f"{moves[0]}/{moves[1]}/{moves[2]}/{moves[3]}"
+            print(f"{run_id:>4} {ticks:>6} {foods:>6} {distance:>10} {energy:>8.1f} "
+                  f"{moves_str:>13} {decisions:>9} {correct:>8}")
+        
+        # Print variant averages
+        avg_ticks = np.mean(summary_array['lifetime_ticks'])
+        avg_foods = np.mean(summary_array['foods'])
+        avg_distance = np.mean(summary_array['distance'])
+        avg_energy = np.mean(summary_array['final_energy'])
+        avg_decisions = np.mean(summary_array['decisions'])
+        
+        print("-" * 100)
+        print(f"{'AVG':>4} {avg_ticks:>6.1f} {avg_foods:>6.1f} {avg_distance:>10.1f} "
+              f"{avg_energy:>8.1f} {' '*13} {avg_decisions:>9.1f}")
+        print("=" * 100)
 
 
 # ============================================================
@@ -632,6 +735,10 @@ def main():
     
     if BRAIN_INIT.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
+    
+    # Validate tracking flags
+    if not validate_tracking_flags():
+        return
     
     viz_enabled = VIZ_ENABLED
     
@@ -707,6 +814,7 @@ def main():
                 "feeding_regrow_time": REGROW_TIME,
             },
             "data_tracking": {
+                "enable_per_run_tracking": ENABLE_PER_RUN_TRACKING,
                 "enable_per_tick_tracking": ENABLE_PER_TICK_TRACKING,
                 "enable_heat_map_tracking": ENABLE_HEAT_MAP_TRACKING,
             },
@@ -723,46 +831,37 @@ def main():
         }
         
         comprehensive_config.update(_rename_world_config_keys(cfg))
-        create_hdf5_file(hdf5_path, comprehensive_config)
-        print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
+        
+        # Only create HDF5 file if per-run tracking is enabled
+        if ENABLE_PER_RUN_TRACKING:
+            create_hdf5_file(hdf5_path, comprehensive_config)
+            print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
+        else:
+            print(f"[config] Per-run tracking disabled. Simulations will run without data recording.\n")
+        
+        # Create manager and lock for parallel HDF5 writing
+        manager = Manager()
+        hdf5_lock = manager.Lock()
         
         # Run simulation
+        all_summaries = {}
         
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
                 
-                (
-                    returned_variant_id,
-                    wiring_array,
-                    modulation_array,
-                    summary_array,
-                    heatmaps_all_runs,
-                    per_tick_all_runs,
-                ) = run_variant_worker(
+                returned_variant_id, summary_array = run_variant_worker(
                     variant_id,
                     brain_module_name,
                     cfg,
                     hdf5_path,
+                    hdf5_lock=hdf5_lock,
                 )
                 
-                # Write to HDF5
-                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
-                
-                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
-                    for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-                
-                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
-                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
-                
+                all_summaries[variant_id] = summary_array
                 print(" done")
         
         else:
-            results_by_variant = {}
             completed = 0
             
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -774,42 +873,25 @@ def main():
                         brain_module_name,
                         cfg,
                         hdf5_path,
+                        hdf5_lock=hdf5_lock,
                     )
                     futures[future] = variant_id
                 
                 for future in as_completed(futures):
                     variant_id = futures[future]
                     completed += 1
-                    result = future.result()
-                    results_by_variant[result[0]] = result
+                    returned_variant_id, summary_array = future.result()
+                    all_summaries[returned_variant_id] = summary_array
                     print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
             
             print()
-            
-            for variant_id in range(N_VARIANTS):
-                (
-                    returned_variant_id,
-                    wiring_array,
-                    modulation_array,
-                    summary_array,
-                    heatmaps_all_runs,
-                    per_tick_all_runs,
-                ) = results_by_variant[variant_id]
-                
-                # Write to HDF5
-                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
-                
-                if ENABLE_PER_TICK_TRACKING and per_tick_all_runs:
-                    for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-                
-                if ENABLE_HEAT_MAP_TRACKING and heatmaps_all_runs:
-                    for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
         
-        print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
+        if ENABLE_PER_RUN_TRACKING:
+            print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
+        else:
+            print(f"[batch] Simulation completed. (No data recording)")
+            if all_summaries:
+                print_lifespan_summary(all_summaries)
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")

@@ -5,12 +5,15 @@ Provides functions to save data in HDF5 format, mirroring the folder structure:
 - Root level: experiment metadata (attributes)
 - /variant_XX/ groups: summary, wiring, modulation, heatmaps datasets
 - /variant_XX/per_tick_run_XXXX/ groups: per-tick data datasets
+
+Supports parallel writing with multiprocessing.Lock() to synchronize concurrent HDF5 writes.
 """
 
 import json
 from pathlib import Path
 import numpy as np
 import h5py
+from multiprocessing import Lock
 
 
 def _flatten_config(config: dict) -> dict:
@@ -57,6 +60,7 @@ def _flatten_config(config: dict) -> dict:
     # data_tracking section
     if "data_tracking" in config:
         dt = config["data_tracking"]
+        flattened["enable_per_run_tracking"] = dt.get("enable_per_run_tracking")
         flattened["enable_per_tick_tracking"] = dt.get("enable_per_tick_tracking")
         flattened["enable_heat_map_tracking"] = dt.get("enable_heat_map_tracking")
     
@@ -116,79 +120,152 @@ def create_hdf5_file(hdf5_path: Path, comprehensive_config: dict):
                 f.attrs[attr_name] = str(attr_value)
 
 
-def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array: np.ndarray):
-    """Save variant summary stats to HDF5."""
-    group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
-        if group_name not in f:
-            grp = f.create_group(group_name)
-        else:
-            grp = f[group_name]
-        if 'summary' in grp:
-            del grp['summary']
-        grp.create_dataset('summary', data=summary_array, compression='gzip')
+def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array: np.ndarray, lock=None):
+    """Save variant summary stats to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier
+        summary_array: Data to save
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        group_name = f'variant_{variant_id:02d}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            if 'summary' in grp:
+                del grp['summary']
+            grp.create_dataset('summary', data=summary_array, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
 
 
-def save_wiring_to_hdf5(hdf5_path: Path, variant_id: int, wiring_array: np.ndarray):
-    """Save wiring (initial and final weights per run) to HDF5."""
-    group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
-        if group_name not in f:
-            grp = f.create_group(group_name)
-        else:
-            grp = f[group_name]
-        if 'wiring' in grp:
-            del grp['wiring']
-        grp.create_dataset('wiring', data=wiring_array, compression='gzip')
+def save_wiring_to_hdf5(hdf5_path: Path, variant_id: int, wiring_array: np.ndarray, lock=None):
+    """Save wiring (initial and final weights per run) to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier
+        wiring_array: Data to save
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        group_name = f'variant_{variant_id:02d}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            if 'wiring' in grp:
+                del grp['wiring']
+            grp.create_dataset('wiring', data=wiring_array, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
 
 
-def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: np.ndarray):
-    """Save modulation specs to HDF5."""
-    group_name = f'variant_{variant_id:02d}'
-    with h5py.File(hdf5_path, 'a') as f:
-        if group_name not in f:
-            grp = f.create_group(group_name)
-        else:
-            grp = f[group_name]
-        if 'modulation' in grp:
-            del grp['modulation']
-        grp.create_dataset('modulation', data=modulation_array, compression='gzip')
+def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: np.ndarray, lock=None):
+    """Save modulation specs to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier
+        modulation_array: Data to save
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        group_name = f'variant_{variant_id:02d}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            if 'modulation' in grp:
+                del grp['modulation']
+            grp.create_dataset('modulation', data=modulation_array, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
 
 
-def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, entering_heatmap: np.ndarray, staying_heatmap: np.ndarray):
-    """Save heatmaps (2D arrays) to HDF5."""
-    variant_group = f'variant_{variant_id:02d}'
-    run_group = f'run_{run_id}'
-    with h5py.File(hdf5_path, 'a') as f:
-        if variant_group not in f:
-            grp_variant = f.create_group(variant_group)
-        else:
-            grp_variant = f[variant_group]
-        if run_group not in grp_variant:
-            grp_run = grp_variant.create_group(run_group)
-        else:
-            grp_run = grp_variant[run_group]
-        if 'entering' in grp_run:
-            del grp_run['entering']
-        if 'staying' in grp_run:
-            del grp_run['staying']
-        grp_run.create_dataset('entering', data=entering_heatmap, compression='gzip')
-        grp_run.create_dataset('staying', data=staying_heatmap, compression='gzip')
+def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, entering_heatmap: np.ndarray, staying_heatmap: np.ndarray, lock=None):
+    """Save heatmaps (2D arrays) to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier
+        run_id: Run identifier
+        entering_heatmap: Entering heatmap data
+        staying_heatmap: Staying heatmap data
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        variant_group = f'variant_{variant_id:02d}'
+        run_group = f'run_{run_id}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if variant_group not in f:
+                grp_variant = f.create_group(variant_group)
+            else:
+                grp_variant = f[variant_group]
+            if run_group not in grp_variant:
+                grp_run = grp_variant.create_group(run_group)
+            else:
+                grp_run = grp_variant[run_group]
+            if 'entering' in grp_run:
+                del grp_run['entering']
+            if 'staying' in grp_run:
+                del grp_run['staying']
+            grp_run.create_dataset('entering', data=entering_heatmap, compression='gzip')
+            grp_run.create_dataset('staying', data=staying_heatmap, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
 
 
-def save_per_tick_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, per_tick_array: np.ndarray):
-    """Save per-tick tracking data to HDF5."""
-    variant_group = f'variant_{variant_id:02d}'
-    run_group = f'run_{run_id}'
-    with h5py.File(hdf5_path, 'a') as f:
-        if variant_group not in f:
-            grp_variant = f.create_group(variant_group)
-        else:
-            grp_variant = f[variant_group]
-        if run_group not in grp_variant:
-            grp_run = grp_variant.create_group(run_group)
-        else:
-            grp_run = grp_variant[run_group]
-        if 'per_tick' in grp_run:
-            del grp_run['per_tick']
-        grp_run.create_dataset('per_tick', data=per_tick_array, compression='gzip')
+def save_per_tick_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, per_tick_array: np.ndarray, lock=None):
+    """Save per-tick tracking data to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier
+        run_id: Run identifier
+        per_tick_array: Per-tick tracking data
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        variant_group = f'variant_{variant_id:02d}'
+        run_group = f'run_{run_id}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if variant_group not in f:
+                grp_variant = f.create_group(variant_group)
+            else:
+                grp_variant = f[variant_group]
+            if run_group not in grp_variant:
+                grp_run = grp_variant.create_group(run_group)
+            else:
+                grp_run = grp_variant[run_group]
+            if 'per_tick' in grp_run:
+                del grp_run['per_tick']
+            grp_run.create_dataset('per_tick', data=per_tick_array, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
