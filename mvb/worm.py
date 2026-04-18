@@ -28,6 +28,7 @@ class Worm:
         self.distance = 0
         self.ticks = 0
         self.action = None
+        self.sensory_information = {}
 
 
     def death_gate(self) -> bool:

@@ -20,6 +20,8 @@ class World:
 
     def reset_food(self):
         self.food.fill(0)
+        self.regrow_timer.fill(0)
+        self.ticks = 0
 
     def has_food(self, y: int, x: int) -> bool:
         return self.food[y, x] > 0
