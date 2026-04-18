@@ -670,13 +670,6 @@ def run_variant_worker(
     # ============================================================
     # 5d: Prepare simulation & Build RNG streams
     # ============================================================
-    # Extract genome components for tracking
-    connection_weights = genome["connection_weights"]
-    connections_to_track = []
-    for src in range(connection_weights.shape[0]):
-        for tgt in range(connection_weights.shape[1]):
-            if connection_weights[src, tgt, 0] != 0.0:
-                connections_to_track.append((src, tgt))
 
     # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
     dtype_lifespan = [('lifetime_ticks', 'i4')]
@@ -684,6 +677,13 @@ def run_variant_worker(
 
     # Conditionally allocate full summary array (only if per-run tracking enabled)
     if enable_per_run_tracking:
+        # Extract genome components for tracking
+        connection_weights = genome["connection_weights"]
+        connections_to_track = []
+        for src in range(connection_weights.shape[0]):
+            for tgt in range(connection_weights.shape[1]):
+                if connection_weights[src, tgt, 0] != 0.0:
+                    connections_to_track.append((src, tgt))
         summary_array = None
         dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
                          ('distance', 'i4'), ('final_energy', 'f4'),
@@ -717,11 +717,11 @@ def run_variant_worker(
         per_tick_all_runs = {}
         heatmaps_all_runs = {}
 
-    # ============================================================
-    # 5e: Create MetricsRecorder to track per-tick data
-    # ============================================================
-    rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
-    rec.record(worm)
+        # ============================================================
+        # 5e: Create MetricsRecorder to track per-tick data
+        # ============================================================
+        rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
+        rec.record(worm)
     
     # ============================================================
     # 5f: Simulate runs. For each run do:
@@ -755,7 +755,8 @@ def run_variant_worker(
         seed_food(world, feeding_cfg, rng_food)
         worm.reset()
         reset_sim(world, feeding_cfg, rng_food, worm)
-        rec.reset()
+        if enable_per_run_tracking:
+            rec.reset()
 
         # Create world renderer independently if world visualization is enabled
         if viz_enabled:
@@ -806,7 +807,8 @@ def run_variant_worker(
                 world.step()
                 worm.step_day(rng_decision)
                 worm.ticks += 1
-                rec.record(worm)
+                if enable_per_tick_tracking or enable_heat_map_tracking:
+                    rec.record(worm)
                 
                 # Double-check exit flag after each step
                 if pause_mgr is not None and pause_mgr.should_exit():
