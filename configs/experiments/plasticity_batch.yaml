@@ -7,7 +7,7 @@ experiment:
   simulation_name: "lookup_validation"
   
   # Genome generation
-  genome_type: "lookup"  # Options: "random", "lookup"
+  genome_type: "random"  # Options: "random", "lookup"
   n_variants: 5
 
   # genome type specific parameters - random
@@ -22,9 +22,9 @@ experiment:
   n_runs: 3
   
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 4
-  viz_brain_enabled: true
+  viz_brain_enabled: false
   viz_brain_fps: 4
   
   # Data tracking

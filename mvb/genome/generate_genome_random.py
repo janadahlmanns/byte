@@ -12,6 +12,8 @@ which comes from YAML configuration.
 """
 
 import numpy as np
+from dataclasses import dataclass
+from typing import Dict, Tuple, List
 
 # ============================================================
 # GENOME RANDOMIZATION PARAMETERS
@@ -22,6 +24,69 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5         # Fraction for depression modulation
 ETA_PLASTICITY = 0.01                      # Global plasticity factor
+
+
+# ============================================================
+# RESULT STRUCTURES
+# ============================================================
+
+@dataclass
+class GenomeRandomParams:
+    """Input parameters for random genome generation."""
+    connectivity_degree_excitatory: float
+    connectivity_degree_inhibitory: float
+    modulation_degree_potentiation: float
+    modulation_degree_depression: float
+    eta_plasticity: float
+    n_neurons: int
+    rng_seed: int
+    
+    def __repr__(self) -> str:
+        return (
+            f"GenomeRandomParams(\n"
+            f"  connectivity_excitatory={self.connectivity_degree_excitatory},\n"
+            f"  connectivity_inhibitory={self.connectivity_degree_inhibitory},\n"
+            f"  modulation_potentiation={self.modulation_degree_potentiation},\n"
+            f"  modulation_depression={self.modulation_degree_depression},\n"
+            f"  eta_plasticity={self.eta_plasticity},\n"
+            f"  n_neurons={self.n_neurons},\n"
+            f"  rng_seed={self.rng_seed}\n"
+            f")"
+        )
+
+
+@dataclass
+class GenomeRandomResult:
+    """Complete result from random genome generation."""
+    params: GenomeRandomParams
+    connection_weights: np.ndarray  # shape (n_neurons, n_neurons, 2)
+    modulation_spec: Dict[Tuple[int, int], List[Tuple[int, float]]]
+    tonic_activations: np.ndarray  # shape (n_neurons,)
+    eta: float
+    
+    def to_dict(self) -> dict:
+        """Convert to dict format (compatible with old code)."""
+        return {
+            "connection_weights": self.connection_weights,
+            "modulation_spec": self.modulation_spec,
+            "tonic_activations": self.tonic_activations,
+            "eta": self.eta,
+        }
+    
+    def __getitem__(self, key: str):
+        """Support dict-like access for backward compatibility."""
+        if key == "connection_weights":
+            return self.connection_weights
+        elif key == "modulation_spec":
+            return self.modulation_spec
+        elif key == "tonic_activations":
+            return self.tonic_activations
+        elif key == "eta":
+            return self.eta
+        elif key == "params":
+            return self.params
+        else:
+            raise KeyError(f"GenomeRandomResult has no key '{key}'")
 
 
 def generate_random_genome(yaml_config, rng_seed):
@@ -41,20 +106,32 @@ def generate_random_genome(yaml_config, rng_seed):
     
     Returns
     -------
-    genome : dict
-        Dictionary with keys:
-        - 'connection_weights': np.ndarray shape (n_neurons, n_neurons, 2)
+    genome : GenomeRandomResult
+        Result object containing:
+        - params: GenomeRandomParams with all input parameters
+        - connection_weights: np.ndarray shape (n_neurons, n_neurons, 2)
           Each [i, j] contains [weight, reliability]
-        - 'modulation_spec': dict mapping (src, tgt) → [(mod_id, mod_weight), ...]
-        - 'tonic_activations': np.ndarray shape (n_neurons,)
+        - modulation_spec: dict mapping (src, tgt) → [(mod_id, mod_weight), ...]
+        - tonic_activations: np.ndarray shape (n_neurons,)
           Baseline tonic activation per neuron
-        - 'eta': float
+        - eta: float
           Global plasticity factor
     """
     rng = np.random.default_rng(rng_seed)
     
     brain_cfg = yaml_config.get("brain", {})
     n_neurons = brain_cfg.get("n_neurons", 10)
+    
+    # Capture input parameters
+    params = GenomeRandomParams(
+        connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
+        connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
+        modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
+        modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
+        eta_plasticity=ETA_PLASTICITY,
+        n_neurons=n_neurons,
+        rng_seed=rng_seed,
+    )
     
     # Initialize connection matrix: (n_neurons, n_neurons, 2)
     # Each entry [i, j] = [weight, reliability]
@@ -138,12 +215,13 @@ def generate_random_genome(yaml_config, rng_seed):
     if n_neurons > 0:
         tonic_activations[-1] = 1.0
     
-    # Package into genome
-    genome = {
-        "connection_weights": connection_weights,
-        "modulation_spec": modulation_spec,
-        "tonic_activations": tonic_activations,
-        "eta": ETA_PLASTICITY,
-    }
+    # Package into result structure
+    result = GenomeRandomResult(
+        params=params,
+        connection_weights=connection_weights,
+        modulation_spec=modulation_spec,
+        tonic_activations=tonic_activations,
+        eta=ETA_PLASTICITY,
+    )
     
-    return genome
+    return result

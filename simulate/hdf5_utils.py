@@ -98,6 +98,56 @@ def create_hdf5_file(hdf5_path: Path, yaml_config: dict):
                 f.attrs[str(attr_name)] = str(attr_value)
 
 
+def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list):
+    """
+    Save genome generation parameters to HDF5 as a vertical list dataset.
+    
+    Extracts the params from the first genome (shared across all variants)
+    and saves as a structured array with name-value pairs (one row per parameter).
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        genomes: List of genome objects (each has a .params attribute)
+    """
+    if not genomes:
+        return
+    
+    # Extract params from first genome (same generation params for all variants)
+    params = genomes[0].params
+    
+    # Convert dataclass to dict
+    params_dict = {f.name: getattr(params, f.name) for f in params.__dataclass_fields__.values()}
+    
+    # Flatten the params dict
+    flattened = _flatten_config(params_dict)
+    
+    # Create structured array with name-value pairs
+    dtype = np.dtype([
+        ('name', 'S100'),  # Unicode string, up to 100 chars
+        ('value', 'f8'),   # 64-bit float (can store most numeric values)
+    ])
+    
+    # Create array with one row per parameter
+    genome_props = np.zeros(len(flattened), dtype=dtype)
+    
+    for i, (key, value) in enumerate(sorted(flattened.items())):
+        genome_props[i] = (key.encode('utf-8'), float(value))
+    
+    # Write to HDF5
+    with h5py.File(hdf5_path, 'a') as f:
+        # Delete if exists
+        if 'genome_properties' in f:
+            del f['genome_properties']
+        
+        # Create dataset with compression
+        f.create_dataset(
+            'genome_properties',
+            data=genome_props,
+            compression='gzip',
+            compression_opts=4,
+        )
+
+
 def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array: np.ndarray, lock=None):
     """Save variant summary stats to HDF5.
     

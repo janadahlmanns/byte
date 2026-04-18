@@ -16,6 +16,24 @@ which comes from YAML configuration.
 """
 
 import numpy as np
+from dataclasses import dataclass
+
+
+@dataclass
+class GenomeLookuParams:
+    """Lookup genome generation parameters."""
+    n_neurons: int
+    rng_seed: int
+
+
+@dataclass
+class GenomeLookuResult:
+    """Result from lookup genome generation."""
+    params: GenomeLookuParams
+    connection_weights: np.ndarray
+    modulation_spec: dict
+    tonic_activations: np.ndarray
+    eta: float
 
 
 def generate_lookup_genome(yaml_config, rng_seed):
@@ -174,13 +192,19 @@ def generate_lookup_genome(yaml_config, rng_seed):
     eta = 0.01
     
     # ============================================================
-    # PACKAGE INTO GENOME
+    # PACKAGE INTO GENOME RESULT
     # ============================================================
-    genome = {
-        "connection_weights": connection_weights,
-        "modulation_spec": modulation_spec,
-        "tonic_activations": tonic_activations,
-        "eta": eta,
-    }
+    params = GenomeLookuParams(
+        n_neurons=n_neurons,
+        rng_seed=rng_seed,
+    )
     
-    return genome
+    result = GenomeLookuResult(
+        params=params,
+        connection_weights=connection_weights,
+        modulation_spec=modulation_spec,
+        tonic_activations=tonic_activations,
+        eta=eta,
+    )
+    
+    return result

@@ -22,11 +22,12 @@ from mvb.brain_renderer_qt import BrainQtRenderer
 from .pause_manager import init_pause_manager, cleanup_pause_manager, get_pause_manager, PauseManagerExit
 from .hdf5_utils import (
     create_hdf5_file,
-    save_variant_summary_to_hdf5,
+    
     save_wiring_to_hdf5,
     save_modulation_to_hdf5,
     save_heatmaps_to_hdf5,
     save_per_tick_to_hdf5,
+    save_genome_properties_to_hdf5,
 )
 
 
@@ -773,7 +774,7 @@ def run_variant_worker(
     with hdf5_lock:
         # Write summary array only if per-run tracking is enabled
         if ENABLE_PER_RUN_TRACKING and summary_array is not None:
-            save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+#             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
             save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
             save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
             
@@ -1005,6 +1006,10 @@ def main():
             genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
             genomes.append(genome)
         print("[genome] Done.\n", flush=True)
+        
+        # Save genome generation parameters to HDF5
+        if ENABLE_PER_RUN_TRACKING:
+            save_genome_properties_to_hdf5(hdf5_path, genomes)
         
         # Create manager and lock for parallel HDF5 writing
         manager = Manager()
