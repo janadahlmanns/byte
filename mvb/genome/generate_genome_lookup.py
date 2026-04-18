@@ -23,7 +23,7 @@ from dataclasses import dataclass
 class GenomeLookuParams:
     """Lookup genome generation parameters."""
     n_neurons: int
-    rng_seed: int
+    description: str
 
 
 @dataclass
@@ -34,6 +34,21 @@ class GenomeLookuResult:
     modulation_spec: dict
     tonic_activations: np.ndarray
     eta: float
+    
+    def __getitem__(self, key: str):
+        """Support dict-like access for backward compatibility."""
+        if key == "connection_weights":
+            return self.connection_weights
+        elif key == "modulation_spec":
+            return self.modulation_spec
+        elif key == "tonic_activations":
+            return self.tonic_activations
+        elif key == "eta":
+            return self.eta
+        elif key == "params":
+            return self.params
+        else:
+            raise KeyError(f"GenomeLookuResult has no key '{key}'")
 
 
 def generate_lookup_genome(yaml_config, rng_seed):
@@ -196,7 +211,7 @@ def generate_lookup_genome(yaml_config, rng_seed):
     # ============================================================
     params = GenomeLookuParams(
         n_neurons=n_neurons,
-        rng_seed=rng_seed,
+        description='hand-crafted, prioritize staying if on food, move onto food if sensed, otherwise force random movement'
     )
     
     result = GenomeLookuResult(

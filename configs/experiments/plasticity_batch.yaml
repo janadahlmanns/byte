@@ -7,7 +7,7 @@ experiment:
   simulation_name: "lookup_validation"
   
   # Genome generation
-  genome_type: "random"  # Options: "random", "lookup"
+  genome_type: "lookup"  # Options: "random", "lookup"
   n_variants: 5
 
   # genome type specific parameters - random

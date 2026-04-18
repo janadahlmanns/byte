@@ -121,17 +121,18 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list):
     # Flatten the params dict
     flattened = _flatten_config(params_dict)
     
-    # Create structured array with name-value pairs
+    # Create structured array with name-value pairs (both as byte strings)
     dtype = np.dtype([
-        ('name', 'S100'),  # Unicode string, up to 100 chars
-        ('value', 'f8'),   # 64-bit float (can store most numeric values)
+        ('name', 'S100'),   # byte string, up to 100 chars
+        ('value', 'S256'),  # byte string, up to 256 chars (for numeric or text values)
     ])
     
     # Create array with one row per parameter
     genome_props = np.zeros(len(flattened), dtype=dtype)
     
     for i, (key, value) in enumerate(sorted(flattened.items())):
-        genome_props[i] = (key.encode('utf-8'), float(value))
+        # Convert both key and value to bytes
+        genome_props[i] = (key.encode('utf-8'), str(value).encode('utf-8'))
     
     # Write to HDF5
     with h5py.File(hdf5_path, 'a') as f:
