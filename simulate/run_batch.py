@@ -1084,11 +1084,11 @@ def main():
     worm_speed = cfg["worm"]["speed"]
     worm_energy_capacity = cfg["worm"]["energy_capacity"]
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
-    worm_movement_cost = cfg["worm"].get("movement_cost", 1)
+    worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = make_sensor_cfg(cfg)
-    feeding_paradigm = cfg["food"].get("feeding_paradigm", {"initial": True, "regrow": True})
-    feeding_initial_fraction_per_cell = cfg["food"].get("initial_fraction_per_cell", 0.25)
-    feeding_regrow_time = cfg["food"].get("regrow_time", 3000)
+    feeding_paradigm = cfg["food"]["feeding_paradigm"]
+    feeding_initial_fraction_per_cell = cfg["food"]["initial_fraction_per_cell"]
+    feeding_regrow_time = cfg["food"]["regrow_time"]
     brain_n_neurons = cfg["brain"]["n_neurons"]
     brain_threshold = cfg["brain"]["threshold"]
     brain_noise_level = cfg["brain"]["noise_level"]
