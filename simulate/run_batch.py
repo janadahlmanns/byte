@@ -441,6 +441,32 @@ class MetricsRecorder:
         else:
             return cls()        
         
+    def reset(self):
+        """Reset all counters and state for a new run while keeping arrays allocated."""
+        self.per_tick_count = 0
+        self.prev_y = self.start_y
+        self.prev_x = self.start_x
+        self.prev_eats = 0
+        self.prev_action = None
+        self.moves_north = 0
+        self.moves_south = 0
+        self.moves_east = 0
+        self.moves_west = 0
+        self.food_sensed_north = 0
+        self.food_sensed_east = 0
+        self.food_sensed_south = 0
+        self.food_sensed_west = 0
+        self.prev_on_food = False
+        self.prev_action_was_decision = False
+        self.decisions = 0
+        self.correct_decisions = 0
+        # Clear array data if allocated
+        if self.per_tick_data is not None:
+            self.per_tick_data.fill(0)
+        if self.entering_heatmap is not None:
+            self.entering_heatmap.fill(0)
+        if self.staying_heatmap is not None:
+            self.staying_heatmap.fill(0)
 
     def record(self, worm: Worm):
         """Record metrics for this tick."""
@@ -601,13 +627,26 @@ def run_variant_worker(
     VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
     
     # ============================================================
-    # 5a. LOAD BRAIN MODULE
+    # 5a: Create World instance
     # ============================================================
-
+    world = make_world(cfg)
+    feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
+    world.feeding_cfg = feeding_cfg
+    
+    # ============================================================
+    # 5b: Load Brain Module
+    # ============================================================
     brain_module = load_brain_module(brain_module_name)
     
     # ============================================================
-    # 5b: Prepare simulation & Build RNG streams
+    # 5c: Create Worm instance
+    # ============================================================
+    worm = make_worm(world, cfg)
+    worm.active_sensors = make_sensor_cfg(cfg)
+    worm.brain = brain_module
+    
+    # ============================================================
+    # 5d: Prepare simulation & Build RNG streams
     # ============================================================
 
     # Extract genome components for tracking
@@ -660,50 +699,39 @@ def run_variant_worker(
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
     # ============================================================
-    # 5a: Create World instance
+    # 5e: Create MetricsRecorder to track per-tick data
     # ============================================================
-    world = make_world(cfg)
-    feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
-    world.feeding_cfg = feeding_cfg
+    rec = MetricsRecorder.empty(worm, genome, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING, MAX_TICKS)
+    rec.record(worm)
     
     # ============================================================
-    # 5b: Create Worm instance
-    # ============================================================
-    worm = make_worm(world, cfg)
-    worm.active_sensors = make_sensor_cfg(cfg)
-    worm.brain = brain_module
-    
-    # ============================================================
-    # 5c: Simulate runs. For each run do:
+    # 5f: Simulate runs. For each run do:
     # ============================================================
     for run_id in range(N_RUNS):
 
             # ============================================================
-            # 5c1: Prepare simulation & Build RNG streams
+            # 5f1: Prepare simulation & Build RNG streams
             # ============================================================
         rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
             cfg["world"]["rng_seed"] + run_id, has_brain_config
         )
-        
+
         # ============================================================
-        # 5d: Reset world & worm
-        # ============================================================
-        world.reset_food()
-        seed_food(world, feeding_cfg, rng_food)
-        worm.reset()
-        
-        # ============================================================
-        # 5e: Call brain_module.init_brain(genome, cfg, rng_noise) 
+        # 5f2: Call brain_module.init_brain(genome, cfg, rng_noise) 
         # ============================================================
 
         # Initialize brain with genome
         brain_module.init_brain(genome, cfg, rng_neuron_noise)
         
-        # ============================================================
-        # 5f: Reset simulation
-        # ============================================================
 
+        # ============================================================
+        # 5f3: Reset world & worm & simulation
+        # ============================================================
+        world.reset_food()
+        seed_food(world, feeding_cfg, rng_food)
+        worm.reset()
         reset_sim(world, feeding_cfg, rng_food, worm)
+        rec.reset()
         
         # Create renderers if visualization is enabled
         if viz_enabled:
@@ -726,13 +754,6 @@ def run_variant_worker(
             worm.renderer = None
             brain_module._brain_renderer = None
         
-        # ============================================================
-        # 5c6: Create MetricsRecorder to track per-tick data
-        # ============================================================
-
-        rec = MetricsRecorder.empty(worm, genome, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING, MAX_TICKS)
-        rec.record(worm)
-        
         # Get pause manager for checkpoints (if visualization enabled)
         pause_mgr = None
         if viz_enabled:
@@ -742,7 +763,7 @@ def run_variant_worker(
                 pass
         
         # ============================================================
-        # 5c7: simulate
+        # 5f4: simulate
         # ============================================================
 
         try:
@@ -802,7 +823,7 @@ def run_variant_worker(
     lifespan_vector = lifespan_array['lifetime_ticks']
     
         # ============================================================
-        # 5d: Batch write to HDF5
+        # 5g: Batch write to HDF5
         # ============================================================
 
     # Batch write all variant data after all runs complete
