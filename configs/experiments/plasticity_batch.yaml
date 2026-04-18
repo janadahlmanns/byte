@@ -19,7 +19,7 @@ experiment:
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 1
+  n_runs: 4
   
   # Visualization
   viz_enabled: false

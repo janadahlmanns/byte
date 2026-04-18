@@ -22,7 +22,7 @@ from mvb.brain_renderer_qt import BrainQtRenderer
 from .pause_manager import init_pause_manager, cleanup_pause_manager, get_pause_manager, PauseManagerExit
 from .hdf5_utils import (
     create_hdf5_file,
-    
+    save_variant_summary_to_hdf5,
     save_wiring_to_hdf5,
     save_modulation_to_hdf5,
     save_heatmaps_to_hdf5,
@@ -825,7 +825,7 @@ def run_variant_worker(
         with hdf5_lock:
             # Write summary array only if per-run tracking is enabled
             if summary_array is not None:
-    #             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
                 save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
                 save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
                 
@@ -949,30 +949,30 @@ def main():
         print("="*80 + "\n")
         sys.exit(1)
     
-    experiment_cfg = cfg.get("experiment", {})
+    experiment_cfg = cfg["experiment"]
     
-    # Extract experiment parameters from YAML
-    EXPERIMENT_FOLDER = experiment_cfg.get("output_folder", "data/temp/")
-    SIMULATION_NAME = experiment_cfg.get("simulation_name", "temp")
-    GENOME_TYPE = experiment_cfg.get("genome_type", "random")
-    WIRING_RANDOMIZATION_SEED = experiment_cfg.get("wiring_randomization_seed", 1)
-    N_VARIANTS = experiment_cfg.get("n_variants", 1)
-    MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
-    N_RUNS = experiment_cfg.get("n_runs", 1)
+    # Extract experiment parameters from YAML (must all be present)
+    EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
+    SIMULATION_NAME = experiment_cfg["simulation_name"]
+    GENOME_TYPE = experiment_cfg["genome_type"]
+    WIRING_RANDOMIZATION_SEED = experiment_cfg["wiring_randomization_seed"]
+    N_VARIANTS = experiment_cfg["n_variants"]
+    MAX_TICKS = experiment_cfg["max_ticks"]
+    N_RUNS = experiment_cfg["n_runs"]
     
-    VIZ_ENABLED = experiment_cfg.get("viz_enabled", True)
-    VIZ_FPS = experiment_cfg.get("viz_fps", 4)
-    VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
-    VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
-    ENABLE_PER_RUN_TRACKING = experiment_cfg.get("enable_per_run_tracking", True)
-    ENABLE_PER_TICK_TRACKING = experiment_cfg.get("enable_per_tick_tracking", True)
-    ENABLE_HEAT_MAP_TRACKING = experiment_cfg.get("enable_heat_map_tracking", True)
+    VIZ_ENABLED = experiment_cfg["viz_enabled"]
+    VIZ_FPS = experiment_cfg["viz_fps"]
+    VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
+    VIZ_BRAIN_FPS = experiment_cfg["viz_brain_fps"]
+    ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
+    ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
+    ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
     
     # ============================================================
     # 2. VALIDATION & USER CHECKS
     # ============================================================
     # Check for genome_type vs config consistency
-    has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
+    has_brain_config = cfg["decisionmaking"]["brain"]
     
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
