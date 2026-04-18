@@ -28,12 +28,12 @@ experiment:
   viz_brain_fps: 4
   
   # Data tracking
-  enable_per_run_tracking: true
-  enable_per_tick_tracking: true
+  enable_per_run_tracking: false
+  enable_per_tick_tracking: false
   enable_heat_map_tracking: false
 
 # ============================================================
-# WORLD CONFIGURATION
+# EMBEDDING CONFIGURATION
 # ============================================================
 world:
   grid_width: 51
@@ -66,7 +66,7 @@ worm:
     brain: true
 
 # ============================================================
-# BRAIN STRUCTURE & PROPERTIES
+# BRAIN CONFIGURATION
 # ============================================================
 brain:
   n_neurons: 11

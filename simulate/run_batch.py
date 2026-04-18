@@ -1178,10 +1178,9 @@ def main():
                 print(" done")
         
         else:
-            completed = 0
-            
+            completed = 0            
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {}
+                futures = set()
                 for variant_id in range(N_VARIANTS):
                     kwargs = {
                         'variant_id': variant_id,
@@ -1222,10 +1221,9 @@ def main():
                         kwargs['hdf5_lock'] = hdf5_lock
                     
                     future = executor.submit(run_variant_worker, **kwargs)
-                    futures[future] = variant_id
+                    futures.add(future)
                 
                 for future in as_completed(futures):
-                    variant_id = futures[future]
                     completed += 1
                     returned_variant_id, lifespan_vector = future.result()
                     all_lifespans[returned_variant_id] = lifespan_vector
