@@ -627,28 +627,28 @@ def run_variant_worker(
     VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
     
     # ============================================================
+    # ============================================================
     # 5a: Create World instance
     # ============================================================
     world = make_world(cfg)
     feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
     world.feeding_cfg = feeding_cfg
-    
+
     # ============================================================
     # 5b: Load Brain Module
     # ============================================================
     brain_module = load_brain_module(brain_module_name)
-    
+
     # ============================================================
     # 5c: Create Worm instance
     # ============================================================
     worm = make_worm(world, cfg)
     worm.active_sensors = make_sensor_cfg(cfg)
     worm.brain = brain_module
-    
+
     # ============================================================
     # 5d: Prepare simulation & Build RNG streams
     # ============================================================
-
     # Extract genome components for tracking
     connection_weights = genome["connection_weights"]
     connections_to_track = []
@@ -656,33 +656,33 @@ def run_variant_worker(
         for tgt in range(connection_weights.shape[1]):
             if connection_weights[src, tgt, 0] != 0.0:
                 connections_to_track.append((src, tgt))
-    
+
     # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
     dtype_lifespan = [('lifetime_ticks', 'i4')]
     lifespan_array = np.zeros(N_RUNS, dtype=dtype_lifespan)
-    
+
     # Conditionally allocate full summary array (only if per-run tracking enabled)
     if ENABLE_PER_RUN_TRACKING:
         summary_array = None
-        dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'), 
+        dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
                          ('distance', 'i4'), ('final_energy', 'f4'),
                          ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
                          ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
                          ('decisions', 'i4'), ('correct_decisions', 'i4')]
         summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
-    
+
         # Only allocate tracking structures if per-run tracking is enabled
         # Pre-allocate wiring array with columns for all run final weights
         dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
         for run_id in range(1, N_RUNS + 1):
             dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
         wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
-        
+
         for idx, (src, tgt) in enumerate(connections_to_track):
             wiring_array[idx]['src'] = src
             wiring_array[idx]['tgt'] = tgt
             wiring_array[idx]['weight_initial'] = connection_weights[src, tgt, 0]
-        
+
         # Pre-allocate modulation array
         dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
         modulation_list = []
@@ -691,13 +691,13 @@ def run_variant_worker(
             for mod_src, mod_weight in modulators:
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
-    
+
         # Accumulate per-tick and heatmap data for batch write after all runs
         per_tick_all_runs = {}
         heatmaps_all_runs = {}
-    
+
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
-    
+
     # ============================================================
     # 5e: Create MetricsRecorder to track per-tick data
     # ============================================================
@@ -709,20 +709,17 @@ def run_variant_worker(
     # ============================================================
     for run_id in range(N_RUNS):
 
-            # ============================================================
-            # 5f1: Prepare simulation & Build RNG streams
-            # ============================================================
+        # ============================================================
+        # 5f1: Prepare simulation & Build RNG streams
+        # ============================================================
         rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
             cfg["world"]["rng_seed"] + run_id, has_brain_config
         )
 
         # ============================================================
-        # 5f2: Call brain_module.init_brain(genome, cfg, rng_noise) 
+        # 5f2: Call brain_module.init_brain(genome, cfg, rng_noise)
         # ============================================================
-
-        # Initialize brain with genome
         brain_module.init_brain(genome, cfg, rng_neuron_noise)
-        
 
         # ============================================================
         # 5f3: Reset world & worm & simulation
@@ -732,7 +729,7 @@ def run_variant_worker(
         worm.reset()
         reset_sim(world, feeding_cfg, rng_food, worm)
         rec.reset()
-        
+
         # Create renderers if visualization is enabled
         if viz_enabled:
             try:
@@ -740,7 +737,7 @@ def run_variant_worker(
                 if VIZ_FPS > 0:
                     worm.renderer = QtRenderer(world, worm, VIZ_FPS)
                     print(f"[viz] Created world renderer at {VIZ_FPS} FPS")
-                
+
                 # Create brain renderer (if enabled and FPS is set to a positive value)
                 if VIZ_BRAIN_ENABLED and VIZ_BRAIN_FPS > 0:
                     brain_renderer = BrainQtRenderer(fps=VIZ_BRAIN_FPS)
@@ -753,7 +750,7 @@ def run_variant_worker(
         else:
             worm.renderer = None
             brain_module._brain_renderer = None
-        
+
         # Get pause manager for checkpoints (if visualization enabled)
         pause_mgr = None
         if viz_enabled:
@@ -761,11 +758,10 @@ def run_variant_worker(
                 pause_mgr = get_pause_manager()
             except RuntimeError:
                 pass
-        
-        # ============================================================
-        # 5f4: simulate
-        # ============================================================
 
+        # ============================================================
+        # 5f4: Simulate
+        # ============================================================
         try:
             while worm.alive and worm.ticks < MAX_TICKS:
                 # Check pause/exit at start of each tick
@@ -818,14 +814,13 @@ def run_variant_worker(
             summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
             summary_array[run_id]['decisions'] = rec.decisions
             summary_array[run_id]['correct_decisions'] = rec.correct_decisions
-    
+
     # Extract lifespan vector (always available)
     lifespan_vector = lifespan_array['lifetime_ticks']
-    
-        # ============================================================
-        # 5g: Batch write to HDF5
-        # ============================================================
 
+    # ============================================================
+    # 5g: Batch write to HDF5
+    # ============================================================
     # Batch write all variant data after all runs complete
     with hdf5_lock:
         # Write summary array only if per-run tracking is enabled
