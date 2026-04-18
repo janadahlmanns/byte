@@ -11,18 +11,21 @@ class WormConfig:
     movement_cost: int  # energy cost per move
 
 class Worm:
-    def __init__(self, cfg: WormConfig, world: World, renderer=None):
-        self.cfg = cfg
+    def __init__(self, speed: int, energy_capacity: int, metabolic_rate: int, movement_cost: int, world: World):
+        self.speed = speed
+        self.energy_capacity = energy_capacity
+        self.metabolic_rate = metabolic_rate
+        self.movement_cost = movement_cost
         self.world = world
-        self.renderer = renderer
+        self.renderer = None
         self.reset()
 
     def reset(self):
         # YAML provides start_pos as [x, y]; convert to (y, x)
-        sx_yaml, sy_yaml = self.world.cfg.start_pos
+        sx_yaml, sy_yaml = self.world.start_pos
         self.y, self.x = sy_yaml, sx_yaml
 
-        self.energy = self.cfg.energy_capacity
+        self.energy = self.energy_capacity
         self.alive = True
         self.eats = 0
         self.distance = 0
@@ -77,7 +80,7 @@ class Worm:
         )
 
         # 5) Metabolism
-        self.energy = max(0, self.energy - self.cfg.metabolic_rate)
+        self.energy = max(0, self.energy - self.metabolic_rate)
 
         # 6) Death gate
         if self.energy <= 0:

@@ -22,7 +22,7 @@ experiment:
   n_runs: 4
   
   # Visualization
-  viz_enabled: false
+  viz_enabled: true
   viz_fps: 4
   viz_brain_enabled: false
   viz_brain_fps: 4

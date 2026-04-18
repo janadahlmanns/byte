@@ -143,7 +143,7 @@ class QtRenderer(QMainWindow):
         wy, wx = self.worm.y, self.worm.x
         color = self.energy_to_color(
             self.worm.energy,
-            self.worm.cfg.energy_capacity,
+            self.worm.energy_capacity,
         )
         img[wy, wx] = color
 

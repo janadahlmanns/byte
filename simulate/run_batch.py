@@ -14,7 +14,7 @@ from multiprocessing import Manager
 import yaml
 import numpy as np
 
-from mvb.world import World, WorldConfig
+from mvb.world import World
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
@@ -213,32 +213,11 @@ def load_genome_generator(genome_type: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
-def make_world(grid_width, grid_height, start_pos, rng_seed):
-    return World(
-        WorldConfig(
-            grid_width=int(grid_width),
-            grid_height=int(grid_height),
-            start_pos=tuple(start_pos),
-            rng_seed=int(rng_seed),
-        ),
-    )
-
 def make_feeding_cfg(feeding_paradigm, initial_fraction_per_cell, regrow_time):
     return FeedingConfig(
         feeding_paradigm=feeding_paradigm,
         initial_fraction_per_cell=initial_fraction_per_cell,
         regrow_time=regrow_time,
-    )
-
-def make_worm(world, speed, energy_capacity, metabolic_rate, movement_cost):
-    return Worm(
-        WormConfig(
-            speed=int(speed),
-            energy_capacity=int(energy_capacity),
-            metabolic_rate=int(metabolic_rate),
-            movement_cost=int(movement_cost),
-        ),
-        world,
     )
 
 def make_sensor_cfg(cfg_yaml):
@@ -404,8 +383,8 @@ class MetricsRecorder:
                 if connection_weights[src, tgt, 0] != 0.0:
                     connections_to_track.append((src, tgt))
         
-        grid_height = worm.world.cfg.grid_height
-        grid_width = worm.world.cfg.grid_width
+        grid_height = worm.world.height
+        grid_width = worm.world.width
                 
         if enable_per_run_tracking:
             kwargs = {
@@ -620,9 +599,7 @@ def run_variant_worker(
     worm_metabolic_rate,
     worm_movement_cost,
     sensor_cfg,
-    feeding_paradigm,
-    feeding_initial_fraction_per_cell,
-    feeding_regrow_time,
+    feeding_cfg,
     brain_n_neurons,
     brain_threshold,
     brain_noise_level,
@@ -658,9 +635,7 @@ def run_variant_worker(
         worm_metabolic_rate: Worm metabolic rate
         worm_movement_cost: Worm movement cost
         sensor_cfg: Sensor configuration list
-        feeding_paradigm: Feeding paradigm dict
-        feeding_initial_fraction_per_cell: Initial food fraction per cell
-        feeding_regrow_time: Food regrow time
+        feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_n_neurons: Number of neurons in brain
         brain_threshold: Neuron threshold (applied to all neurons)
         brain_noise_level: Neuron noise level (applied to all neurons)
@@ -677,8 +652,7 @@ def run_variant_worker(
     # ============================================================
     # 5a: Create World instance
     # ============================================================
-    world = make_world(grid_width, grid_height, start_pos, world_rng_seed)
-    feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
+    world = World(grid_width, grid_height, start_pos, world_rng_seed)
     world.feeding_cfg = feeding_cfg
 
     # ============================================================
@@ -689,7 +663,7 @@ def run_variant_worker(
     # ============================================================
     # 5c: Create Worm instance
     # ============================================================
-    worm = make_worm(world, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost)
+    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate,  worm_movement_cost,  world)
     worm.active_sensors = sensor_cfg
     worm.brain = brain_module
 
@@ -1097,6 +1071,9 @@ def main():
     brain_max_decision_delay = cfg["brain"]["max_decision_delay"]
     rng_seed = cfg["world"]["rng_seed"]
     
+    # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
+    feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
+    
     # ============================================================
     # 3. GENERATE GENOMES
     # ============================================================
@@ -1156,9 +1133,7 @@ def main():
                     'worm_metabolic_rate': worm_metabolic_rate,
                     'worm_movement_cost': worm_movement_cost,
                     'sensor_cfg': sensor_cfg,
-                    'feeding_paradigm': feeding_paradigm,
-                    'feeding_initial_fraction_per_cell': feeding_initial_fraction_per_cell,
-                    'feeding_regrow_time': feeding_regrow_time,
+                    'feeding_cfg': feeding_cfg,
                     'brain_n_neurons': brain_n_neurons,
                     'brain_threshold': brain_threshold,
                     'brain_noise_level': brain_noise_level,
@@ -1204,9 +1179,7 @@ def main():
                         'worm_metabolic_rate': worm_metabolic_rate,
                         'worm_movement_cost': worm_movement_cost,
                         'sensor_cfg': sensor_cfg,
-                        'feeding_paradigm': feeding_paradigm,
-                        'feeding_initial_fraction_per_cell': feeding_initial_fraction_per_cell,
-                        'feeding_regrow_time': feeding_regrow_time,
+                        'feeding_cfg': feeding_cfg,
                         'brain_n_neurons': brain_n_neurons,
                         'brain_threshold': brain_threshold,
                         'brain_noise_level': brain_noise_level,
@@ -1240,7 +1213,8 @@ def main():
         else:
             print(f"[batch] Simulation completed. (No data recording)")
             if all_lifespans:
-                print_lifespan_summary(all_lifespans)
+                total_lifespans = sum(len(v) for v in all_lifespans.values())
+                print(f"[placeholder] {total_lifespans} lifespans collected")
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
