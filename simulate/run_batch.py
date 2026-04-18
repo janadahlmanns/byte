@@ -583,8 +583,16 @@ def run_variant_worker(
     genome,
     cfg,
     hdf5_path,
-    hdf5_lock=None,
-    viz_enabled = False,
+    hdf5_lock,
+    viz_enabled,
+    enable_per_run_tracking,
+    enable_per_tick_tracking,
+    enable_heat_map_tracking,
+    max_ticks,
+    n_runs,
+    viz_fps,
+    viz_brain_enabled,
+    viz_brain_fps,
 ):
     """Execute a single variant's simulation runs and write data directly to HDF5.
     
@@ -594,24 +602,20 @@ def run_variant_worker(
         genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
         cfg: Configuration dict
         hdf5_path: Path to HDF5 file to write to
-        hdf5_lock: Optional multiprocessing.Lock() for synchronized writes
+        hdf5_lock: multiprocessing.Lock() for synchronized writes
         viz_enabled: Whether to create and display renderer visualization
+        enable_per_run_tracking: Whether to track per-run metrics
+        enable_per_tick_tracking: Whether to track per-tick data
+        enable_heat_map_tracking: Whether to track heatmaps
+        max_ticks: Maximum simulation ticks
+        n_runs: Number of runs per variant
+        viz_fps: World visualization FPS
+        viz_brain_enabled: Whether to enable brain visualization
+        viz_brain_fps: Brain visualization FPS
     """
     
-    # Extract experiment config from full config
+    # Extract experiment config from full config (still needed for other functions)
     experiment_cfg = cfg.get("experiment", {})
-    
-    # Extract tracking flags for use in this worker
-    ENABLE_PER_RUN_TRACKING = experiment_cfg.get("enable_per_run_tracking", True)
-    ENABLE_PER_TICK_TRACKING = experiment_cfg.get("enable_per_tick_tracking", True)
-    ENABLE_HEAT_MAP_TRACKING = experiment_cfg.get("enable_heat_map_tracking", True)
-    MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
-    N_RUNS = experiment_cfg.get("n_runs", 1)
-    
-    # Extract visualization parameters for use in this worker
-    VIZ_FPS = experiment_cfg.get("viz_fps", 4)
-    VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
-    VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
     
     # ============================================================
     # ============================================================
@@ -646,22 +650,22 @@ def run_variant_worker(
 
     # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
     dtype_lifespan = [('lifetime_ticks', 'i4')]
-    lifespan_array = np.zeros(N_RUNS, dtype=dtype_lifespan)
+    lifespan_array = np.zeros(n_runs, dtype=dtype_lifespan)
 
     # Conditionally allocate full summary array (only if per-run tracking enabled)
-    if ENABLE_PER_RUN_TRACKING:
+    if enable_per_run_tracking:
         summary_array = None
         dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
                          ('distance', 'i4'), ('final_energy', 'f4'),
                          ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
                          ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
                          ('decisions', 'i4'), ('correct_decisions', 'i4')]
-        summary_array = np.zeros(N_RUNS, dtype=dtype_summary)
+        summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
         # Only allocate tracking structures if per-run tracking is enabled
         # Pre-allocate wiring array with columns for all run final weights
         dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
-        for run_id in range(1, N_RUNS + 1):
+        for run_id in range(1, n_runs + 1):
             dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
         wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
 
@@ -688,13 +692,13 @@ def run_variant_worker(
     # ============================================================
     # 5e: Create MetricsRecorder to track per-tick data
     # ============================================================
-    rec = MetricsRecorder.empty(worm, genome, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING, MAX_TICKS)
+    rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
     rec.record(worm)
     
     # ============================================================
     # 5f: Simulate runs. For each run do:
     # ============================================================
-    for run_id in range(N_RUNS):
+    for run_id in range(n_runs):
 
         # ============================================================
         # 5f1: Prepare simulation & Build RNG streams
@@ -717,30 +721,38 @@ def run_variant_worker(
         reset_sim(world, feeding_cfg, rng_food, worm)
         rec.reset()
 
-        # Create renderers if visualization is enabled
+        # Create world renderer independently if world visualization is enabled
         if viz_enabled:
             try:
-                # Create world renderer (if FPS is set to a positive value)
-                if VIZ_FPS > 0:
-                    worm.renderer = QtRenderer(world, worm, VIZ_FPS)
-                    print(f"[viz] Created world renderer at {VIZ_FPS} FPS")
-
-                # Create brain renderer (if enabled and FPS is set to a positive value)
-                if VIZ_BRAIN_ENABLED and VIZ_BRAIN_FPS > 0:
-                    brain_renderer = BrainQtRenderer(fps=VIZ_BRAIN_FPS)
-                    brain_module._brain_renderer = brain_renderer
-                    print(f"[viz] Created brain renderer at {VIZ_BRAIN_FPS} FPS")
+                if viz_fps > 0:
+                    worm.renderer = QtRenderer(world, worm, viz_fps)
+                    print(f"[viz] Created world renderer at {viz_fps} FPS")
+                else:
+                    worm.renderer = None
             except Exception as e:
-                print(f"[WARNING] Failed to create renderer: {e}. Running without visualization.")
+                print(f"[WARNING] Failed to create world renderer: {e}.")
                 worm.renderer = None
-                brain_module._brain_renderer = None
         else:
             worm.renderer = None
+        
+        # Create brain renderer independently if brain visualization is enabled
+        if viz_brain_enabled:
+            try:
+                if viz_brain_fps > 0:
+                    brain_renderer = BrainQtRenderer(fps=viz_brain_fps)
+                    brain_module._brain_renderer = brain_renderer
+                    print(f"[viz] Created brain renderer at {viz_brain_fps} FPS")
+                else:
+                    brain_module._brain_renderer = None
+            except Exception as e:
+                print(f"[WARNING] Failed to create brain renderer: {e}.")
+                brain_module._brain_renderer = None
+        else:
             brain_module._brain_renderer = None
 
-        # Get pause manager for checkpoints (if visualization enabled)
+        # Get pause manager for checkpoints (if any visualization enabled)
         pause_mgr = None
-        if viz_enabled:
+        if viz_enabled or viz_brain_enabled:
             try:
                 pause_mgr = get_pause_manager()
             except RuntimeError:
@@ -750,7 +762,7 @@ def run_variant_worker(
         # 5f4: Simulate
         # ============================================================
         try:
-            while worm.alive and worm.ticks < MAX_TICKS:
+            while worm.alive and worm.ticks < max_ticks:
                 # Check pause/exit at start of each tick
                 if pause_mgr is not None:
                     pause_mgr.check_pause()
@@ -770,18 +782,18 @@ def run_variant_worker(
         except PauseManagerExit:
             pass  # Exit simulation gracefully
         
-        if ENABLE_PER_TICK_TRACKING and rec.per_tick_data is not None:
+        if enable_per_tick_tracking and rec.per_tick_data is not None:
             per_tick_data = rec.per_tick_data[:rec.per_tick_count]
             per_tick_all_runs[run_id+1] = per_tick_data
         
-        if ENABLE_HEAT_MAP_TRACKING and rec.staying_heatmap is not None:
+        if enable_heat_map_tracking and rec.staying_heatmap is not None:
             heatmaps_all_runs[run_id+1] = rec.staying_heatmap.copy()
         
         # Always record lifespan
         lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
         
         # Conditionally record full summary metrics
-        if ENABLE_PER_RUN_TRACKING:
+        if enable_per_run_tracking:
             for idx, (src, tgt) in enumerate(connections_to_track):
                 w = get_connection_weight(worm.brain, src, tgt)
                 wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
@@ -811,7 +823,7 @@ def run_variant_worker(
     # Batch write all variant data after all runs complete
     with hdf5_lock:
         # Write summary array only if per-run tracking is enabled
-        if ENABLE_PER_RUN_TRACKING and summary_array is not None:
+        if enable_per_run_tracking and summary_array is not None:
 #             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
             save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
             save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
@@ -827,24 +839,20 @@ def run_variant_worker(
                     save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, staying_heatmap)
     
     # Keep visualization window open if it was created (but not if exit was requested)
-    should_show_event_loop = viz_enabled
+    should_show_event_loop = viz_enabled or viz_brain_enabled
     if should_show_event_loop:
-        try:
-            pause_mgr_check = get_pause_manager()
-            if pause_mgr_check.should_exit():
-                should_show_event_loop = False
-        except RuntimeError:
-            pass
-    
-    if should_show_event_loop:
-        try:
-            from PySide6.QtWidgets import QApplication
-            app = QApplication.instance()
-            if app is not None:
-                print("[INFO] Visualization complete. Close the window to continue.")
-                app.exec()
-        except Exception as e:
-            pass  # Silently fail if no Qt window exists
+        if pause_mgr is not None and pause_mgr.should_exit():
+            should_show_event_loop = False
+        
+        if should_show_event_loop:
+            try:
+                from PySide6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is not None:
+                    print("[INFO] Visualization complete. Close the window to continue.")
+                    app.exec()
+            except Exception as e:
+                pass  # Silently fail if no Qt window exists
     
     return (variant_id, lifespan_vector)
 
@@ -951,11 +959,6 @@ def main():
     MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
     N_RUNS = experiment_cfg.get("n_runs", 1)
     
-    # Extract food parameters from food section
-    food_cfg = cfg.get("food", {})
-    INITIAL_FRACTION_PER_CELL = food_cfg.get("initial_fraction_per_cell", 0.25)
-    REGROW_TIME = food_cfg.get("regrow_time", 3000)
-    
     VIZ_ENABLED = experiment_cfg.get("viz_enabled", True)
     VIZ_FPS = experiment_cfg.get("viz_fps", 4)
     VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
@@ -976,21 +979,19 @@ def main():
     if not validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING):
         return
     
-    viz_enabled = VIZ_ENABLED
-    
     total_simulations = N_VARIANTS * N_RUNS
-    if total_simulations > 2 and viz_enabled:
+    if total_simulations > 2 and VIZ_ENABLED:
         print(f"\n[WARNING] Visualization is enabled for {N_VARIANTS} variants × {N_RUNS} runs = {total_simulations} total simulations.")
         print("This will be VERY SLOW. Batch runs typically disable visualization.")
         response = input("Continue with visualization? (y/n): ").strip().lower()
         if response != 'y':
             print("[INFO] Disabling visualization for this batch run.")
-            viz_enabled = False
+            VIZ_ENABLED = False
             VIZ_BRAIN_ENABLED = False  # Also disable brain visualization
     
     num_workers = None
     # Force serial execution if any visualization is enabled
-    if viz_enabled or VIZ_BRAIN_ENABLED:
+    if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
         print("[INFO] Visualization enabled. Running serially.")
     else:
         num_workers = get_num_workers()
@@ -1000,15 +1001,11 @@ def main():
             available_cores = os.cpu_count()
             print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
     
-    brain = load_brain_module(make_decision_cfg(cfg))
     hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
     print(f"[batch] writing to {hdf5_path}\n")
-    pause_mgr = init_pause_manager() if (viz_enabled or VIZ_BRAIN_ENABLED) else None
+    pause_mgr = init_pause_manager() if (VIZ_ENABLED or VIZ_BRAIN_ENABLED) else None
 
 
-
-  
-    
     # ============================================================
     # 3. GENERATE GENOMES
     # ============================================================
@@ -1017,12 +1014,10 @@ def main():
         genome_generator = load_genome_generator(GENOME_TYPE)
         
         # Generate all genomes before dispatching workers
-        print("[genome] Generating {} genomes (type: {})...".format(N_VARIANTS, GENOME_TYPE), flush=True)
         genomes = []
         for variant_id in range(N_VARIANTS):
             genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
             genomes.append(genome)
-        print("[genome] Done.\n", flush=True)
         
         # ============================================================
         # 4. PREPARE DATA TRACKING IF ENABLED
@@ -1031,7 +1026,6 @@ def main():
         # Only create HDF5 file if per-run tracking is enabled
         if ENABLE_PER_RUN_TRACKING:
             create_hdf5_file(hdf5_path, cfg)
-            print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
             # Save genome generation parameters to HDF5
             save_genome_properties_to_hdf5(hdf5_path, genomes)
 
@@ -1046,9 +1040,6 @@ def main():
         # Run simulation
         all_lifespans = {}
         
-        # viz_enabled should be True if any visualization is requested
-        worker_viz_enabled = viz_enabled or VIZ_BRAIN_ENABLED
-        
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
@@ -1059,8 +1050,16 @@ def main():
                     genomes[variant_id],
                     cfg,
                     hdf5_path,
-                    hdf5_lock=hdf5_lock,
-                    viz_enabled=worker_viz_enabled,
+                    hdf5_lock,
+                    VIZ_ENABLED,
+                    ENABLE_PER_RUN_TRACKING,
+                    ENABLE_PER_TICK_TRACKING,
+                    ENABLE_HEAT_MAP_TRACKING,
+                    MAX_TICKS,
+                    N_RUNS,
+                    VIZ_FPS,
+                    VIZ_BRAIN_ENABLED,
+                    VIZ_BRAIN_FPS,
                 )
 
                 all_lifespans[variant_id] = lifespan_vector
@@ -1079,8 +1078,16 @@ def main():
                         genomes[variant_id],
                         cfg,
                         hdf5_path,
-                        hdf5_lock=hdf5_lock,
-                        viz_enabled = False,  # Never viz in parallel (serial only)
+                        hdf5_lock,
+                        False,  # Never viz in parallel (serial only)
+                        ENABLE_PER_RUN_TRACKING,
+                        ENABLE_PER_TICK_TRACKING,
+                        ENABLE_HEAT_MAP_TRACKING,
+                        MAX_TICKS,
+                        N_RUNS,
+                        VIZ_FPS,
+                        VIZ_BRAIN_ENABLED,
+                        VIZ_BRAIN_FPS,
                     )
                     futures[future] = variant_id
                 
