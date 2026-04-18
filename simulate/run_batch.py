@@ -660,6 +660,20 @@ def run_variant_worker(
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
     # ============================================================
+    # 5a: Create World instance
+    # ============================================================
+    world = make_world(cfg)
+    feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
+    world.feeding_cfg = feeding_cfg
+    
+    # ============================================================
+    # 5b: Create Worm instance
+    # ============================================================
+    worm = make_worm(world, cfg)
+    worm.active_sensors = make_sensor_cfg(cfg)
+    worm.brain = brain_module
+    
+    # ============================================================
     # 5c: Simulate runs. For each run do:
     # ============================================================
     for run_id in range(N_RUNS):
@@ -672,30 +686,21 @@ def run_variant_worker(
         )
         
         # ============================================================
-        # 5c2: Create World instance
+        # 5d: Reset world & worm
         # ============================================================
-
-        world = make_world(cfg)
-        feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
-        world.feeding_cfg = feeding_cfg
+        world.reset_food()
+        seed_food(world, feeding_cfg, rng_food)
+        worm.reset()
         
         # ============================================================
-        # 5c3: Create Worm instance 
-        # ============================================================
-
-        worm = make_worm(world, cfg)
-        worm.active_sensors = make_sensor_cfg(cfg)
-        worm.brain = brain_module
-        
-        # ============================================================
-        # 5c4: Call brain_module.init_brain(genome, cfg, rng_noise) 
+        # 5e: Call brain_module.init_brain(genome, cfg, rng_noise) 
         # ============================================================
 
         # Initialize brain with genome
         brain_module.init_brain(genome, cfg, rng_neuron_noise)
         
         # ============================================================
-        # 5c5: Reset simulation
+        # 5f: Reset simulation
         # ============================================================
 
         reset_sim(world, feeding_cfg, rng_food, worm)
