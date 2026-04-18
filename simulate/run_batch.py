@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import os
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager
 
@@ -860,7 +859,6 @@ def run_variant_worker(
         except Exception as e:
             pass  # Silently fail if no Qt window exists
     
-    # Note: execution time is measured in main process (includes lock wait time)
     return (variant_id, lifespan_vector)
 
 
@@ -1060,17 +1058,14 @@ def main():
         
         # Run simulation
         all_lifespans = {}
-        variant_times = {}  # Track execution time per variant
         
         # viz_enabled should be True if any visualization is requested
         worker_viz_enabled = viz_enabled or VIZ_BRAIN_ENABLED
         
         if num_workers is None:
-            print(f"[timing] Serial execution (1 core)\n")
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
                 
-                tic = time.perf_counter()
                 returned_variant_id, lifespan_vector = run_variant_worker(
                     variant_id,
                     brain_module_name,
@@ -1080,14 +1075,11 @@ def main():
                     hdf5_lock=hdf5_lock,
                     viz_enabled=worker_viz_enabled,
                 )
-                toc = time.perf_counter()
 
                 all_lifespans[variant_id] = lifespan_vector
-                variant_times[variant_id] = toc - tic
-                print(f" done ({variant_times[variant_id]:.2f}s)")
+                print(" done")
         
         else:
-            print(f"[timing] Parallel execution ({num_workers} workers)\n")
             completed = 0
             
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -1108,56 +1100,15 @@ def main():
                 for future in as_completed(futures):
                     variant_id = futures[future]
                     completed += 1
-                    tic = time.perf_counter()
                     returned_variant_id, lifespan_vector = future.result()
-                    toc = time.perf_counter()
-                    
                     all_lifespans[returned_variant_id] = lifespan_vector
-                    variant_times[returned_variant_id] = toc - tic
                     print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
             
             print()
         
         
         # ============================================================
-        # 6. TIMING SUMMARY
-        # ============================================================
-        if variant_times:
-            # Sort by variant_id to get chronological order (first/second half)
-            times_list = [variant_times[vid] for vid in sorted(variant_times.keys())]
-            min_time = min(times_list)
-            max_time = max(times_list)
-            avg_time = np.mean(times_list)
-            total_time = sum(times_list)
-            
-            # Split into first and second half
-            midpoint = len(times_list) // 2
-            first_half = times_list[:midpoint]
-            second_half = times_list[midpoint:]
-            avg_first_half = np.mean(first_half) if first_half else 0.0
-            avg_second_half = np.mean(second_half) if second_half else 0.0
-            
-            print("\n" + "="*80)
-            print("[timing] PERFORMANCE SUMMARY")
-            print("="*80)
-            print(f"Total variants:     {N_VARIANTS}")
-            print(f"Execution model:    {'Serial' if num_workers is None else f'Parallel ({num_workers} workers)'}")
-            print(f"\nPer-variant time:")
-            print(f"  Min:              {min_time:.2f}s")
-            print(f"  Max:              {max_time:.2f}s")
-            print(f"  Average:          {avg_time:.2f}s")
-            print(f"  Stdev:            {np.std(times_list):.2f}s")
-            print(f"\nHalf comparison (showing slowdown):")
-            print(f"  First half avg:   {avg_first_half:.2f}s")
-            print(f"  Second half avg:  {avg_second_half:.2f}s")
-            if avg_first_half > 0:
-                slowdown_pct = ((avg_second_half - avg_first_half) / avg_first_half) * 100
-                print(f"  Slowdown:         {slowdown_pct:+.1f}%")
-            print(f"\nTotal time:         {total_time:.2f}s")
-            print("="*80 + "\n")
-        
-        # ============================================================
-        # 7. WRAP-UP
+        # 6. WRAP-UP
         # ============================================================
         if ENABLE_PER_RUN_TRACKING:
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
