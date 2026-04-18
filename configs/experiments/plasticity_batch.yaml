@@ -11,11 +11,11 @@ experiment:
   n_variants: 1
 
   # genome type specific parameters - random
-  # wiring_randomization_seed: 1
-  # connectivity_degree_excitatory: 0.2
-  # connectivity_degree_inhibitory: 0.4
-  # modulation_degree_potentiation: 0.5
-  # modulation_degree_depression: 0.5
+  wiring_randomization_seed: 1
+  connectivity_degree_excitatory: 0.2
+  connectivity_degree_inhibitory: 0.4
+  modulation_degree_potentiation: 0.5
+  modulation_degree_depression: 0.5
   
   # Simulation runtime
   max_ticks: 2000
@@ -30,7 +30,7 @@ experiment:
   # Data tracking
   enable_per_run_tracking: true
   enable_per_tick_tracking: true
-  enable_heat_map_tracking: true
+  enable_heat_map_tracking: false
 
 # ============================================================
 # WORLD CONFIGURATION

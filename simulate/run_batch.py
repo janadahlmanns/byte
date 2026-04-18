@@ -115,15 +115,38 @@ def load_config(config_name: str):
 
 # --- HELPER FUNCTIONS ---
 
-def get_num_workers():
-    """Determine number of worker processes. Reserves 2 cores for system tasks.
-    Returns None if system has ≤2 cores (force serial execution)."""
+def get_num_workers(viz_enabled, viz_brain_enabled):
+    """Determine number of worker processes and handle viz/serial execution.
+    
+    If visualization is enabled, forces serial execution and initializes pause manager.
+    Otherwise, reserves 2 cores for system tasks and returns worker count.
+    Returns None if system has ≤2 cores or if visualization is enabled (force serial).
+    
+    Args:
+        viz_enabled: Whether world visualization is enabled
+        viz_brain_enabled: Whether brain visualization is enabled
+    
+    Returns:
+        Number of workers to use, or None for serial execution
+    """
+    # Force serial execution if any visualization is enabled
+    if viz_enabled or viz_brain_enabled:
+        print("[INFO] Visualization enabled. Running serially.")
+        init_pause_manager()
+        return None
+    
+    # Determine parallel worker count
     try:
         available_cores = os.cpu_count()
         if available_cores is None or available_cores <= 2:
+            print("[INFO] Insufficient CPU cores. Running serially.")
             return None
-        return max(1, available_cores - 2)
+        
+        num_workers = max(1, available_cores - 2)
+        print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
+        return num_workers
     except Exception:
+        print("[INFO] Insufficient CPU cores. Running serially.")
         return None
 
 def build_rng_streams(seed: int, has_brain: bool):
@@ -190,32 +213,30 @@ def load_genome_generator(genome_type: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
-def make_world(cfg_yaml):
+def make_world(grid_width, grid_height, start_pos, rng_seed):
     return World(
         WorldConfig(
-            grid_width=int(cfg_yaml["world"]["grid_width"]),
-            grid_height=int(cfg_yaml["world"]["grid_height"]),
-            start_pos=tuple(cfg_yaml["world"]["start_pos"]),
-            rng_seed=int(cfg_yaml["world"]["rng_seed"]),
+            grid_width=int(grid_width),
+            grid_height=int(grid_height),
+            start_pos=tuple(start_pos),
+            rng_seed=int(rng_seed),
         ),
     )
 
-def make_feeding_cfg(cfg_yaml, experiment_cfg):
-    f = cfg_yaml["food"]
+def make_feeding_cfg(feeding_paradigm, initial_fraction_per_cell, regrow_time):
     return FeedingConfig(
-        feeding_paradigm=f.get("feeding_paradigm", {"initial": True, "regrow": True}),
-        initial_fraction_per_cell=f.get("initial_fraction_per_cell", 0.25),
-        regrow_time=f.get("regrow_time", 3000),
+        feeding_paradigm=feeding_paradigm,
+        initial_fraction_per_cell=initial_fraction_per_cell,
+        regrow_time=regrow_time,
     )
 
-def make_worm(world, cfg_yaml):
-    w = cfg_yaml["worm"]
+def make_worm(world, speed, energy_capacity, metabolic_rate, movement_cost):
     return Worm(
         WormConfig(
-            speed=int(w["speed"]),
-            energy_capacity=int(w["energy_capacity"]),
-            metabolic_rate=int(w["metabolic_rate"]),
-            movement_cost=int(w.get("movement_cost", 1)),
+            speed=int(speed),
+            energy_capacity=int(energy_capacity),
+            metabolic_rate=int(metabolic_rate),
+            movement_cost=int(movement_cost),
         ),
         world,
     )
@@ -581,7 +602,6 @@ def run_variant_worker(
     variant_id,
     brain_module_name,
     genome,
-    cfg,
     viz_enabled,
     enable_per_run_tracking,
     enable_per_tick_tracking,
@@ -591,6 +611,26 @@ def run_variant_worker(
     viz_fps,
     viz_brain_enabled,
     viz_brain_fps,
+    grid_width,
+    grid_height,
+    start_pos,
+    world_rng_seed,
+    worm_speed,
+    worm_energy_capacity,
+    worm_metabolic_rate,
+    worm_movement_cost,
+    sensor_cfg,
+    feeding_paradigm,
+    feeding_initial_fraction_per_cell,
+    feeding_regrow_time,
+    brain_n_neurons,
+    brain_threshold,
+    brain_noise_level,
+    brain_sensory_mapping,
+    brain_output_mapping,
+    brain_max_decision_delay,
+    rng_seed,
+    has_brain_config,
     hdf5_path=None,
     hdf5_lock=None,
 ):
@@ -600,9 +640,6 @@ def run_variant_worker(
         variant_id: Index of this variant
         brain_module_name: Name of brain module to import
         genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
-        cfg: Configuration dict
-        hdf5_path: Path to HDF5 file to write to
-        hdf5_lock: multiprocessing.Lock() for synchronized writes
         viz_enabled: Whether to create and display renderer visualization
         enable_per_run_tracking: Whether to track per-run metrics
         enable_per_tick_tracking: Whether to track per-tick data
@@ -612,17 +649,36 @@ def run_variant_worker(
         viz_fps: World visualization FPS
         viz_brain_enabled: Whether to enable brain visualization
         viz_brain_fps: Brain visualization FPS
+        grid_width: World grid width
+        grid_height: World grid height
+        start_pos: Worm starting position (tuple)
+        world_rng_seed: RNG seed for world
+        worm_speed: Worm speed parameter
+        worm_energy_capacity: Worm energy capacity
+        worm_metabolic_rate: Worm metabolic rate
+        worm_movement_cost: Worm movement cost
+        sensor_cfg: Sensor configuration list
+        feeding_paradigm: Feeding paradigm dict
+        feeding_initial_fraction_per_cell: Initial food fraction per cell
+        feeding_regrow_time: Food regrow time
+        brain_n_neurons: Number of neurons in brain
+        brain_threshold: Neuron threshold (applied to all neurons)
+        brain_noise_level: Neuron noise level (applied to all neurons)
+        brain_sensory_mapping: Sensory input mapping dict
+        brain_output_mapping: Output neuron mapping dict
+        brain_max_decision_delay: Maximum decision delay
+        rng_seed: RNG seed for this variant
+        has_brain_config: Whether brain is enabled
+        hdf5_path: Path to HDF5 file to write to
+        hdf5_lock: multiprocessing.Lock() for synchronized writes
     """
-    
-    # Extract experiment config from full config (still needed for other functions)
-    experiment_cfg = cfg.get("experiment", {})
     
     # ============================================================
     # ============================================================
     # 5a: Create World instance
     # ============================================================
-    world = make_world(cfg)
-    feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
+    world = make_world(grid_width, grid_height, start_pos, world_rng_seed)
+    feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
     world.feeding_cfg = feeding_cfg
 
     # ============================================================
@@ -633,8 +689,8 @@ def run_variant_worker(
     # ============================================================
     # 5c: Create Worm instance
     # ============================================================
-    worm = make_worm(world, cfg)
-    worm.active_sensors = make_sensor_cfg(cfg)
+    worm = make_worm(world, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost)
+    worm.active_sensors = sensor_cfg
     worm.brain = brain_module
 
     # ============================================================
@@ -687,8 +743,6 @@ def run_variant_worker(
         per_tick_all_runs = {}
         heatmaps_all_runs = {}
 
-    has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
-
     # ============================================================
     # 5e: Create MetricsRecorder to track per-tick data
     # ============================================================
@@ -704,13 +758,21 @@ def run_variant_worker(
         # 5f1: Prepare simulation & Build RNG streams
         # ============================================================
         rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
-            cfg["world"]["rng_seed"] + run_id, has_brain_config
+            rng_seed + run_id, has_brain_config
         )
 
         # ============================================================
-        # 5f2: Call brain_module.init_brain(genome, cfg, rng_noise)
+        # 5f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise)
         # ============================================================
-        brain_module.init_brain(genome, cfg, rng_neuron_noise)
+        brain_cfg_dict = {
+            'n_neurons': brain_n_neurons,
+            'threshold': brain_threshold,
+            'noise_level': brain_noise_level,
+            'sensory_mapping': brain_sensory_mapping,
+            'output_mapping': brain_output_mapping,
+            'max_decision_delay': brain_max_decision_delay,
+        }
+        brain_module.init_brain(genome, brain_cfg_dict, rng_neuron_noise)
 
         # ============================================================
         # 5f3: Reset world & worm & simulation
@@ -890,6 +952,33 @@ def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     return True
 
 
+def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
+    """
+    Validate visualization flags and adjust if necessary.
+    
+    If visualization is enabled for a large batch (total_simulations > 2),
+    warn the user that it will be slow and ask whether to disable it.
+    
+    Args:
+        n_variants: Number of variants
+        n_runs: Number of runs per variant
+        viz_enabled: Whether world visualization is enabled
+        viz_brain_enabled: Whether brain visualization is enabled
+    
+    Returns: Tuple of (updated_viz_enabled, updated_viz_brain_enabled)
+    """
+    total_simulations = n_variants * n_runs
+    if total_simulations > 2 and viz_enabled:
+        print(f"\n[WARNING] Visualization is enabled for {n_variants} variants × {n_runs} runs = {total_simulations} total simulations.")
+        print("This will be VERY SLOW. Batch runs typically disable visualization.")
+        response = input("Continue with visualization? (y/n): ").strip().lower()
+        if response != 'y':
+            print("[INFO] Disabling visualization for this batch run.")
+            return False, False
+    
+    return viz_enabled, viz_brain_enabled
+
+
 def print_lifespan_summary(all_lifespans: dict):
     """Print lifespan (lifetime ticks) from all variants to terminal.
     
@@ -950,11 +1039,14 @@ def main():
         sys.exit(1)
     
     experiment_cfg = cfg["experiment"]
+    brain_module_name = make_decision_cfg(cfg)
+    
     
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
     SIMULATION_NAME = experiment_cfg["simulation_name"]
     GENOME_TYPE = experiment_cfg["genome_type"]
+    genome_generator = load_genome_generator(GENOME_TYPE)
     WIRING_RANDOMIZATION_SEED = experiment_cfg["wiring_randomization_seed"]
     N_VARIANTS = experiment_cfg["n_variants"]
     MAX_TICKS = experiment_cfg["max_ticks"]
@@ -967,82 +1059,77 @@ def main():
     ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
     ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
     ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
-    
+
+
     # ============================================================
     # 2. VALIDATION & USER CHECKS
     # ============================================================
     # Check for genome_type vs config consistency
-    has_brain_config = cfg["decisionmaking"]["brain"]
-    
+    has_brain_config = cfg["worm"]["decisionmaking"]["brain"]
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
     
     if not validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING):
         return
     
-    total_simulations = N_VARIANTS * N_RUNS
-    if total_simulations > 2 and VIZ_ENABLED:
-        print(f"\n[WARNING] Visualization is enabled for {N_VARIANTS} variants × {N_RUNS} runs = {total_simulations} total simulations.")
-        print("This will be VERY SLOW. Batch runs typically disable visualization.")
-        response = input("Continue with visualization? (y/n): ").strip().lower()
-        if response != 'y':
-            print("[INFO] Disabling visualization for this batch run.")
-            VIZ_ENABLED = False
-            VIZ_BRAIN_ENABLED = False  # Also disable brain visualization
+    VIZ_ENABLED, VIZ_BRAIN_ENABLED = validate_viz_flags(N_VARIANTS, N_RUNS, VIZ_ENABLED, VIZ_BRAIN_ENABLED)
     
-    num_workers = None
-    # Force serial execution if any visualization is enabled
-    if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
-        print("[INFO] Visualization enabled. Running serially.")
-        init_pause_manager()
-    else:
-        num_workers = get_num_workers()
-        if num_workers is None:
-            print("[INFO] Insufficient CPU cores. Running serially.")
-        else:
-            available_cores = os.cpu_count()
-            print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
+    # ============================================================
+    # Extract config components for worker
+    # ============================================================
+    grid_width = cfg["world"]["grid_width"]
+    grid_height = cfg["world"]["grid_height"]
+    start_pos = cfg["world"]["start_pos"]
+    world_rng_seed = cfg["world"]["rng_seed"]
+    worm_speed = cfg["worm"]["speed"]
+    worm_energy_capacity = cfg["worm"]["energy_capacity"]
+    worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
+    worm_movement_cost = cfg["worm"].get("movement_cost", 1)
+    sensor_cfg = make_sensor_cfg(cfg)
+    feeding_paradigm = cfg["food"].get("feeding_paradigm", {"initial": True, "regrow": True})
+    feeding_initial_fraction_per_cell = cfg["food"].get("initial_fraction_per_cell", 0.25)
+    feeding_regrow_time = cfg["food"].get("regrow_time", 3000)
+    brain_n_neurons = cfg["brain"]["n_neurons"]
+    brain_threshold = cfg["brain"]["threshold"]
+    brain_noise_level = cfg["brain"]["noise_level"]
+    brain_sensory_mapping = cfg["brain"]["sensory_mapping"]
+    brain_output_mapping = cfg["brain"]["output_mapping"]
+    brain_max_decision_delay = cfg["brain"]["max_decision_delay"]
+    rng_seed = cfg["world"]["rng_seed"]
     
-
     # ============================================================
     # 3. GENERATE GENOMES
     # ============================================================
-    try:
-        brain_module_name = make_decision_cfg(cfg)
-        genome_generator = load_genome_generator(GENOME_TYPE)
+    # Generate all genomes before dispatching workers
+    genomes = []
+    for variant_id in range(N_VARIANTS):
+        genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
+        genomes.append(genome)
+    
+    # ============================================================
+    # 4. PREPARE DATA TRACKING IF ENABLED
+    # ============================================================
         
-        # Generate all genomes before dispatching workers
-        genomes = []
-        for variant_id in range(N_VARIANTS):
-            genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
-            genomes.append(genome)
+    # Only create HDF5 file and manager if per-run tracking is enabled
+    if ENABLE_PER_RUN_TRACKING:
+        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
+        print(f"[batch] writing to {hdf5_path}\n")
+        create_hdf5_file(hdf5_path, cfg)
+        # Save genome generation parameters to HDF5
+        save_genome_properties_to_hdf5(hdf5_path, genomes)
         
-        # ============================================================
-        # 4. PREPARE DATA TRACKING IF ENABLED
-        # ============================================================
-        
-        hdf5_path = None
-        hdf5_lock = None
-        
-        # Only create HDF5 file and manager if per-run tracking is enabled
-        if ENABLE_PER_RUN_TRACKING:
-            hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
-            print(f"[batch] writing to {hdf5_path}\n")
-            create_hdf5_file(hdf5_path, cfg)
-            # Save genome generation parameters to HDF5
-            save_genome_properties_to_hdf5(hdf5_path, genomes)
-            
-            # Create manager and lock for parallel HDF5 writing
-            manager = Manager()
-            hdf5_lock = manager.Lock()
+        # Create manager and lock for parallel HDF5 writing
+        manager = Manager()
+        hdf5_lock = manager.Lock()
 
-        # ============================================================
-        # 5. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
-        # ============================================================
-        
+    # ============================================================
+    # 5. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
+    # ============================================================
+    
+    try:
         # Run simulation
         all_lifespans = {}
-        
+        num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
@@ -1051,7 +1138,6 @@ def main():
                     'variant_id': variant_id,
                     'brain_module_name': brain_module_name,
                     'genome': genomes[variant_id],
-                    'cfg': cfg,
                     'viz_enabled': VIZ_ENABLED,
                     'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
                     'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
@@ -1061,6 +1147,26 @@ def main():
                     'viz_fps': VIZ_FPS,
                     'viz_brain_enabled': VIZ_BRAIN_ENABLED,
                     'viz_brain_fps': VIZ_BRAIN_FPS,
+                    'grid_width': grid_width,
+                    'grid_height': grid_height,
+                    'start_pos': start_pos,
+                    'world_rng_seed': world_rng_seed,
+                    'worm_speed': worm_speed,
+                    'worm_energy_capacity': worm_energy_capacity,
+                    'worm_metabolic_rate': worm_metabolic_rate,
+                    'worm_movement_cost': worm_movement_cost,
+                    'sensor_cfg': sensor_cfg,
+                    'feeding_paradigm': feeding_paradigm,
+                    'feeding_initial_fraction_per_cell': feeding_initial_fraction_per_cell,
+                    'feeding_regrow_time': feeding_regrow_time,
+                    'brain_n_neurons': brain_n_neurons,
+                    'brain_threshold': brain_threshold,
+                    'brain_noise_level': brain_noise_level,
+                    'brain_sensory_mapping': brain_sensory_mapping,
+                    'brain_output_mapping': brain_output_mapping,
+                    'brain_max_decision_delay': brain_max_decision_delay,
+                    'rng_seed': rng_seed,
+                    'has_brain_config': has_brain_config,
                 }
                 if ENABLE_PER_RUN_TRACKING:
                     kwargs['hdf5_path'] = hdf5_path
@@ -1081,7 +1187,6 @@ def main():
                         'variant_id': variant_id,
                         'brain_module_name': brain_module_name,
                         'genome': genomes[variant_id],
-                        'cfg': cfg,
                         'viz_enabled': False,  # Never viz in parallel (serial only)
                         'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
                         'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
@@ -1091,6 +1196,26 @@ def main():
                         'viz_fps': VIZ_FPS,
                         'viz_brain_enabled': VIZ_BRAIN_ENABLED,
                         'viz_brain_fps': VIZ_BRAIN_FPS,
+                        'grid_width': grid_width,
+                        'grid_height': grid_height,
+                        'start_pos': start_pos,
+                        'world_rng_seed': world_rng_seed,
+                        'worm_speed': worm_speed,
+                        'worm_energy_capacity': worm_energy_capacity,
+                        'worm_metabolic_rate': worm_metabolic_rate,
+                        'worm_movement_cost': worm_movement_cost,
+                        'sensor_cfg': sensor_cfg,
+                        'feeding_paradigm': feeding_paradigm,
+                        'feeding_initial_fraction_per_cell': feeding_initial_fraction_per_cell,
+                        'feeding_regrow_time': feeding_regrow_time,
+                        'brain_n_neurons': brain_n_neurons,
+                        'brain_threshold': brain_threshold,
+                        'brain_noise_level': brain_noise_level,
+                        'brain_sensory_mapping': brain_sensory_mapping,
+                        'brain_output_mapping': brain_output_mapping,
+                        'brain_max_decision_delay': brain_max_decision_delay,
+                        'rng_seed': rng_seed,
+                        'has_brain_config': has_brain_config,
                     }
                     if ENABLE_PER_RUN_TRACKING:
                         kwargs['hdf5_path'] = hdf5_path

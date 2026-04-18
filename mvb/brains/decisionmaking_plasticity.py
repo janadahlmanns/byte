@@ -191,13 +191,12 @@ def init_brain(genome, yaml_config, rng_neuron_noise):
     """
     global _brain_state, _brain_renderer
     
-    brain_cfg = yaml_config.get("brain", {})
-    n_neurons = brain_cfg.get("n_neurons", 10)
-    default_threshold = brain_cfg.get("threshold", 0.5)
-    default_noise_level = brain_cfg.get("noise_level", 0.05)
-    sensory_mapping = brain_cfg.get("sensory_mapping", {})
-    output_mapping = brain_cfg.get("output_mapping", {})
-    max_decision_delay = brain_cfg.get("max_decision_delay", 2.0)
+    n_neurons = yaml_config["n_neurons"]
+    default_threshold = yaml_config["threshold"]
+    default_noise_level = yaml_config["noise_level"]
+    sensory_mapping = yaml_config["sensory_mapping"]
+    output_mapping = yaml_config["output_mapping"]
+    max_decision_delay = yaml_config["max_decision_delay"]
     
     # Extract genome components
     connection_weights = genome["connection_weights"]
