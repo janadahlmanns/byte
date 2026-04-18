@@ -582,8 +582,6 @@ def run_variant_worker(
     brain_module_name,
     genome,
     cfg,
-    hdf5_path,
-    hdf5_lock,
     viz_enabled,
     enable_per_run_tracking,
     enable_per_tick_tracking,
@@ -593,6 +591,8 @@ def run_variant_worker(
     viz_fps,
     viz_brain_enabled,
     viz_brain_fps,
+    hdf5_path=None,
+    hdf5_lock=None,
 ):
     """Execute a single variant's simulation runs and write data directly to HDF5.
     
@@ -820,23 +820,24 @@ def run_variant_worker(
     # ============================================================
     # 5g: Batch write to HDF5
     # ============================================================
-    # Batch write all variant data after all runs complete
-    with hdf5_lock:
-        # Write summary array only if per-run tracking is enabled
-        if enable_per_run_tracking and summary_array is not None:
-#             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
-            save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-            save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
-            
-            # Write accumulated per-tick data if any
-            if per_tick_all_runs:
-                for run_id, per_tick_data in per_tick_all_runs.items():
-                    save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
-            
-            # Write accumulated heatmap data if any
-            if heatmaps_all_runs:
-                for run_id, staying_heatmap in heatmaps_all_runs.items():
-                    save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, staying_heatmap)
+    # Batch write all variant data after all runs complete (only if per-run tracking enabled)
+    if enable_per_run_tracking:
+        with hdf5_lock:
+            # Write summary array only if per-run tracking is enabled
+            if summary_array is not None:
+    #             save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
+                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
+                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
+                
+                # Write accumulated per-tick data if any
+                if per_tick_all_runs:
+                    for run_id, per_tick_data in per_tick_all_runs.items():
+                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
+                
+                # Write accumulated heatmap data if any
+                if heatmaps_all_runs:
+                    for run_id, staying_heatmap in heatmaps_all_runs.items():
+                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, staying_heatmap)
     
     # Keep visualization window open if it was created (but not if exit was requested)
     should_show_event_loop = viz_enabled or viz_brain_enabled
@@ -993,6 +994,7 @@ def main():
     # Force serial execution if any visualization is enabled
     if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
         print("[INFO] Visualization enabled. Running serially.")
+        init_pause_manager()
     else:
         num_workers = get_num_workers()
         if num_workers is None:
@@ -1001,10 +1003,6 @@ def main():
             available_cores = os.cpu_count()
             print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
     
-    hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
-    print(f"[batch] writing to {hdf5_path}\n")
-    pause_mgr = init_pause_manager() if (VIZ_ENABLED or VIZ_BRAIN_ENABLED) else None
-
 
     # ============================================================
     # 3. GENERATE GENOMES
@@ -1023,19 +1021,24 @@ def main():
         # 4. PREPARE DATA TRACKING IF ENABLED
         # ============================================================
         
-        # Only create HDF5 file if per-run tracking is enabled
+        hdf5_path = None
+        hdf5_lock = None
+        
+        # Only create HDF5 file and manager if per-run tracking is enabled
         if ENABLE_PER_RUN_TRACKING:
+            hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
+            print(f"[batch] writing to {hdf5_path}\n")
             create_hdf5_file(hdf5_path, cfg)
             # Save genome generation parameters to HDF5
             save_genome_properties_to_hdf5(hdf5_path, genomes)
+            
+            # Create manager and lock for parallel HDF5 writing
+            manager = Manager()
+            hdf5_lock = manager.Lock()
 
         # ============================================================
         # 5. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
         # ============================================================
-        
-        # Create manager and lock for parallel HDF5 writing
-        manager = Manager()
-        hdf5_lock = manager.Lock()
         
         # Run simulation
         all_lifespans = {}
@@ -1044,23 +1047,26 @@ def main():
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
                 
-                returned_variant_id, lifespan_vector = run_variant_worker(
-                    variant_id,
-                    brain_module_name,
-                    genomes[variant_id],
-                    cfg,
-                    hdf5_path,
-                    hdf5_lock,
-                    VIZ_ENABLED,
-                    ENABLE_PER_RUN_TRACKING,
-                    ENABLE_PER_TICK_TRACKING,
-                    ENABLE_HEAT_MAP_TRACKING,
-                    MAX_TICKS,
-                    N_RUNS,
-                    VIZ_FPS,
-                    VIZ_BRAIN_ENABLED,
-                    VIZ_BRAIN_FPS,
-                )
+                kwargs = {
+                    'variant_id': variant_id,
+                    'brain_module_name': brain_module_name,
+                    'genome': genomes[variant_id],
+                    'cfg': cfg,
+                    'viz_enabled': VIZ_ENABLED,
+                    'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
+                    'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
+                    'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
+                    'max_ticks': MAX_TICKS,
+                    'n_runs': N_RUNS,
+                    'viz_fps': VIZ_FPS,
+                    'viz_brain_enabled': VIZ_BRAIN_ENABLED,
+                    'viz_brain_fps': VIZ_BRAIN_FPS,
+                }
+                if ENABLE_PER_RUN_TRACKING:
+                    kwargs['hdf5_path'] = hdf5_path
+                    kwargs['hdf5_lock'] = hdf5_lock
+                
+                returned_variant_id, lifespan_vector = run_variant_worker(**kwargs)
 
                 all_lifespans[variant_id] = lifespan_vector
                 print(" done")
@@ -1071,24 +1077,26 @@ def main():
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = {}
                 for variant_id in range(N_VARIANTS):
-                    future = executor.submit(
-                        run_variant_worker,
-                        variant_id,
-                        brain_module_name,
-                        genomes[variant_id],
-                        cfg,
-                        hdf5_path,
-                        hdf5_lock,
-                        False,  # Never viz in parallel (serial only)
-                        ENABLE_PER_RUN_TRACKING,
-                        ENABLE_PER_TICK_TRACKING,
-                        ENABLE_HEAT_MAP_TRACKING,
-                        MAX_TICKS,
-                        N_RUNS,
-                        VIZ_FPS,
-                        VIZ_BRAIN_ENABLED,
-                        VIZ_BRAIN_FPS,
-                    )
+                    kwargs = {
+                        'variant_id': variant_id,
+                        'brain_module_name': brain_module_name,
+                        'genome': genomes[variant_id],
+                        'cfg': cfg,
+                        'viz_enabled': False,  # Never viz in parallel (serial only)
+                        'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
+                        'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
+                        'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
+                        'max_ticks': MAX_TICKS,
+                        'n_runs': N_RUNS,
+                        'viz_fps': VIZ_FPS,
+                        'viz_brain_enabled': VIZ_BRAIN_ENABLED,
+                        'viz_brain_fps': VIZ_BRAIN_FPS,
+                    }
+                    if ENABLE_PER_RUN_TRACKING:
+                        kwargs['hdf5_path'] = hdf5_path
+                        kwargs['hdf5_lock'] = hdf5_lock
+                    
+                    future = executor.submit(run_variant_worker, **kwargs)
                     futures[future] = variant_id
                 
                 for future in as_completed(futures):
@@ -1114,7 +1122,7 @@ def main():
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
     finally:
-        if pause_mgr:
+        if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
             cleanup_pause_manager()
 
 

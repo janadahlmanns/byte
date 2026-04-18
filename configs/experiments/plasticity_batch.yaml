@@ -19,18 +19,18 @@ experiment:
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 4
+  n_runs: 1
   
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 4
-  viz_brain_enabled: true
+  viz_brain_enabled: false
   viz_brain_fps: 4
   
   # Data tracking
   enable_per_run_tracking: true
-  enable_per_tick_tracking: false
-  enable_heat_map_tracking: false
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
 
 # ============================================================
 # WORLD CONFIGURATION
