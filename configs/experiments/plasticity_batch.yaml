@@ -1,3 +1,42 @@
+# ============================================================
+# EXPERIMENT CONFIGURATION
+# ============================================================
+experiment:
+  # Output and file naming
+  output_folder: "data/temp/"
+  simulation_name: "lookup_validation"
+  
+  # Genome generation
+  genome_type: "random"  # Options: "random", "lookup"
+  wiring_randomization_seed: 1
+  n_variants: 5
+  
+  # Randomized wiring parameters (only used if genome_type is "random")
+  connectivity_degree_excitatory: 0.2
+  connectivity_degree_inhibitory: 0.4
+  modulation_degree_potentiation: 0.5
+  modulation_degree_depression: 0.5
+  
+  # Simulation runtime
+  max_ticks: 2000
+  n_runs: 3
+  initial_fraction_per_cell: 0.25
+  regrow_time: 3000
+  
+  # Visualization
+  viz_enabled: true
+  viz_fps: 4
+  viz_brain_enabled: true
+  viz_brain_fps: 4
+  
+  # Data tracking
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
+
+# ============================================================
+# WORLD CONFIGURATION
+# ============================================================
 world:
   grid_width: 51
   grid_height: 51

@@ -1,7 +1,8 @@
 # Batch simulation of Byte with randomized wiring variants
-# Each variant's wiring seed is incremented by 1
-# Results are saved to HDF5
+# Usage: python -m simulate.run_batch --config configs/experiments/neurons_random_wiring.yaml
 
+import sys
+import argparse
 import importlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -30,54 +31,91 @@ from .hdf5_utils import (
 
 
 # ============================================================
-# EXPERIMENT DEFINITION
+# COMMAND-LINE ARGUMENT PARSING
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/temp/"
-SIMULATION_NAME   = "temp"  # descriptive name for this batch of runs, used in output folder and file names
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Run batch simulation of Byte',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m simulate.run_batch --config plasticity_batch
+  python -m simulate.run_batch --config neurons_lookup_validation
+        """
+    )
+    parser.add_argument('--config', type=str, required=True,
+                        help='Name of the experiment config file (without .yaml/.yml extension)')
+    return parser.parse_args()
 
-CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-GENOME_TYPE  = "lookup"  # Set to "random" for randomized wiring, "lookup" for hand-crafted
+
+def resolve_config_path(config_name: str, config_dir: str = "configs/experiments") -> str:
+    """Resolve a config name to a full path.
+    
+    Args:
+        config_name: Name of config file (with or without .yaml/.yml extension)
+        config_dir: Directory to search for YAML files (default: configs/experiments)
+    
+    Returns:
+        Full path to the config file
+    
+    Raises:
+        FileNotFoundError: If config file not found
+    """
+    # If config_name already has an extension, use it as-is
+    if config_name.endswith(('.yaml', '.yml')):
+        full_path = Path(config_dir) / config_name
+    else:
+        # Try .yaml first, then .yml
+        yaml_path = Path(config_dir) / f"{config_name}.yaml"
+        yml_path = Path(config_dir) / f"{config_name}.yml"
+        
+        if yaml_path.exists():
+            full_path = yaml_path
+        elif yml_path.exists():
+            full_path = yml_path
+        else:
+            raise FileNotFoundError(f"Configuration file not found: {config_name}")
+    
+    return str(full_path)
+
+
+def find_available_configs(config_dir: str = "configs/experiments") -> list:
+    """Find all YAML configuration files in the configs/experiments directory.
+    
+    Args:
+        config_dir: Directory to search for YAML files (default: configs/experiments)
+    
+    Returns:
+        List of config file names (without extension)
+    """
+    config_path = Path(config_dir)
+    if not config_path.exists():
+        return []
+    
+    yaml_files = sorted(config_path.glob("*.yaml")) + sorted(config_path.glob("*.yml"))
+    # Return just the names without extensions
+    return [f.stem for f in yaml_files]
+
+
+def load_config(config_name: str):
+    """Load YAML configuration file from configs/experiments directory.
+    
+    Args:
+        config_name: Name of the config file (with or without extension)
+    
+    Returns:
+        Parsed YAML configuration as dict
+    """
+    config_path = resolve_config_path(config_name)
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 # ============================================================
-# WIRING RANDOMIZATION PARAMETERS
-# ============================================================
-
-CONNECTIVITY_DEGREE_EXCITATORY = 0.2       # Fraction of excitatory connections
-CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
-MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
-MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
-WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 1                            # Number of randomized wiring variants to generate
-
-# ============================================================
-# SIMULATION PARAMETERS 
-# ============================================================
-
-MAX_TICKS   = 2000
-N_RUNS      = 1                           # 300 runs per variant as determined by convergence analysis
-INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
-REGROW_TIME = 3000                           # Time for food to regrow
-
-# ============================================================
-# VISUALIZATION PARAMETERS
-# ============================================================
-
-VIZ_ENABLED = True                        # Enable visualization
-VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
-VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
-
-# ============================================================
-# DATA TRACKING PARAMETERS
-# ============================================================
-
-ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
-ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
-ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
-
-# ============================================================
-# helpers
+# HELPER FUNCTIONS
 # ============================================================
 
 def get_num_workers():
@@ -91,10 +129,6 @@ def get_num_workers():
     except Exception:
         return None
 
-def load_config(path: str):
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
 def build_rng_streams(seed: int, has_brain: bool):
     """Build separate RNG streams for simulation aspects."""
     seed = int(seed)
@@ -102,6 +136,10 @@ def build_rng_streams(seed: int, has_brain: bool):
     rng_decision = np.random.default_rng(seed)
     rng_neuron_noise = np.random.default_rng(seed) if has_brain else None
     return rng_food, rng_decision, rng_neuron_noise
+
+# ============================================================
+# helpers
+# ============================================================
 
 def load_brain_module(version: str):
     module_name = f"mvb.brains.decisionmaking_{version}"
@@ -167,12 +205,12 @@ def make_world(cfg_yaml):
         ),
     )
 
-def make_feeding_cfg(cfg_yaml):
+def make_feeding_cfg(cfg_yaml, experiment_cfg):
     f = cfg_yaml["food"]
     return FeedingConfig(
         feeding_paradigm=f.get("feeding_paradigm", {"initial": True, "regrow": True}),
-        initial_fraction_per_cell=INITIAL_FRACTION_PER_CELL,
-        regrow_time=REGROW_TIME,
+        initial_fraction_per_cell=experiment_cfg.get("initial_fraction_per_cell", 0.25),
+        regrow_time=experiment_cfg.get("regrow_time", 3000),
     )
 
 def make_worm(world, cfg_yaml):
@@ -279,17 +317,21 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
 # output + metrics
 # ============================================================
 
-def make_experiment_dir() -> Path:
+def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
     """Create HDF5 file path for experiment.
+    
+    Args:
+        experiment_folder: Base folder for experiment output
+        simulation_name: Name of the simulation
     
     Returns:
         Path to HDF5 file for saving all results.
     """
-    base = Path(EXPERIMENT_FOLDER)
+    base = Path(experiment_folder)
     base.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    hdf5_path = base / f"{ts}_{SIMULATION_NAME}.h5"
+    hdf5_path = base / f"{ts}_{simulation_name}.h5"
     
     return hdf5_path
 
@@ -324,12 +366,22 @@ class MetricsRecorder:
     prev_action_was_decision: bool = False  # Track if previous action was a decision
     decisions: int = 0
     correct_decisions: int = 0
+    enable_per_tick_tracking: bool = True  # Whether to track per-tick metrics
+    enable_heat_map_tracking: bool = True  # Whether to track heatmaps
 
     @classmethod
-    def empty(cls, worm: Worm, genome):
+    def empty(cls, worm: Worm, genome, enable_per_run_tracking=True, enable_per_tick_tracking=True, enable_heat_map_tracking=True, max_ticks=2000):
         """Initialize recorder with genome and worm state.
         
-        If ENABLE_PER_RUN_TRACKING is False, only lifetime metrics are tracked.
+        If enable_per_run_tracking is False, only lifetime metrics are tracked.
+        
+        Args:
+            worm: Worm instance
+            genome: Genome dict with connection_weights
+            enable_per_run_tracking: Whether to track per-run metrics
+            enable_per_tick_tracking: Whether to track per-tick data
+            enable_heat_map_tracking: Whether to track heatmaps
+            max_ticks: Maximum simulation ticks
         """
         connection_weights = genome["connection_weights"]
         
@@ -342,7 +394,7 @@ class MetricsRecorder:
         grid_height = worm.world.cfg.grid_height
         grid_width = worm.world.cfg.grid_width
                 
-        if ENABLE_PER_RUN_TRACKING:
+        if enable_per_run_tracking:
             kwargs = {
             'per_tick_count': 0,
             'connections_to_track': connections_to_track,
@@ -366,8 +418,10 @@ class MetricsRecorder:
             'prev_action_was_decision': False,
             'decisions': 0,
             'correct_decisions': 0,
+            'enable_per_tick_tracking': enable_per_tick_tracking,
+            'enable_heat_map_tracking': enable_heat_map_tracking,
             }
-            if ENABLE_PER_TICK_TRACKING:
+            if enable_per_tick_tracking:
                 dtype_fields = [
                     ('tick', 'i4'),
                     ('food_sensed_N', 'u1'),
@@ -382,9 +436,9 @@ class MetricsRecorder:
                 ]
                 for src, tgt in connections_to_track:
                     dtype_fields.append((f'{src}_{tgt}', 'f4'))
-                kwargs['per_tick_data'] = np.zeros(MAX_TICKS, dtype=dtype_fields)
+                kwargs['per_tick_data'] = np.zeros(max_ticks, dtype=dtype_fields)
             
-            if ENABLE_HEAT_MAP_TRACKING:
+            if enable_heat_map_tracking:
                 entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
                 staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
                 entering_heatmap[worm.y, worm.x] = 1
@@ -458,7 +512,7 @@ class MetricsRecorder:
         self.prev_action_was_decision = is_decision
         
         # Track comprehensive per-tick data (if enabled)
-        if ENABLE_PER_TICK_TRACKING and self.per_tick_data is not None:
+        if self.enable_per_tick_tracking and self.per_tick_data is not None:
             # Determine movement direction from previous action
             movement_str = "stay"
             if self.prev_action is not None:
@@ -499,7 +553,7 @@ class MetricsRecorder:
             
             self.per_tick_count = tick_idx + 1
         
-        if ENABLE_HEAT_MAP_TRACKING and self.staying_heatmap is not None:
+        if self.enable_heat_map_tracking and self.staying_heatmap is not None:
             self.staying_heatmap[worm.y, worm.x] += 1
             position_changed = (worm.y != self.prev_y) or (worm.x != self.prev_x)
             food_consumed = worm.eats > self.prev_eats
@@ -542,6 +596,21 @@ def run_variant_worker(
         hdf5_lock: Optional multiprocessing.Lock() for synchronized writes
         viz_enabled: Whether to create and display renderer visualization
     """
+    
+    # Extract experiment config from full config
+    experiment_cfg = cfg.get("experiment", {})
+    
+    # Extract tracking flags for use in this worker
+    ENABLE_PER_RUN_TRACKING = experiment_cfg.get("enable_per_run_tracking", True)
+    ENABLE_PER_TICK_TRACKING = experiment_cfg.get("enable_per_tick_tracking", True)
+    ENABLE_HEAT_MAP_TRACKING = experiment_cfg.get("enable_heat_map_tracking", True)
+    MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
+    N_RUNS = experiment_cfg.get("n_runs", 1)
+    
+    # Extract visualization parameters for use in this worker
+    VIZ_FPS = experiment_cfg.get("viz_fps", 4)
+    VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
+    VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
     
     brain_module = load_brain_module(brain_module_name)
     
@@ -600,7 +669,7 @@ def run_variant_worker(
         )
         
         world = make_world(cfg)
-        feeding_cfg = make_feeding_cfg(cfg)
+        feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
         world.feeding_cfg = feeding_cfg
         
         worm = make_worm(world, cfg)
@@ -615,17 +684,16 @@ def run_variant_worker(
         # Create renderers if visualization is enabled
         if viz_enabled:
             try:
-                viz_fps = cfg.get("viz", {}).get("fps", 4)
-                brain_viz_fps = cfg.get("viz", {}).get("brain_fps", 4)
+                # Create world renderer (if FPS is set to a positive value)
+                if VIZ_FPS > 0:
+                    worm.renderer = QtRenderer(world, worm, VIZ_FPS)
+                    print(f"[viz] Created world renderer at {VIZ_FPS} FPS")
                 
-                # Create world renderer (if world visualization is enabled)
-                if cfg.get("viz", {}).get("enabled", False):
-                    worm.renderer = QtRenderer(world, worm, viz_fps)
-                
-                # Create brain renderer and link it to the brain module (if brain visualization is enabled)
-                if cfg.get("viz", {}).get("brain_enabled", False):
-                    brain_renderer = BrainQtRenderer(fps=brain_viz_fps)
+                # Create brain renderer (if enabled and FPS is set to a positive value)
+                if VIZ_BRAIN_ENABLED and VIZ_BRAIN_FPS > 0:
+                    brain_renderer = BrainQtRenderer(fps=VIZ_BRAIN_FPS)
                     brain_module._brain_renderer = brain_renderer
+                    print(f"[viz] Created brain renderer at {VIZ_BRAIN_FPS} FPS")
             except Exception as e:
                 print(f"[WARNING] Failed to create renderer: {e}. Running without visualization.")
                 worm.renderer = None
@@ -634,7 +702,7 @@ def run_variant_worker(
             worm.renderer = None
             brain_module._brain_renderer = None
         
-        rec = MetricsRecorder.empty(worm, genome)
+        rec = MetricsRecorder.empty(worm, genome, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING, MAX_TICKS)
         rec.record(worm)
         
         # Get pause manager for checkpoints (if visualization enabled)
@@ -746,20 +814,25 @@ def run_variant_worker(
 # TRACKING VALIDATION
 # ============================================================
 
-def validate_tracking_flags():
+def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     """
     Validate tracking flags and adjust if necessary.
     
-    If ENABLE_PER_RUN_TRACKING is False but other tracking flags are True,
+    If enable_per_run is False but other tracking flags are True,
     warn the user and ask whether to disable them or exit.
+    
+    Args:
+        enable_per_run: Whether per-run tracking is enabled
+        enable_per_tick: Whether per-tick tracking is enabled
+        enable_heat_map: Whether heatmap tracking is enabled
     
     Returns: True to continue, False to exit
     """
-    if not ENABLE_PER_RUN_TRACKING and (ENABLE_PER_TICK_TRACKING or ENABLE_HEAT_MAP_TRACKING):
+    if not enable_per_run and (enable_per_tick or enable_heat_map):
         print("\n[WARNING] Conflicting tracking configuration:")
-        print(f"  ENABLE_PER_RUN_TRACKING = {ENABLE_PER_RUN_TRACKING}")
-        print(f"  ENABLE_PER_TICK_TRACKING = {ENABLE_PER_TICK_TRACKING}")
-        print(f"  ENABLE_HEAT_MAP_TRACKING = {ENABLE_HEAT_MAP_TRACKING}")
+        print(f"  ENABLE_PER_RUN_TRACKING = {enable_per_run}")
+        print(f"  ENABLE_PER_TICK_TRACKING = {enable_per_tick}")
+        print(f"  ENABLE_HEAT_MAP_TRACKING = {enable_heat_map}")
         print("\nWhen per-run tracking is disabled, detailed per-tick and heatmap")
         print("tracking are useless. Only lifespan metrics will be recorded.")
         response = input("\nDisable all detailed tracking and continue? (y/n): ").strip().lower()
@@ -806,26 +879,62 @@ def print_lifespan_summary(all_lifespans: dict):
 
 def main():
     # ============================================================
-    # SETUP & CONFIGURATION
+    # PARSE ARGUMENTS & LOAD CONFIGURATION
     # ============================================================
-    cfg = load_config(CONFIG_PATH)
+    args = parse_arguments()
     
-    # Apply visualization parameters from top of file to the config
-    if "viz" not in cfg:
-        cfg["viz"] = {}
-    cfg["viz"]["enabled"] = VIZ_ENABLED
-    cfg["viz"]["fps"] = VIZ_FPS
-    cfg["viz"]["brain_enabled"] = VIZ_BRAIN_ENABLED
-    cfg["viz"]["brain_fps"] = VIZ_BRAIN_FPS
+    # Try to load config with helpful error message if not found
+    try:
+        cfg = load_config(args.config)
+        CONFIG_PATH = resolve_config_path(args.config)
+    except FileNotFoundError as e:
+        available_configs = find_available_configs()
+        print("\n" + "="*80)
+        print(f"[ERROR] {e}")
+        print("="*80)
+        print("\nAvailable experiment configurations:")
+        if available_configs:
+            for config_name in available_configs:
+                print(f"  • {config_name}")
+        else:
+            print("  (No YAML configuration files found in 'configs/experiments/' directory)")
+        print("\nExample:")
+        print("  python -m simulate.run_batch --config plasticity_batch")
+        print("="*80 + "\n")
+        sys.exit(1)
+    
+    experiment_cfg = cfg.get("experiment", {})
+    
+    # Extract experiment parameters from YAML
+    EXPERIMENT_FOLDER = experiment_cfg.get("output_folder", "data/temp/")
+    SIMULATION_NAME = experiment_cfg.get("simulation_name", "temp")
+    GENOME_TYPE = experiment_cfg.get("genome_type", "random")
+    CONNECTIVITY_DEGREE_EXCITATORY = experiment_cfg.get("connectivity_degree_excitatory", 0.2)
+    CONNECTIVITY_DEGREE_INHIBITORY = experiment_cfg.get("connectivity_degree_inhibitory", 0.4)
+    MODULATION_DEGREE_POTENTIATION = experiment_cfg.get("modulation_degree_potentiation", 0.5)
+    MODULATION_DEGREE_DEPRESSION = experiment_cfg.get("modulation_degree_depression", 0.5)
+    WIRING_RANDOMIZATION_SEED = experiment_cfg.get("wiring_randomization_seed", 1)
+    N_VARIANTS = experiment_cfg.get("n_variants", 1)
+    MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
+    N_RUNS = experiment_cfg.get("n_runs", 1)
+    INITIAL_FRACTION_PER_CELL = experiment_cfg.get("initial_fraction_per_cell", 0.25)
+    REGROW_TIME = experiment_cfg.get("regrow_time", 3000)
+    VIZ_ENABLED = experiment_cfg.get("viz_enabled", True)
+    VIZ_FPS = experiment_cfg.get("viz_fps", 4)
+    VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
+    VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
+    ENABLE_PER_RUN_TRACKING = experiment_cfg.get("enable_per_run_tracking", True)
+    ENABLE_PER_TICK_TRACKING = experiment_cfg.get("enable_per_tick_tracking", True)
+    ENABLE_HEAT_MAP_TRACKING = experiment_cfg.get("enable_heat_map_tracking", True)
     
     # Check for genome_type vs config consistency
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
     if GENOME_TYPE.lower() == "none" and has_brain_config:
-        raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE parameter.")
+        raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
     
     # Validate tracking flags
-    if not validate_tracking_flags():
+    if not validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING):
         return
     
     viz_enabled = VIZ_ENABLED
@@ -851,7 +960,7 @@ def main():
             print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
     
     brain = load_brain_module(make_decision_cfg(cfg))
-    hdf5_path = make_experiment_dir()
+    hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
     print(f"[batch] writing to {hdf5_path}\n")
     pause_mgr = init_pause_manager() if (viz_enabled or VIZ_BRAIN_ENABLED) else None
 
@@ -1004,4 +1113,27 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Check if --config is missing and show helpful error
+        if "--config" not in sys.argv and "--help" not in sys.argv and "-h" not in sys.argv:
+            available_configs = find_available_configs()
+            print("\n" + "="*80)
+            print("[ERROR] Missing required argument: --config")
+            print("="*80)
+            print("\nUsage: python -m simulate.run_batch --config <name>")
+            print("\nAvailable experiment configurations:")
+            if available_configs:
+                for config_name in available_configs:
+                    print(f"  • {config_name}")
+            else:
+                print("  (No YAML configuration files found in 'configs/experiments/' directory)")
+            print("\nExample:")
+            print("  python -m simulate.run_batch --config plasticity_batch")
+            print("="*80 + "\n")
+            sys.exit(1)
+        
+        main()
+    except SystemExit as e:
+        if e.code != 0:
+            raise
+
