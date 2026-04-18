@@ -14,7 +14,6 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
-from mvb.genome import generate_random_genome
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
@@ -38,7 +37,7 @@ EXPERIMENT_FOLDER = "data/temp/"
 SIMULATION_NAME   = "temp"  # descriptive name for this batch of runs, used in output folder and file names
 
 CONFIG_PATH = "configs/neurons_random_wiring.yaml"
-BRAIN_INIT  = "random"  # Set to "random" for randomized wiring
+GENOME_TYPE  = "lookup"  # Set to "random" for randomized wiring, "lookup" for hand-crafted
 
 # ============================================================
 # WIRING RANDOMIZATION PARAMETERS
@@ -49,14 +48,14 @@ CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5        # Fraction for depression modulation
 WIRING_RANDOMIZATION_SEED = 1              # Base seed for wiring randomization
-N_VARIANTS = 4                            # Number of randomized wiring variants to generate
+N_VARIANTS = 1                            # Number of randomized wiring variants to generate
 
 # ============================================================
 # SIMULATION PARAMETERS 
 # ============================================================
 
 MAX_TICKS   = 2000
-N_RUNS      = 4                           # 300 runs per variant as determined by convergence analysis
+N_RUNS      = 1                           # 300 runs per variant as determined by convergence analysis
 INITIAL_FRACTION_PER_CELL = 0.25           # Initial fraction of food per cell
 REGROW_TIME = 3000                           # Time for food to regrow
 
@@ -64,16 +63,16 @@ REGROW_TIME = 3000                           # Time for food to regrow
 # VISUALIZATION PARAMETERS
 # ============================================================
 
-VIZ_ENABLED = False                        # Enable visualization
+VIZ_ENABLED = True                        # Enable visualization
 VIZ_FPS = 4                                # Frames per second for world visualization
-VIZ_BRAIN_ENABLED = False                  # Enable brain visualization
+VIZ_BRAIN_ENABLED = True                  # Enable brain visualization
 VIZ_BRAIN_FPS = 4                          # Frames per second for brain visualization
 
 # ============================================================
 # DATA TRACKING PARAMETERS
 # ============================================================
 
-ENABLE_PER_RUN_TRACKING = False               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
+ENABLE_PER_RUN_TRACKING = True               # Enable detailed per-run tracking (per-tick data, heatmaps). Disable for faster runs when you only need lifespan metrics.
 ENABLE_PER_TICK_TRACKING = True              # Enable per-tick tracking and CSV export (tracks weights, sensory, movement, energy, distance, and decisions)
 ENABLE_HEAT_MAP_TRACKING = True             # Enable tracking of Byte position heat map
 
@@ -123,6 +122,40 @@ def load_brain_init(brain_init_name: str, wiring_seed: int = None, **wiring_para
     if not hasattr(module, "build_brain_spec"):
         raise AttributeError(f"Brain init module '{module_name}' has no 'build_brain_spec' function.")
     return module.build_brain_spec(wiring_seed=wiring_seed, **wiring_params)
+
+def load_genome_generator(genome_type: str):
+    """Load genome generator function from mvb.genome module.
+    
+    Parameters
+    ----------
+    genome_type : str
+        Name of the genome generator (e.g., "random", "lookup")
+    
+    Returns
+    -------
+    callable
+        The genome generator function (generate_random_genome, generate_lookup_genome, etc.)
+    """
+    if not genome_type or genome_type.lower() == "none":
+        raise ValueError(f"Invalid genome type: '{genome_type}'")
+    
+    # Map genome type names to actual function names
+    function_map = {
+        "random": "generate_random_genome",
+        "lookup": "generate_lookup_genome",
+    }
+    
+    function_name = function_map.get(genome_type.lower())
+    if not function_name:
+        raise ValueError(f"Unknown genome type '{genome_type}'. Available types: {list(function_map.keys())}")
+    
+    try:
+        from mvb import genome as genome_module
+        if not hasattr(genome_module, function_name):
+            raise AttributeError(f"Genome module has no function '{function_name}'.")
+        return getattr(genome_module, function_name)
+    except ImportError:
+        raise ImportError(f"Could not import genome module from mvb.")
 
 def make_world(cfg_yaml):
     return World(
@@ -785,11 +818,11 @@ def main():
     cfg["viz"]["brain_enabled"] = VIZ_BRAIN_ENABLED
     cfg["viz"]["brain_fps"] = VIZ_BRAIN_FPS
     
-    # Check for brain_init vs config consistency
+    # Check for genome_type vs config consistency
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
-    if BRAIN_INIT.lower() == "none" and has_brain_config:
-        raise ValueError(f"Config specifies brain: true but BRAIN_INIT is 'none'. Please set BRAIN_INIT parameter.")
+    if GENOME_TYPE.lower() == "none" and has_brain_config:
+        raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE parameter.")
     
     # Validate tracking flags
     if not validate_tracking_flags():
@@ -827,9 +860,10 @@ def main():
     # ============================================================
     try:
         brain_module_name = make_decision_cfg(cfg)
+        genome_generator = load_genome_generator(GENOME_TYPE)
         
         # Generate test genome for HDF5 metadata
-        test_genome = generate_random_genome(cfg, rng_seed=WIRING_RANDOMIZATION_SEED)
+        test_genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED)
         connection_weights = test_genome["connection_weights"]
         n_neurons = connection_weights.shape[0]
         
@@ -853,7 +887,7 @@ def main():
                 "experiment_folder": EXPERIMENT_FOLDER,
                 "simulation_name": SIMULATION_NAME,
                 "simulation_config_path": CONFIG_PATH,
-                "brain_init_type": BRAIN_INIT,
+                "genome_type": GENOME_TYPE,
             },
             "wiring_randomization": {
                 "connectivity_degree_excitatory": CONNECTIVITY_DEGREE_EXCITATORY,
@@ -894,10 +928,10 @@ def main():
             print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
         
         # Generate all genomes before dispatching workers
-        print("[genome] Generating {} random genomes...".format(N_VARIANTS), flush=True)
+        print("[genome] Generating {} genomes (type: {})...".format(N_VARIANTS, GENOME_TYPE), flush=True)
         genomes = []
         for variant_id in range(N_VARIANTS):
-            genome = generate_random_genome(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
+            genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
             genomes.append(genome)
         print("[genome] Done.\n", flush=True)
         
