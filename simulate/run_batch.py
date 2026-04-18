@@ -31,9 +31,7 @@ from .hdf5_utils import (
 )
 
 
-# ============================================================
-# COMMAND-LINE ARGUMENT PARSING
-# ============================================================
+# --- COMMAND-LINE ARGUMENT PARSING ---
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -115,9 +113,7 @@ def load_config(config_name: str):
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
+# --- HELPER FUNCTIONS ---
 
 def get_num_workers():
     """Determine number of worker processes. Reserves 2 cores for system tasks.
@@ -138,9 +134,7 @@ def build_rng_streams(seed: int, has_brain: bool):
     rng_neuron_noise = np.random.default_rng(seed) if has_brain else None
     return rng_food, rng_decision, rng_neuron_noise
 
-# ============================================================
-# helpers
-# ============================================================
+# --- helpers ---
 
 def load_brain_module(version: str):
     module_name = f"mvb.brains.decisionmaking_{version}"
@@ -314,9 +308,7 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
     return 0.0
 
 
-# ============================================================
-# output + metrics
-# ============================================================
+# --- output + metrics ---
 
 def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
     """Create HDF5 file path for experiment.
@@ -571,12 +563,7 @@ class MetricsRecorder:
 
 
 
-
-
-# ============================================================
-# worker function for parallel execution
-# ============================================================
-
+# Implementation of section 5b (Simulate runs)
 def run_variant_worker(
     variant_id,
     brain_module_name,
@@ -613,8 +600,16 @@ def run_variant_worker(
     VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
     VIZ_BRAIN_FPS = experiment_cfg.get("viz_brain_fps", 4)
     
+    # ============================================================
+    # 5a. LOAD BRAIN MODULE
+    # ============================================================
+
     brain_module = load_brain_module(brain_module_name)
     
+    # ============================================================
+    # 5b: Prepare simulation & Build RNG streams
+    # ============================================================
+
     # Extract genome components for tracking
     connection_weights = genome["connection_weights"]
     connections_to_track = []
@@ -664,22 +659,45 @@ def run_variant_worker(
     
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
+    # ============================================================
+    # 5c: Simulate runs. For each run do:
+    # ============================================================
     for run_id in range(N_RUNS):
+
+            # ============================================================
+            # 5c1: Prepare simulation & Build RNG streams
+            # ============================================================
         rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
             cfg["world"]["rng_seed"] + run_id, has_brain_config
         )
         
+        # ============================================================
+        # 5c2: Create World instance
+        # ============================================================
+
         world = make_world(cfg)
         feeding_cfg = make_feeding_cfg(cfg, experiment_cfg)
         world.feeding_cfg = feeding_cfg
         
+        # ============================================================
+        # 5c3: Create Worm instance 
+        # ============================================================
+
         worm = make_worm(world, cfg)
         worm.active_sensors = make_sensor_cfg(cfg)
         worm.brain = brain_module
         
+        # ============================================================
+        # 5c4: Call brain_module.init_brain(genome, cfg, rng_noise) 
+        # ============================================================
+
         # Initialize brain with genome
         brain_module.init_brain(genome, cfg, rng_neuron_noise)
         
+        # ============================================================
+        # 5c5: Reset simulation
+        # ============================================================
+
         reset_sim(world, feeding_cfg, rng_food, worm)
         
         # Create renderers if visualization is enabled
@@ -703,6 +721,10 @@ def run_variant_worker(
             worm.renderer = None
             brain_module._brain_renderer = None
         
+        # ============================================================
+        # 5c6: Create MetricsRecorder to track per-tick data
+        # ============================================================
+
         rec = MetricsRecorder.empty(worm, genome, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING, MAX_TICKS)
         rec.record(worm)
         
@@ -714,6 +736,10 @@ def run_variant_worker(
             except RuntimeError:
                 pass
         
+        # ============================================================
+        # 5c7: simulate
+        # ============================================================
+
         try:
             while worm.alive and worm.ticks < MAX_TICKS:
                 # Check pause/exit at start of each tick
@@ -770,6 +796,10 @@ def run_variant_worker(
     # Extract lifespan vector (always available)
     lifespan_vector = lifespan_array['lifetime_ticks']
     
+        # ============================================================
+        # 5d: Batch write to HDF5
+        # ============================================================
+
     # Batch write all variant data after all runs complete
     with hdf5_lock:
         # Write summary array only if per-run tracking is enabled
@@ -811,9 +841,7 @@ def run_variant_worker(
     return (variant_id, lifespan_vector)
 
 
-# ============================================================
-# TRACKING VALIDATION
-# ============================================================
+# --- TRACKING VALIDATION ---
 
 def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     """
@@ -880,7 +908,7 @@ def print_lifespan_summary(all_lifespans: dict):
 
 def main():
     # ============================================================
-    # PARSE ARGUMENTS & LOAD CONFIGURATION
+    # 1. IMPORTS & CONFIGURATION LOADING
     # ============================================================
     args = parse_arguments()
     
@@ -910,10 +938,6 @@ def main():
     EXPERIMENT_FOLDER = experiment_cfg.get("output_folder", "data/temp/")
     SIMULATION_NAME = experiment_cfg.get("simulation_name", "temp")
     GENOME_TYPE = experiment_cfg.get("genome_type", "random")
-    CONNECTIVITY_DEGREE_EXCITATORY = experiment_cfg.get("connectivity_degree_excitatory", 0.2)
-    CONNECTIVITY_DEGREE_INHIBITORY = experiment_cfg.get("connectivity_degree_inhibitory", 0.4)
-    MODULATION_DEGREE_POTENTIATION = experiment_cfg.get("modulation_degree_potentiation", 0.5)
-    MODULATION_DEGREE_DEPRESSION = experiment_cfg.get("modulation_degree_depression", 0.5)
     WIRING_RANDOMIZATION_SEED = experiment_cfg.get("wiring_randomization_seed", 1)
     N_VARIANTS = experiment_cfg.get("n_variants", 1)
     MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
@@ -932,13 +956,15 @@ def main():
     ENABLE_PER_TICK_TRACKING = experiment_cfg.get("enable_per_tick_tracking", True)
     ENABLE_HEAT_MAP_TRACKING = experiment_cfg.get("enable_heat_map_tracking", True)
     
+    # ============================================================
+    # 2. VALIDATION & USER CHECKS
+    # ============================================================
     # Check for genome_type vs config consistency
     has_brain_config = cfg.get("decisionmaking", {}).get("brain", False)
     
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
     
-    # Validate tracking flags
     if not validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING):
         return
     
@@ -971,33 +997,16 @@ def main():
     print(f"[batch] writing to {hdf5_path}\n")
     pause_mgr = init_pause_manager() if (viz_enabled or VIZ_BRAIN_ENABLED) else None
 
+
+
+  
+    
     # ============================================================
-    # INITIALIZE HDF5 FILE
+    # 3. GENERATE GENOMES
     # ============================================================
     try:
         brain_module_name = make_decision_cfg(cfg)
         genome_generator = load_genome_generator(GENOME_TYPE)
-        
-        # Generate test genome for HDF5 metadata
-        test_genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED)
-        connection_weights = test_genome["connection_weights"]
-        n_neurons = connection_weights.shape[0]
-        
-        # Extract example weights for metadata
-        excitatory_weight = None
-        inhibitory_weight = None
-        for src in range(n_neurons):
-            for tgt in range(n_neurons):
-                w = connection_weights[src, tgt, 0]
-                if w > 0 and excitatory_weight is None:
-                    excitatory_weight = float(w)
-                elif w < 0 and inhibitory_weight is None:
-                    inhibitory_weight = float(w)
-        
-        # Only create HDF5 file if per-run tracking is enabled
-        if ENABLE_PER_RUN_TRACKING:
-            create_hdf5_file(hdf5_path, cfg)
-            print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
         
         # Generate all genomes before dispatching workers
         print("[genome] Generating {} genomes (type: {})...".format(N_VARIANTS, GENOME_TYPE), flush=True)
@@ -1007,9 +1016,20 @@ def main():
             genomes.append(genome)
         print("[genome] Done.\n", flush=True)
         
-        # Save genome generation parameters to HDF5
+        # ============================================================
+        # 4. PREPARE DATA TRACKING IF ENABLED
+        # ============================================================
+        
+        # Only create HDF5 file if per-run tracking is enabled
         if ENABLE_PER_RUN_TRACKING:
+            create_hdf5_file(hdf5_path, cfg)
+            print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
+            # Save genome generation parameters to HDF5
             save_genome_properties_to_hdf5(hdf5_path, genomes)
+
+        # ============================================================
+        # 5. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
+        # ============================================================
         
         # Create manager and lock for parallel HDF5 writing
         manager = Manager()
@@ -1034,7 +1054,7 @@ def main():
                     hdf5_lock=hdf5_lock,
                     viz_enabled=worker_viz_enabled,
                 )
-                
+
                 all_lifespans[variant_id] = lifespan_vector
                 print(" done")
         
@@ -1065,6 +1085,10 @@ def main():
             
             print()
         
+        
+        # ============================================================
+        # 6. WRAP-UP
+        # ============================================================
         if ENABLE_PER_RUN_TRACKING:
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
         else:
