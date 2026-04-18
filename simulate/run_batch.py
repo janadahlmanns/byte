@@ -227,10 +227,10 @@ def make_worm(world, cfg_yaml):
     )
 
 def make_sensor_cfg(cfg_yaml):
-    return cfg_yaml.get("sensors", {}).get("active", ["current_field"])
+    return cfg_yaml.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
 
 def make_decision_cfg(cfg_yaml):
-    return str(cfg_yaml["decisionmaking"]["version"])
+    return str(cfg_yaml["worm"]["decisionmaking"]["version"])
 
 def reset_sim(world, feeding_cfg, rng_food, worm):
     world.reset_food()
