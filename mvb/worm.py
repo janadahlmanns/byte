@@ -21,10 +21,7 @@ class Worm:
         self.reset()
 
     def reset(self):
-        # YAML provides start_pos as [x, y]; convert to (y, x)
-        sx_yaml, sy_yaml = self.world.start_pos
-        self.y, self.x = sy_yaml, sx_yaml
-
+        self.x, self.y = self.world.start_pos
         self.energy = self.energy_capacity
         self.alive = True
         self.eats = 0
