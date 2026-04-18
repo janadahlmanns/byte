@@ -7,21 +7,19 @@ experiment:
   simulation_name: "lookup_validation"
   
   # Genome generation
-  genome_type: "random"  # Options: "random", "lookup"
-  wiring_randomization_seed: 1
+  genome_type: "lookup"  # Options: "random", "lookup"
   n_variants: 5
-  
-  # Randomized wiring parameters (only used if genome_type is "random")
-  connectivity_degree_excitatory: 0.2
-  connectivity_degree_inhibitory: 0.4
-  modulation_degree_potentiation: 0.5
-  modulation_degree_depression: 0.5
+
+  # genome type specific parameters - random
+  # wiring_randomization_seed: 1
+  # connectivity_degree_excitatory: 0.2
+  # connectivity_degree_inhibitory: 0.4
+  # modulation_degree_potentiation: 0.5
+  # modulation_degree_depression: 0.5
   
   # Simulation runtime
   max_ticks: 2000
   n_runs: 3
-  initial_fraction_per_cell: 0.25
-  regrow_time: 3000
   
   # Visualization
   viz_enabled: true
@@ -49,6 +47,8 @@ food:
   feeding_paradigm:
     initial: true
     regrow: false
+  initial_fraction_per_cell: 0.25
+  regrow_time: 3000
 
 worm:
   speed: 1

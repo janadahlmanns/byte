@@ -209,8 +209,8 @@ def make_feeding_cfg(cfg_yaml, experiment_cfg):
     f = cfg_yaml["food"]
     return FeedingConfig(
         feeding_paradigm=f.get("feeding_paradigm", {"initial": True, "regrow": True}),
-        initial_fraction_per_cell=experiment_cfg.get("initial_fraction_per_cell", 0.25),
-        regrow_time=experiment_cfg.get("regrow_time", 3000),
+        initial_fraction_per_cell=f.get("initial_fraction_per_cell", 0.25),
+        regrow_time=f.get("regrow_time", 3000),
     )
 
 def make_worm(world, cfg_yaml):
@@ -917,8 +917,12 @@ def main():
     N_VARIANTS = experiment_cfg.get("n_variants", 1)
     MAX_TICKS = experiment_cfg.get("max_ticks", 2000)
     N_RUNS = experiment_cfg.get("n_runs", 1)
-    INITIAL_FRACTION_PER_CELL = experiment_cfg.get("initial_fraction_per_cell", 0.25)
-    REGROW_TIME = experiment_cfg.get("regrow_time", 3000)
+    
+    # Extract food parameters from food section
+    food_cfg = cfg.get("food", {})
+    INITIAL_FRACTION_PER_CELL = food_cfg.get("initial_fraction_per_cell", 0.25)
+    REGROW_TIME = food_cfg.get("regrow_time", 3000)
+    
     VIZ_ENABLED = experiment_cfg.get("viz_enabled", True)
     VIZ_FPS = experiment_cfg.get("viz_fps", 4)
     VIZ_BRAIN_ENABLED = experiment_cfg.get("viz_brain_enabled", True)
@@ -939,13 +943,15 @@ def main():
     
     viz_enabled = VIZ_ENABLED
     
-    if N_RUNS > 2 and viz_enabled:
-        print(f"\n[WARNING] Visualization is enabled for {N_RUNS} runs.")
+    total_simulations = N_VARIANTS * N_RUNS
+    if total_simulations > 2 and viz_enabled:
+        print(f"\n[WARNING] Visualization is enabled for {N_VARIANTS} variants × {N_RUNS} runs = {total_simulations} total simulations.")
         print("This will be VERY SLOW. Batch runs typically disable visualization.")
         response = input("Continue with visualization? (y/n): ").strip().lower()
         if response != 'y':
             print("[INFO] Disabling visualization for this batch run.")
             viz_enabled = False
+            VIZ_BRAIN_ENABLED = False  # Also disable brain visualization
     
     num_workers = None
     # Force serial execution if any visualization is enabled
@@ -987,53 +993,9 @@ def main():
                 elif w < 0 and inhibitory_weight is None:
                     inhibitory_weight = float(w)
         
-        brain_cfg = cfg.get("brain", {})
-        max_decision_delay = brain_cfg.get("max_decision_delay", 2.0)
-        eta = test_genome["eta"]
-        
-        comprehensive_config = {
-            "experiment_metadata": {
-                "experiment_folder": EXPERIMENT_FOLDER,
-                "simulation_name": SIMULATION_NAME,
-                "simulation_config_path": CONFIG_PATH,
-                "genome_type": GENOME_TYPE,
-            },
-            "wiring_randomization": {
-                "connectivity_degree_excitatory": CONNECTIVITY_DEGREE_EXCITATORY,
-                "connectivity_degree_inhibitory": CONNECTIVITY_DEGREE_INHIBITORY,
-                "modulation_degree_potentiation": MODULATION_DEGREE_POTENTIATION,
-                "modulation_degree_depression": MODULATION_DEGREE_DEPRESSION,
-                "wiring_randomization_seed_base": WIRING_RANDOMIZATION_SEED,
-                "n_variants": N_VARIANTS,
-            },
-            "simulation_parameters": {
-                "max_ticks": MAX_TICKS,
-                "n_runs": N_RUNS,
-                "feeding_initial_fraction_per_cell": INITIAL_FRACTION_PER_CELL,
-                "feeding_regrow_time": REGROW_TIME,
-            },
-            "data_tracking": {
-                "enable_per_run_tracking": ENABLE_PER_RUN_TRACKING,
-                "enable_per_tick_tracking": ENABLE_PER_TICK_TRACKING,
-                "enable_heat_map_tracking": ENABLE_HEAT_MAP_TRACKING,
-            },
-            "brain_architecture": {
-                "n_neurons": int(n_neurons),
-                "max_decision_delay": float(max_decision_delay),
-                "eta": float(eta),
-                "excitatory_weight": excitatory_weight,
-                "inhibitory_weight": inhibitory_weight,
-                "n_input_neurons": 5,
-                "n_output_neurons": 5,
-                "n_always_on_neurons": 1,
-            },
-        }
-        
-        comprehensive_config.update(_rename_world_config_keys(cfg))
-        
         # Only create HDF5 file if per-run tracking is enabled
         if ENABLE_PER_RUN_TRACKING:
-            create_hdf5_file(hdf5_path, comprehensive_config)
+            create_hdf5_file(hdf5_path, cfg)
             print(f"[config] Created HDF5 file: {hdf5_path.name}\n")
         
         # Generate all genomes before dispatching workers
