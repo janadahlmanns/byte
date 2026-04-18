@@ -230,14 +230,13 @@ def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: 
         _write()
 
 
-def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, entering_heatmap: np.ndarray, staying_heatmap: np.ndarray, lock=None):
-    """Save heatmaps (2D arrays) to HDF5.
+def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, staying_heatmap: np.ndarray, lock=None):
+    """Save heatmap (2D array) to HDF5.
     
     Args:
         hdf5_path: Path to HDF5 file
         variant_id: Variant identifier
         run_id: Run identifier
-        entering_heatmap: Entering heatmap data
         staying_heatmap: Staying heatmap data
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
@@ -253,11 +252,8 @@ def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, enterin
                 grp_run = grp_variant.create_group(run_group)
             else:
                 grp_run = grp_variant[run_group]
-            if 'entering' in grp_run:
-                del grp_run['entering']
             if 'staying' in grp_run:
                 del grp_run['staying']
-            grp_run.create_dataset('entering', data=entering_heatmap, compression='gzip')
             grp_run.create_dataset('staying', data=staying_heatmap, compression='gzip')
     
     if lock is not None:

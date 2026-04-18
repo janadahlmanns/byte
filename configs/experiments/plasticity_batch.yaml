@@ -8,7 +8,7 @@ experiment:
   
   # Genome generation
   genome_type: "random"  # Options: "random", "lookup"
-  n_variants: 100
+  n_variants: 1
 
   # genome type specific parameters - random
   # wiring_randomization_seed: 1
@@ -19,7 +19,7 @@ experiment:
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 300
+  n_runs: 4
   
   # Visualization
   viz_enabled: false
@@ -28,7 +28,7 @@ experiment:
   viz_brain_fps: 4
   
   # Data tracking
-  enable_per_run_tracking: true
+  enable_per_run_tracking: false
   enable_per_tick_tracking: false
   enable_heat_map_tracking: false
 

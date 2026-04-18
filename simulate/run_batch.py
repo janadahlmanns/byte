@@ -345,7 +345,6 @@ class MetricsRecorder:
     prev_action: tuple = None  # Track which movement happened
     grid_height: int = 0  # World grid height for heatmap indexing
     grid_width: int = 0  # World grid width for heatmap indexing
-    entering_heatmap: np.ndarray = None  # 2D array (height, width) - field entry counts
     staying_heatmap: np.ndarray = None  # 2D array (height, width) - field ticks spent
     moves_north: int = 0
     moves_south: int = 0
@@ -432,10 +431,7 @@ class MetricsRecorder:
                 kwargs['per_tick_data'] = np.zeros(max_ticks, dtype=dtype_fields)
             
             if enable_heat_map_tracking:
-                entering_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
                 staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-                entering_heatmap[worm.y, worm.x] = 1
-                kwargs['entering_heatmap'] = entering_heatmap
                 kwargs['staying_heatmap'] = staying_heatmap
             return cls(**kwargs)
         else:
@@ -463,8 +459,6 @@ class MetricsRecorder:
         # Clear array data if allocated
         if self.per_tick_data is not None:
             self.per_tick_data.fill(0)
-        if self.entering_heatmap is not None:
-            self.entering_heatmap.fill(0)
         if self.staying_heatmap is not None:
             self.staying_heatmap.fill(0)
 
@@ -574,13 +568,6 @@ class MetricsRecorder:
         
         if self.enable_heat_map_tracking and self.staying_heatmap is not None:
             self.staying_heatmap[worm.y, worm.x] += 1
-            position_changed = (worm.y != self.prev_y) or (worm.x != self.prev_x)
-            food_consumed = worm.eats > self.prev_eats
-            stayed_to_eat = (self.prev_action is not None and 
-                            self.prev_action[0] == "stay" and 
-                            food_consumed)
-            if position_changed and not stayed_to_eat:
-                self.entering_heatmap[worm.y, worm.x] += 1
         
         self.prev_y = worm.y
         self.prev_x = worm.x
@@ -787,8 +774,8 @@ def run_variant_worker(
             per_tick_data = rec.per_tick_data[:rec.per_tick_count]
             per_tick_all_runs[run_id+1] = per_tick_data
         
-        if ENABLE_HEAT_MAP_TRACKING and rec.entering_heatmap is not None:
-            heatmaps_all_runs[run_id+1] = (rec.entering_heatmap.copy(), rec.staying_heatmap.copy())
+        if ENABLE_HEAT_MAP_TRACKING and rec.staying_heatmap is not None:
+            heatmaps_all_runs[run_id+1] = rec.staying_heatmap.copy()
         
         # Always record lifespan
         lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
@@ -836,8 +823,8 @@ def run_variant_worker(
             
             # Write accumulated heatmap data if any
             if heatmaps_all_runs:
-                for run_id, (entering_heatmap, staying_heatmap) in heatmaps_all_runs.items():
-                    save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, entering_heatmap, staying_heatmap)
+                for run_id, staying_heatmap in heatmaps_all_runs.items():
+                    save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, staying_heatmap)
     
     # Keep visualization window open if it was created (but not if exit was requested)
     should_show_event_loop = viz_enabled
