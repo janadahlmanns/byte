@@ -594,12 +594,7 @@ def run_variant_worker(
     worm_movement_cost,
     sensor_cfg,
     feeding_cfg,
-    brain_n_neurons,
-    brain_threshold,
-    brain_noise_level,
-    brain_sensory_mapping,
-    brain_output_mapping,
-    brain_max_decision_delay,
+    brain_cfg_dict,
     variant_decision_seed,
     variant_noise_seed,
     run_seeds,
@@ -630,12 +625,7 @@ def run_variant_worker(
         worm_movement_cost: Worm movement cost
         sensor_cfg: Sensor configuration list
         feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
-        brain_n_neurons: Number of neurons in brain
-        brain_threshold: Neuron threshold (applied to all neurons)
-        brain_noise_level: Neuron noise level (applied to all neurons)
-        brain_sensory_mapping: Sensory input mapping dict
-        brain_output_mapping: Output neuron mapping dict
-        brain_max_decision_delay: Maximum decision delay
+        brain_cfg_dict: Dict with brain configuration (n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay)
         variant_decision_seed: RNG seed for decision-making in this variant
         variant_noise_seed: RNG seed for neuron noise in this variant
         run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
@@ -706,6 +696,8 @@ def run_variant_worker(
         wiring_array = None
         modulation_array = None
     
+# here call eval_variant( brain_module_name, grid_width, grid_height, start_pos, feeding_cfg, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost,
+# n_runs, run_seeds, 
 
     # ============================================================
     # 6d: Load Brain Module
@@ -722,27 +714,11 @@ def run_variant_worker(
     worm.active_sensors = sensor_cfg
     worm.brain = brain_module
 
-    
-    
+
     # ============================================================
     # 6f: Simulate runs. For each run do:
     # ============================================================
     for run_id in range(n_runs):
-
-# instead of doing all the steps here, instead we call the new function simulate_single_run() 
-# in my opinion the arguments that function needs will be the rngs, the instantiated world, worm, and brain, and the data tracking flag and prepared data tracking structures
-# if it wants to have other things than those, I should think about whether those are actually needed
-# on the data tracking, i want the per run tracking to happen outside of this function, but the per tick and heatmap tracking are happening on the inside. 
-# what all of this loop will go into the function? 
-# setting the world rng? yes, we hand it the seed. this way we can use the function to run individual runs with specific seeds for testing and debugging
-# calling brain init? yes, must be in there
-#  resetting world and worm? yes
-# actual simulation? duh
-# conditional recording of metrics? per tick and heatmap yes; per run no, those should be outputs of the function, lifespan too, and pause mgr
-
-
-
-
 
         # ============================================================
         # 6f1: Set world seed for this run
@@ -752,14 +728,6 @@ def run_variant_worker(
         # ============================================================
         # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise) for a clean reset
         # ============================================================
-        brain_cfg_dict = {
-            'n_neurons': brain_n_neurons,
-            'threshold': brain_threshold,
-            'noise_level': brain_noise_level,
-            'sensory_mapping': brain_sensory_mapping,
-            'output_mapping': brain_output_mapping,
-            'max_decision_delay': brain_max_decision_delay,
-        }
         brain_module.init_brain(genome, brain_cfg_dict)
 
         # ============================================================
@@ -1083,6 +1051,14 @@ def main():
     
     # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
     feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
+    brain_cfg_dict = {
+        'n_neurons': brain_n_neurons,
+        'threshold': brain_threshold,
+        'noise_level': brain_noise_level,
+        'sensory_mapping': brain_sensory_mapping,
+        'output_mapping': brain_output_mapping,
+        'max_decision_delay': brain_max_decision_delay,
+    }
     
     # ============================================================
     # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
@@ -1165,12 +1141,7 @@ def main():
                     'worm_movement_cost': worm_movement_cost,
                     'sensor_cfg': sensor_cfg,
                     'feeding_cfg': feeding_cfg,
-                    'brain_n_neurons': brain_n_neurons,
-                    'brain_threshold': brain_threshold,
-                    'brain_noise_level': brain_noise_level,
-                    'brain_sensory_mapping': brain_sensory_mapping,
-                    'brain_output_mapping': brain_output_mapping,
-                    'brain_max_decision_delay': brain_max_decision_delay,
+                    'brain_cfg_dict': brain_cfg_dict,
                     'variant_decision_seed': variant_decision_seeds[variant_id],
                     'variant_noise_seed': variant_noise_seeds[variant_id],
                     'run_seeds': run_seeds.copy(),
@@ -1211,12 +1182,7 @@ def main():
                         'worm_movement_cost': worm_movement_cost,
                         'sensor_cfg': sensor_cfg,
                         'feeding_cfg': feeding_cfg,
-                        'brain_n_neurons': brain_n_neurons,
-                        'brain_threshold': brain_threshold,
-                        'brain_noise_level': brain_noise_level,
-                        'brain_sensory_mapping': brain_sensory_mapping,
-                        'brain_output_mapping': brain_output_mapping,
-                        'brain_max_decision_delay': brain_max_decision_delay,
+                        'brain_cfg_dict': brain_cfg_dict,
                         'variant_decision_seed': variant_decision_seeds[variant_id],
                         'variant_noise_seed': variant_noise_seeds[variant_id],
                         'run_seeds': run_seeds.copy(),
