@@ -263,6 +263,46 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
     return 0.0
 
 
+def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise, max_ticks, pause_mgr):
+    """Execute a single simulation run with all ticks until worm dies or max_ticks reached.
+    
+    Args:
+        world: World instance
+        worm: Worm instance
+        rec: MetricsRecorder instance for tracking metrics, or None if no tracking details
+        rng_worker_decision: RNG for decision-making
+        rng_worker_neuron_noise: RNG for neuron noise during brain computation
+        max_ticks: Maximum simulation ticks
+        pause_mgr: Optional PauseManager for pause/exit handling
+    
+    Returns:
+        Tuple of (world, worm, rec, pause_mgr) - all objects modified in place during simulation
+    """
+    try:
+        while worm.alive and worm.ticks < max_ticks:
+            # Check pause/exit at start of each tick
+            if pause_mgr is not None:
+                pause_mgr.check_pause()
+            
+            world.step()
+            worm.step_day(rng_worker_decision, rng_worker_neuron_noise)
+            worm.ticks += 1
+            if rec is not None:
+                rec.record(worm)
+            
+            # Double-check exit flag after each step
+            if pause_mgr is not None and pause_mgr.should_exit():
+                raise PauseManagerExit("Exit requested during simulation")
+            
+            # Wait to maintain FPS if visualization is enabled
+            if worm.renderer is not None:
+                worm.renderer.wait_frame()
+    except PauseManagerExit:
+        pass  # Exit simulation gracefully
+    
+    return world, worm, rec, pause_mgr
+
+
 # --- output + metrics ---
 
 def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
@@ -631,6 +671,10 @@ def run_variant_worker(
     # Always allocate lightweight lifespan array
     dtype_lifespan = [('lifetime_ticks', 'i4')]
     lifespan_array = np.zeros(n_runs, dtype=dtype_lifespan)
+    
+    # Always allocate per-tick and heatmap accumulation dicts
+    per_tick_all_runs = {}
+    heatmaps_all_runs = {}
 
     # Conditionally allocate full summary array (only if per-run tracking enabled)
     if enable_per_run_tracking:
@@ -668,21 +712,39 @@ def run_variant_worker(
             for mod_src, mod_weight in modulators:
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
-
-        # Accumulate per-tick and heatmap data for batch write after all runs
-        per_tick_all_runs = {}
-        heatmaps_all_runs = {}
-
-        # ============================================================
-        # 6e: Create MetricsRecorder to track per-tick data
-        # ============================================================
+    else:
+        summary_array = None
+        wiring_array = None
+        modulation_array = None
+    
+    # ============================================================
+    # 6e: Create MetricsRecorder to track per-tick data (only if tracking enabled)
+    # ============================================================
+    rec = None
+    if enable_per_tick_tracking or enable_heat_map_tracking:
         rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
-        rec.record(worm)
+        if enable_per_run_tracking:
+            rec.record(worm)
     
     # ============================================================
     # 6f: Simulate runs. For each run do:
     # ============================================================
     for run_id in range(n_runs):
+
+# instead of doing all the steps here, instead we call the new function simulate_single_run() 
+# in my opinion the arguments that function needs will be the rngs, the instantiated world, worm, and brain, and the data tracking flag and prepared data tracking structures
+# if it wants to have other things than those, I should think about whether those are actually needed
+# on the data tracking, i want the per run tracking to happen outside of this function, but the per tick and heatmap tracking are happening on the inside. 
+# what all of this loop will go into the function? 
+# setting the world rng? yes, we hand it the seed. this way we can use the function to run individual runs with specific seeds for testing and debugging
+# calling brain init? yes, must be in there
+#  resetting world and worm? yes
+# actual simulation? duh
+# conditional recording of metrics? per tick and heatmap yes; per run no, those should be outputs of the function, lifespan too, and pause mgr
+
+
+
+
 
         # ============================================================
         # 6f1: Set world seed for this run
@@ -700,7 +762,7 @@ def run_variant_worker(
             'output_mapping': brain_output_mapping,
             'max_decision_delay': brain_max_decision_delay,
         }
-        brain_module.init_brain(genome, brain_cfg_dict, rng_worker_neuron_noise)
+        brain_module.init_brain(genome, brain_cfg_dict)
 
         # ============================================================
         # 6f3: Reset worm & simulation, rest world with the according run rng 
@@ -708,7 +770,7 @@ def run_variant_worker(
         world.reset_food()
         seed_food(world, feeding_cfg, rng_world_run)
         worm.reset()
-        if enable_per_run_tracking:
+        if rec is not None:
             rec.reset()
 
         # Create world renderer independently if world visualization is enabled
@@ -751,34 +813,15 @@ def run_variant_worker(
         # ============================================================
         # 6f4: Simulate
         # ============================================================
-        try:
-            while worm.alive and worm.ticks < max_ticks:
-                # Check pause/exit at start of each tick
-                if pause_mgr is not None:
-                    pause_mgr.check_pause()
-                
-                world.step()
-                worm.step_day(rng_worker_decision)
-                worm.ticks += 1
-                if enable_per_tick_tracking or enable_heat_map_tracking:
-                    rec.record(worm)
-                
-                # Double-check exit flag after each step
-                if pause_mgr is not None and pause_mgr.should_exit():
-                    raise PauseManagerExit("Exit requested during simulation")
-                
-                # Wait to maintain FPS if visualization is enabled
-                if worm.renderer is not None:
-                    worm.renderer.wait_frame()
-        except PauseManagerExit:
-            pass  # Exit simulation gracefully
+        world, worm, rec, pause_mgr = simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise, max_ticks, pause_mgr)
         
-        if enable_per_tick_tracking and rec.per_tick_data is not None:
-            per_tick_data = rec.per_tick_data[:rec.per_tick_count]
-            per_tick_all_runs[run_id] = per_tick_data
-        
-        if enable_heat_map_tracking and rec.staying_heatmap is not None:
-            heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
+        if rec is not None:
+            if enable_per_tick_tracking and rec.per_tick_data is not None:
+                per_tick_data = rec.per_tick_data[:rec.per_tick_count]
+                per_tick_all_runs[run_id] = per_tick_data
+            
+            if enable_heat_map_tracking and rec.staying_heatmap is not None:
+                heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
         
         # Always record lifespan
         lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
@@ -1097,7 +1140,7 @@ def main():
 
 
     # ============================================================
-    # 6. PREPARE WORKERS AND DATA TRACKING, THEN EITHER PARALLEL OR SERIAL
+    # 6. PREPARE WORKERS and , THEN EITHER PARALLEL OR SERIAL
     # ============================================================
 
     # Draw RNG seeds for the N_RUNS to be handed to workers
