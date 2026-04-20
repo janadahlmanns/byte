@@ -30,8 +30,8 @@ experiment:
   
   # Data tracking
   enable_per_run_tracking: true
-  enable_per_tick_tracking: true
-  enable_heat_map_tracking: false
+  enable_per_tick_tracking: false
+  enable_heat_map_tracking: true
 
 # ============================================================
 # EMBEDDING CONFIGURATION

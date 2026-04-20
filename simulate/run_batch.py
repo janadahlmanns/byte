@@ -650,31 +650,12 @@ def run_variant_worker(
     rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
     
     # ============================================================
-    # 6b: Load Brain Module
-    # ============================================================
-    brain_module = load_brain_module(brain_module_name)
-
-    # ============================================================
-    # 6c: Create temporary world and worm (will be reset per run so seed doesnt matter)
-    # ============================================================
-    world = World(grid_width, grid_height, start_pos, 0)
-    world.feeding_cfg = feeding_cfg
-    
-    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, world)
-    worm.active_sensors = sensor_cfg
-    worm.brain = brain_module
-
-    # ============================================================
-    # 6d: Prepare simulation arrays
+    # 6b: Prepare simulation arrays
     # ============================================================
 
-    # Always allocate lightweight lifespan array
-    dtype_lifespan = [('lifetime_ticks', 'i4')]
-    lifespan_array = np.zeros(n_runs, dtype=dtype_lifespan)
-    
-    # Always allocate per-tick and heatmap accumulation dicts
-    per_tick_all_runs = {}
-    heatmaps_all_runs = {}
+    # Always allocate lifespan vector (always available, no tracking flags needed)
+    lifespan_vector = np.zeros(n_runs, dtype='i4')
+    rec = None
 
     # Conditionally allocate full summary array (only if per-run tracking enabled)
     if enable_per_run_tracking:
@@ -709,19 +690,39 @@ def run_variant_worker(
             for mod_src, mod_weight in modulators:
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
+
+    # ============================================================
+    # 6c: Create MetricsRecorder to track per-tick data (only if tracking enabled)
+    # ============================================================
+  
+        if enable_per_tick_tracking or enable_heat_map_tracking:
+            rec = MetricsRecorder.empty(genome, start_pos[0], start_pos[1], grid_height, grid_width, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)     
+        if enable_per_tick_tracking:
+            per_tick_all_runs = {}
+        if enable_heat_map_tracking:
+            heatmaps_all_runs = {}
     else:
         summary_array = None
         wiring_array = None
         modulation_array = None
     
+
     # ============================================================
-    # 6e: Create MetricsRecorder to track per-tick data (only if tracking enabled)
+    # 6d: Load Brain Module
     # ============================================================
-    rec = None
-    if enable_per_tick_tracking or enable_heat_map_tracking:
-        rec = MetricsRecorder.empty(genome, start_pos[0], start_pos[1], grid_height, grid_width, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
-        if enable_per_run_tracking:
-            rec.record(worm)
+    brain_module = load_brain_module(brain_module_name)
+
+    # ============================================================
+    # 6e: Create temporary world and worm (will be reset per run so seed doesnt matter)
+    # ============================================================
+    world = World(grid_width, grid_height, start_pos, 0)
+    world.feeding_cfg = feeding_cfg
+    
+    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, world)
+    worm.active_sensors = sensor_cfg
+    worm.brain = brain_module
+
+    
     
     # ============================================================
     # 6f: Simulate runs. For each run do:
@@ -769,6 +770,7 @@ def run_variant_worker(
         worm.reset()
         if rec is not None:
             rec.reset()
+            rec.record(worm)
 
         # Create world renderer independently if world visualization is enabled
         if viz_enabled:
@@ -782,8 +784,7 @@ def run_variant_worker(
                 print(f"[WARNING] Failed to create world renderer: {e}.")
                 worm.renderer = None
         else:
-            worm.renderer = None
-        
+            worm.renderer = None       
         # Create brain renderer independently if brain visualization is enabled
         if viz_brain_enabled:
             try:
@@ -798,7 +799,6 @@ def run_variant_worker(
                 brain_module._brain_renderer = None
         else:
             brain_module._brain_renderer = None
-
         # Get pause manager for checkpoints (if any visualization enabled)
         pause_mgr = None
         if viz_enabled or viz_brain_enabled:
@@ -811,20 +811,11 @@ def run_variant_worker(
         # 6f4: Simulate
         # ============================================================
         world, worm, rec, pause_mgr = simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise, max_ticks, pause_mgr)
-        
-        if rec is not None:
-            if enable_per_tick_tracking and rec.per_tick_data is not None:
-                per_tick_data = rec.per_tick_data[:rec.per_tick_count]
-                per_tick_all_runs[run_id] = per_tick_data
-            
-            if enable_heat_map_tracking and rec.staying_heatmap is not None:
-                heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
-        
+         
         # Always record lifespan
-        lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
-        
-        # Conditionally record full summary metrics
+        lifespan_vector[run_id] = worm.ticks 
         if enable_per_run_tracking:
+            # Conditionally record full summary metrics
             for idx, (src, tgt) in enumerate(connections_to_track):
                 w = get_connection_weight(worm.brain, src, tgt)
                 wiring_array[idx][f'weight_final_run_{run_id:04d}'] = w
@@ -834,9 +825,13 @@ def run_variant_worker(
             summary_array[run_id]['foods'] = worm.eats
             summary_array[run_id]['distance'] = worm.distance
             summary_array[run_id]['final_energy'] = worm.energy
-
-    # Extract lifespan vector (always available)
-    lifespan_vector = lifespan_array['lifetime_ticks']
+            if enable_per_tick_tracking:
+                per_tick_data = rec.per_tick_data[:rec.per_tick_count]
+                per_tick_all_runs[run_id] = per_tick_data
+            
+            if enable_heat_map_tracking:
+                heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
+        
 
     # ============================================================
     # 6g: Batch write to HDF5
@@ -851,12 +846,12 @@ def run_variant_worker(
                 save_modulation_to_hdf5(hdf5_path, variant_id, modulation_array)
                 
                 # Write accumulated per-tick data if any
-                if per_tick_all_runs:
+                if enable_per_tick_tracking:
                     for run_id, per_tick_data in per_tick_all_runs.items():
                         save_per_tick_to_hdf5(hdf5_path, variant_id, run_id, per_tick_data)
                 
                 # Write accumulated heatmap data if any
-                if heatmaps_all_runs:
+                if enable_heat_map_tracking:
                     for run_id, staying_heatmap in heatmaps_all_runs.items():
                         save_heatmaps_to_hdf5(hdf5_path, variant_id, run_id, staying_heatmap)
                 
