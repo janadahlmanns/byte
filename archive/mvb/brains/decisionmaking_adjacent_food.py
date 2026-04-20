@@ -1,5 +1,5 @@
 import numpy as np
-from ..world import World
+from ....mvb.world import World
 
 
 def random_valid_move(world: World, pos: tuple[int, int], rng_decision: np.random.Generator):

@@ -1,25 +1,20 @@
-from dataclasses import dataclass
 import numpy as np
 
 
-@dataclass
-class WorldConfig:
-    grid_width: int
-    grid_height: int
-    start_pos: tuple[int, int]
-    rng_seed: int
-
 class World:
-    def __init__(self, cfg: WorldConfig):
-        self.cfg = cfg
-        self.width = cfg.grid_width
-        self.height = cfg.grid_height
+    def __init__(self, grid_width, grid_height, start_pos, rng_seed):
+        self.width = grid_width
+        self.height = grid_height
+        self.start_pos = start_pos
+        self.rng_seed = rng_seed
         self.ticks = 0
         self.food = np.zeros((self.height, self.width), dtype=np.int8) # food grid: 0/1 per cell for v1
         self.regrow_timer = np.zeros_like(self.food, dtype=np.int16) # regrowth timer map (same shape as food grid)
 
     def reset_food(self):
         self.food.fill(0)
+        self.regrow_timer.fill(0)
+        self.ticks = 0
 
     def has_food(self, y: int, x: int) -> bool:
         return self.food[y, x] > 0

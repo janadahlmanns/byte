@@ -143,7 +143,7 @@ class Connection:
 # ============================================================
 
 class BrainState:
-    def __init__(self, neurons, connections, input_sources, warmup_ticks=0, max_ticks=0, max_decision_delay=2.0, eta=0.0):
+    def __init__(self, neurons, connections, input_sources, warmup_ticks=0, max_ticks=0, max_decision_delay=2.0, eta=0.0, output_mapping=None):
         self.neurons = neurons
         self.connections = connections
         self.input_sources = input_sources
@@ -151,11 +151,125 @@ class BrainState:
         self.max_ticks = max_ticks
         self.max_decision_delay = max_decision_delay
         self.eta = eta  # Global plasticity factor
+        self.output_mapping = output_mapping if output_mapping is not None else {}  # Maps neuron_id to action_name
 
 
 # ============================================================
 # Initialization
 # ============================================================
+
+def init_brain(genome, yaml_config, rng_neuron_noise):
+    """
+    Initialize brain from genome and YAML configuration.
+    
+    This is the new clean interface replacing the old init() function.
+    
+    Parameters
+    ----------
+    genome : dict
+        Dictionary with keys:
+        - 'connection_weights': np.ndarray (n_neurons, n_neurons, 2)
+        - 'modulation_spec': dict
+        - 'tonic_activations': np.ndarray (n_neurons,)
+        - 'eta': float
+    
+    yaml_config : dict
+        Configuration with 'brain' section containing:
+        - 'n_neurons': int
+        - 'threshold': float (applied to all neurons)
+        - 'noise_level': float (applied to all neurons)
+        - 'sensory_mapping': dict
+        - 'output_mapping': dict (neuron_id → action_name)
+        - 'max_decision_delay': float
+    
+    rng_neuron_noise : np.random.Generator
+        RNG for neuron noise
+    
+    Returns
+    -------
+    None (modifies module-level _brain_state)
+    """
+    global _brain_state, _brain_renderer
+    
+    n_neurons = yaml_config["n_neurons"]
+    default_threshold = yaml_config["threshold"]
+    default_noise_level = yaml_config["noise_level"]
+    sensory_mapping = yaml_config["sensory_mapping"]
+    output_mapping = yaml_config["output_mapping"]
+    max_decision_delay = yaml_config["max_decision_delay"]
+    
+    # Extract genome components
+    connection_weights = genome["connection_weights"]
+    modulation_spec = genome["modulation_spec"]
+    tonic_activations = genome["tonic_activations"]
+    eta = genome["eta"]
+    
+    # Create neurons with properties from YAML (all neurons get same threshold and noise_level)
+    neurons = []
+    for i in range(n_neurons):
+        threshold = default_threshold
+        noise_level = default_noise_level
+        tonic_level = float(tonic_activations[i])
+        
+        neuron = Neuron(
+            neuron_id=i,
+            threshold=threshold,
+            noise_level=noise_level,
+            tonic_level=tonic_level,
+        )
+        neurons.append(neuron)
+    
+    # Create input sources for sensory inputs
+    input_keys = list(sensory_mapping.keys())
+    input_sources = [InputSource(k) for k in input_keys]
+    
+    # Wire sensory inputs to neurons
+    connections = []
+    cid = 0
+    for sense_key, (target_neuron_id, weight, reliability) in sensory_mapping.items():
+        # Find the InputSource with this key
+        source_obj = None
+        for inp in input_sources:
+            if inp.key == sense_key:
+                source_obj = inp
+                break
+        
+        if source_obj is not None:
+            conn = Connection(cid, source_obj, weight, reliability)
+            neurons[target_neuron_id].incoming.append(conn)
+            connections.append(conn)
+            cid += 1
+    
+    # Wire neurons to neurons from genome connection weights
+    for src in range(n_neurons):
+        for tgt in range(n_neurons):
+            weight, reliability = connection_weights[src, tgt]
+            if weight == 0.0:
+                continue
+            
+            # Check if this connection has modulators
+            modulating_inputs = None
+            if (src, tgt) in modulation_spec:
+                modulating_inputs = [(neurons[mod_id], mod_weight) 
+                                    for mod_id, mod_weight in modulation_spec[(src, tgt)]]
+            
+            conn = Connection(cid, neurons[src], weight, reliability, modulating_inputs)
+            neurons[tgt].incoming.append(conn)
+            connections.append(conn)
+            cid += 1
+    
+    # Create brain state
+    _brain_state = BrainState(neurons, connections, input_sources, eta=eta, output_mapping=output_mapping)
+    _brain_state.max_decision_delay = max_decision_delay
+    
+    # Calculate warmup and max ticks
+    warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(_brain_state)
+    _brain_state.warmup_ticks = warmup_ticks
+    _brain_state.max_ticks = max_ticks
+    
+    # Store RNG for neuron noise
+    _brain_state.rng_neuron_noise = rng_neuron_noise
+
 
 def _calculate_warmup_and_max_ticks(state: BrainState) -> tuple:
     """
@@ -282,7 +396,16 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
             connections.append(conn)
             cid += 1
 
-    _brain_state = BrainState(neurons, connections, input_sources, eta=eta)
+    # Build default output_mapping if not provided (for backwards compatibility)
+    default_output_mapping = {
+        5: "stay",
+        6: "move_north",
+        7: "move_east",
+        8: "move_south",
+        9: "move_west",
+    }
+    
+    _brain_state = BrainState(neurons, connections, input_sources, eta=eta, output_mapping=default_output_mapping)
 
     # Use max_decision_delay from brain_init_spec (already set above)
     _brain_state.max_decision_delay = max_decision_delay
@@ -413,8 +536,8 @@ def decide(world: World, worm, rng_decision, inputs: dict):
                 pass
     
     except PauseManagerExit:
-        # User exited - return a random decision to avoid getting stuck
-        return _get_random_decision(state, world, worm, rng_decision)
+        # User exited - re-raise to propagate to simulation loop
+        raise
 
     # Fallback: check if candidates remained stable in stability phase
     if candidate_neurons and stability_history:
@@ -498,38 +621,51 @@ def _check_candidate_stability(candidate_neurons: set, stability_history: list) 
 
 def _stable_outputs_to_decision(stable_neurons: set, state: BrainState, world: World, worm, rng_decision) -> tuple:
     """
-    Convert stable output neurons to a decision.
+    Convert stable output neurons to a decision using the output_mapping from yaml.
     
     Priority order:
-    1. If neuron 5 (stay) is stable → stay (regardless of other outputs)
-    2. Otherwise → randomly choose from stable movement neurons (6-9)
+    1. If a neuron with "stay" action is stable → stay (regardless of other outputs)
+    2. Otherwise → randomly choose from stable movement neurons
     
     Parameters
     ----------
     stable_neurons : set
-        Set of neuron IDs (5-9) that were:
+        Set of neuron IDs that were:
         1. Active in 3+ of last 5 propagation ticks (candidates)
         2. Active in majority of stability phase ticks (confirmed stable)
+    
+    state : BrainState
+        Brain state containing output_mapping (neuron_id → action_name)
     """
     if not stable_neurons:
         return None
     
-    # Priority 1: If neuron 5 is stable, stay
-    if 5 in stable_neurons:
-        return ("stay",)
+    # Get output mapping from brain state
+    output_mapping = state.output_mapping
+    if not output_mapping:
+        return None
     
-    # Priority 2: Check stable movement neurons (6-9)
-    move_map = {
-        6: "north",
-        7: "east",
-        8: "south",
-        9: "west",
+    # Priority 1: Check for "stay" action among stable neurons
+    for neuron_id in stable_neurons:
+        action = output_mapping.get(str(neuron_id), None) or output_mapping.get(neuron_id, None)
+        if action == "stay":
+            return ("stay",)
+    
+    # Priority 2: Collect all stable movement neurons
+    active_movements = []
+    direction_map = {
+        "move_north": "north",
+        "move_south": "south",
+        "move_east": "east",
+        "move_west": "west",
     }
     
-    active_movements = []
-    for neuron_id, direction in move_map.items():
-        if neuron_id in stable_neurons:
-            active_movements.append(direction)
+    for neuron_id in stable_neurons:
+        action = output_mapping.get(str(neuron_id), None) or output_mapping.get(neuron_id, None)
+        if action and action.startswith("move_"):
+            direction = direction_map.get(action)
+            if direction:
+                active_movements.append(direction)
     
     if not active_movements:
         return None

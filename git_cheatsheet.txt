@@ -32,7 +32,7 @@ GOAL
 4) see if theres an active branch I should be working on
    git branch -a   
 
-You are now:
+You are now: 
 - On clean, up-to-date main
 - Safe to create a new branch or intentionally switch
 

@@ -251,6 +251,8 @@ class BrainQtRenderer(QMainWindow):
 """
     def __init__(self, fps: int = 30):
         self.fps = max(1, int(fps))
+        self.paused = False
+        self.exit_requested = False
 
         # Qt app singleton
         self.app = QApplication.instance()
@@ -399,6 +401,47 @@ class BrainQtRenderer(QMainWindow):
         self.decision_label.setText(f"DECISION | beat={brain_tick} | {decision_status}")
 
         self.app.processEvents()
+
+    def closeEvent(self, event):
+        """Handle window close event and trigger pause manager exit."""
+        try:
+            from simulate.pause_manager import get_pause_manager
+            pause_mgr = get_pause_manager()
+            pause_mgr._exit_requested = True
+            print("\n[EXIT] Brain window closed. Stopping simulation...")
+        except Exception:
+            pass  # Pause manager not available
+        
+        super().closeEvent(event)
+        self.app.quit()
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard input for pause/step/exit."""
+        if event.isAutoRepeat():
+            return  # Ignore auto-repeat
+        
+        key = event.text().lower()
+        if key == 'p':
+            self.paused = not self.paused
+            if self.paused:
+                print("\n[PAUSED] Press 'n' to step, 'p' to resume, or 'c' to cancel.")
+            else:
+                print("\n[RESUMED]")
+        elif key == 'n':
+            if self.paused:
+                print("[STEP] Advancing one checkpoint...")
+                self.paused = False
+        elif key == 'c':
+            self.exit_requested = True
+            print("\n[EXIT] Stopping simulation...")
+            try:
+                from simulate.pause_manager import get_pause_manager
+                pause_mgr = get_pause_manager()
+                pause_mgr._exit_requested = True
+            except Exception:
+                pass
+        
+        super().keyPressEvent(event)
 
     def wait_frame(self):
         time.sleep(1.0 / self.fps)

@@ -1,6 +1,6 @@
 import numpy as np
 import importlib
-from ..world import World
+from ....mvb.world import World
 
 try:
     from simulate.pause_manager import get_pause_manager, PauseManagerExit
@@ -434,6 +434,3 @@ def _format_decision_display(decision: tuple) -> str:
     return str(decision)
 
 
-# ============================================================
-# (Old check_outputs function replaced by helper functions above)
-# ============================================================

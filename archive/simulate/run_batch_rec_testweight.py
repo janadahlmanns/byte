@@ -14,7 +14,7 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
-from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
+from ...simulate.pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
@@ -24,13 +24,13 @@ from mvb.world_renderer_qt import QtRenderer
 # EXPERIMENT DEFINITION
 # ============================================================
 
-EXPERIMENT_FOLDER = "data/noise_vs_nonoise/rawdata/"
-SIMULATION_NAME   = "weights_0_6"
+EXPERIMENT_FOLDER = "data/pipeline_check/"
+SIMULATION_NAME   = "C_w_noise_w_plasticity_no_regrow_hardcoded_eta_0_01"  # descriptive name for this batch of runs, used in output folder and file names
 
-CONFIG_PATH = "configs/sensing_neurons.yaml"
-BRAIN_INIT  = "prio_food_weights"  # Set to brain init name (e.g., "prio_food") or "none" to disable
-MAX_TICKS   = 1000
-N_RUNS      = 1000
+CONFIG_PATH = "configs/neurons_noise_plasticity.yaml"
+BRAIN_INIT  = "4way_plasticity"  # Set to brain init name (e.g., "prio_food") or "none" to disable
+MAX_TICKS   = 2000
+N_RUNS      = 50
 
 
 # ============================================================
@@ -110,6 +110,37 @@ def reset_sim(world, feeding_cfg, rng_food, worm):
     worm.reset()
 
 
+def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) -> float:
+    """Get weight of specific neuron-to-neuron connection from brain state.
+    
+    Args:
+        brain_module: The brain module (e.g., decisionmaking_plasticity)
+        src_neuron_id: Source neuron ID
+        tgt_neuron_id: Target neuron ID
+    
+    Returns:
+        Current weight of the connection, or 0.0 if not found
+    """
+    if not hasattr(brain_module, '_brain_state'):
+        return 0.0
+    
+    brain_state = brain_module._brain_state
+    if brain_state is None:
+        return 0.0
+    
+    # Search through connections for the one from src to tgt
+    for conn in brain_state.connections:
+        # Check if this is a neuron-to-neuron connection (not input source)
+        if hasattr(conn.source, 'id'):
+            if conn.source.id == src_neuron_id:
+                # Check target by finding which neuron has this in its incoming list
+                for neuron in brain_state.neurons:
+                    if neuron.id == tgt_neuron_id and conn in neuron.incoming:
+                        return conn.weight
+    
+    return 0.0
+
+
 # ============================================================
 # output + metrics
 # ============================================================
@@ -127,20 +158,42 @@ def make_experiment_dir() -> Path:
 
 @dataclass
 class MetricsRecorder:
-    rows: list[tuple[int, int, int, int]]
+    rows: list[tuple[int, int, int, int, float, float, float, float, bool, bool, bool, bool]]
+    prev_y: int = 0  # Track previous position to detect movement direction
+    prev_x: int = 0
 
     @classmethod
-    def empty(cls):
-        return cls(rows=[])
+    def empty(cls, worm: Worm):
+        return cls(rows=[], prev_y=worm.y, prev_x=worm.x)
 
     def record(self, worm: Worm):
+        # Get weights of all 4 plastic direction connections
+        weight_1_6 = get_connection_weight(worm.brain, 1, 6)  # north
+        weight_2_7 = get_connection_weight(worm.brain, 2, 7)  # east
+        weight_3_8 = get_connection_weight(worm.brain, 3, 8)  # south
+        weight_4_9 = get_connection_weight(worm.brain, 4, 9)  # west
+        
+        # Check if food was sensed in any direction (regardless of other directions)
+        sense = getattr(worm, "sensory_information", {})
+        food_north = sense.get("food_north", 0.0) > 0.0
+        food_east = sense.get("food_east", 0.0) > 0.0
+        food_south = sense.get("food_south", 0.0) > 0.0
+        food_west = sense.get("food_west", 0.0) > 0.0
+        
         self.rows.append(
-            (worm.ticks, worm.energy, worm.eats, worm.distance)
+            (worm.ticks, worm.energy, worm.eats, worm.distance, 
+             weight_1_6, weight_2_7, weight_3_8, weight_4_9,
+             food_north, food_east, food_south, food_west)
         )
+        
+        # Update previous position for next call
+        self.prev_y = worm.y
+        self.prev_x = worm.x
 
     def save_csv(self, path: Path):
-        lines = ["tick,energy,eats,distance"]
-        lines += [f"{t},{e},{k},{d}" for t, e, k, d in self.rows]
+        lines = ["tick,energy,eats,distance,conn_1_6_weight,conn_2_7_weight,conn_3_8_weight,conn_4_9_weight,food_north_sensed,food_east_sensed,food_south_sensed,food_west_sensed"]
+        lines += [f"{t},{e},{k},{d},{w16:.6f},{w27:.6f},{w38:.6f},{w49:.6f},{int(fn)},{int(fe)},{int(fs)},{int(fw)}" 
+                  for t, e, k, d, w16, w27, w38, w49, fn, fe, fs, fw in self.rows]
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -222,6 +275,37 @@ def main():
                     worm.brain.init(worm, cfg, rng_neuron_noise)
 
             reset_sim(world, feeding_cfg, rng_food, worm)
+            
+            # DEBUG: Print brain wiring on first run
+            if run_id == 0 and brain_init_spec is not None:
+                print("\n" + "="*60)
+                print("BRAIN WIRING VERIFICATION (Run 0)")
+                print("="*60)
+                
+                # Print all connections
+                print("\nCONNECTIONS:")
+                neuron_params, connections, sensory_mapping, max_delay, eta, modulator_spec = brain_init_spec
+                for src in range(connections.shape[0]):
+                    for tgt in range(connections.shape[1]):
+                        weight = connections[src, tgt, 0]
+                        reliability = connections[src, tgt, 1]
+                        if weight != 0.0:
+                            conn_type = "EXCITATORY" if weight > 0 else "INHIBITORY"
+                            print(f"  n{src} → n{tgt}: weight={weight:.2f}, reliability={reliability:.2f} ({conn_type})")
+                
+                # Print modulation specifications
+                print("\nMODULATION:")
+                for (src, tgt), modulators in sorted(modulator_spec.items()):
+                    if modulators:
+                        mod_strs = []
+                        for mod_neuron, mod_weight in modulators:
+                            mod_type = "POTENTIATION" if mod_weight > 0 else "DEPRESSION"
+                            mod_strs.append(f"n{mod_neuron} ({mod_type}, weight={mod_weight:.2f})")
+                        print(f"  n{src} → n{tgt}: modulated by {', '.join(mod_strs)}")
+                    else:
+                        print(f"  n{src} → n{tgt}: NO MODULATION")
+                
+                print("\n" + "="*60 + "\n")
 
             # Setup world visualization (if enabled)
             renderer = None
@@ -229,7 +313,7 @@ def main():
                 renderer = QtRenderer(world, worm, fps=int(viz_cfg.get("fps", 10)))
             worm.renderer = renderer
 
-            rec = MetricsRecorder.empty()
+            rec = MetricsRecorder.empty(worm)  # Pass worm to initialize position tracking
             rec.record(worm)
 
             while worm.alive and worm.ticks < MAX_TICKS:
@@ -253,11 +337,14 @@ def main():
             run_file = run_dir / "runs" / f"run_{run_id:04d}.csv"
             rec.save_csv(run_file)
 
+            # Count how many times food was sensed exclusively north
+            food_north_only_count = sum(1 for row in rec.rows if row[5])  # row[5] is food_north_only
+
             summary_lines.append(
                 f"{run_id},{seed},{worm.ticks},{worm.eats},{worm.distance},{worm.energy}"
             )
 
-            print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats}")
+            print(f"[run {run_id:02d}] ticks={worm.ticks} eats={worm.eats} food_north_only={food_north_only_count}")
 
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")

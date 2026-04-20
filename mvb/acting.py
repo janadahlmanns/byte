@@ -32,7 +32,7 @@ def do_move(world: World, worm, pos, *args):
     """
     ny, nx = pos
     worm.y, worm.x = ny, nx
-    worm.energy = max(0, worm.energy - 1)  # movement cost
+    worm.energy = max(0, worm.energy - worm.movement_cost)
     worm.distance += 1
 
 
@@ -43,7 +43,7 @@ def do_stay(world: World, worm, *args):
     Otherwise do nothing.
     """
     if on_eat(world, world.feeding_cfg, worm.y, worm.x):
-        worm.energy = worm.cfg.energy_capacity
+        worm.energy = worm.energy_capacity
         worm.eats += 1
 
 
@@ -52,7 +52,7 @@ def do_eat(world: World, worm, *args):
     Legacy explicit eat action.
     """
     if on_eat(world, world.feeding_cfg, worm.y, worm.x):
-        worm.energy = worm.cfg.energy_capacity
+        worm.energy = worm.energy_capacity
         worm.eats += 1
 
 

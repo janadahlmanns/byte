@@ -15,7 +15,7 @@ import yaml
 import numpy as np
 
 from mvb.world import World, WorldConfig
-from .pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
+from ...simulate.pause_manager import init_pause_manager, cleanup_pause_manager, PauseManagerExit
 from mvb.feeding import FeedingConfig, seed_food
 from mvb.worm import Worm, WormConfig
 from mvb.world_renderer_qt import QtRenderer
