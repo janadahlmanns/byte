@@ -570,82 +570,70 @@ class MetricsRecorder:
         self.prev_action = worm.action
 
 
-
-# Implementation of section 5b (Simulate runs)
-def run_variant_worker(
-    variant_id,
+def eval_variant(
     brain_module_name,
-    genome,
-    viz_enabled,
-    enable_per_run_tracking,
-    enable_per_tick_tracking,
-    enable_heat_map_tracking,
-    max_ticks,
-    n_runs,
-    viz_fps,
-    viz_brain_enabled,
-    viz_brain_fps,
     grid_width,
     grid_height,
     start_pos,
+    enable_per_run_tracking,
+    enable_per_tick_tracking,
+    enable_heat_map_tracking,
+    feeding_cfg,
     worm_speed,
     worm_energy_capacity,
     worm_metabolic_rate,
     worm_movement_cost,
-    sensor_cfg,
-    feeding_cfg,
-    brain_cfg_dict,
-    variant_decision_seed,
-    variant_noise_seed,
+    n_runs,
     run_seeds,
-    hdf5_path=None,
-    hdf5_lock=None,
+    genome,
+    brain_cfg,
+    viz_enabled,
+    viz_fps,
+    viz_brain_enabled,
+    viz_brain_fps,
+    rng_worker_decision,
+    rng_worker_neuron_noise,
+    max_ticks,
+    sensor_cfg,
 ):
-    """Execute a single variant's simulation runs and write data directly to HDF5.
+    """Execute all runs for a single variant and return tracking results.
     
     Args:
-        variant_id: Index of this variant
         brain_module_name: Name of brain module to import
-        genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
-        viz_enabled: Whether to create and display renderer visualization
-        enable_per_run_tracking: Whether to track per-run metrics
-        enable_per_tick_tracking: Whether to track per-tick data
-        enable_heat_map_tracking: Whether to track heatmaps
-        max_ticks: Maximum simulation ticks
-        n_runs: Number of runs per variant
-        viz_fps: World visualization FPS
-        viz_brain_enabled: Whether to enable brain visualization
-        viz_brain_fps: Brain visualization FPS
         grid_width: World grid width
         grid_height: World grid height
         start_pos: Worm starting position (tuple)
+        enable_per_run_tracking: Whether to track per-run metrics
+        enable_per_tick_tracking: Whether to track per-tick data
+        enable_heat_map_tracking: Whether to track heatmaps
+        feeding_cfg: FeedingConfig object
         worm_speed: Worm speed parameter
         worm_energy_capacity: Worm energy capacity
         worm_metabolic_rate: Worm metabolic rate
         worm_movement_cost: Worm movement cost
+        n_runs: Number of runs
+        run_seeds: Array of seeds for world initialization
+        genome: Pre-generated genome dict
+        brain_cfg: Brain configuration dict
+        viz_enabled: Whether to enable world visualization
+        viz_fps: World visualization FPS
+        viz_brain_enabled: Whether to enable brain visualization
+        viz_brain_fps: Brain visualization FPS
+        rng_worker_decision: RNG for decision-making
+        rng_worker_neuron_noise: RNG for neuron noise
+        max_ticks: Maximum simulation ticks
         sensor_cfg: Sensor configuration list
-        feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
-        brain_cfg_dict: Dict with brain configuration (n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay)
-        variant_decision_seed: RNG seed for decision-making in this variant
-        variant_noise_seed: RNG seed for neuron noise in this variant
-        run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
-        hdf5_path: Path to HDF5 file to write to
-        hdf5_lock: multiprocessing.Lock() for synchronized writes
+    
+    Returns:
+        Dict with tracking results containing:
+        - lifespan_vector: Always included
+        - summary_array, wiring_array, modulation_array: If enable_per_run_tracking
+        - per_tick_all_runs: If enable_per_tick_tracking
+        - heatmaps_all_runs: If enable_heat_map_tracking
     """
-    
-    # ============================================================
-    # 6a: Build RNG streams for this variant (persistent across all runs)
-    # ============================================================
-    rng_worker_decision = np.random.default_rng(variant_decision_seed)
-    rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
-    
-    # ============================================================
-    # 6b: Prepare simulation arrays
-    # ============================================================
-
+    rec = None
     # Always allocate lifespan vector (always available, no tracking flags needed)
     lifespan_vector = np.zeros(n_runs, dtype='i4')
-    rec = None
 
     # Conditionally allocate full summary array (only if per-run tracking enabled)
     if enable_per_run_tracking:
@@ -696,8 +684,7 @@ def run_variant_worker(
         wiring_array = None
         modulation_array = None
     
-# here call eval_variant( brain_module_name, grid_width, grid_height, start_pos, feeding_cfg, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost,
-# n_runs, run_seeds, 
+
 
     # ============================================================
     # 6d: Load Brain Module
@@ -714,10 +701,11 @@ def run_variant_worker(
     worm.active_sensors = sensor_cfg
     worm.brain = brain_module
 
-
     # ============================================================
     # 6f: Simulate runs. For each run do:
     # ============================================================
+    
+
     for run_id in range(n_runs):
 
         # ============================================================
@@ -728,7 +716,7 @@ def run_variant_worker(
         # ============================================================
         # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise) for a clean reset
         # ============================================================
-        brain_module.init_brain(genome, brain_cfg_dict)
+        brain_module.init_brain(genome, brain_cfg)
 
         # ============================================================
         # 6f3: Reset worm & simulation, rest world with the according run rng 
@@ -799,13 +787,134 @@ def run_variant_worker(
             
             if enable_heat_map_tracking:
                 heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
+    
+    # Build tracking results dict
+    tracking_results = {'lifespan_vector': lifespan_vector}
+    
+    if enable_per_run_tracking:
+        tracking_results['summary_array'] = summary_array
+        tracking_results['wiring_array'] = wiring_array
+        tracking_results['modulation_array'] = modulation_array
         
+        if enable_per_tick_tracking:
+            tracking_results['per_tick_all_runs'] = per_tick_all_runs
+        
+        if enable_heat_map_tracking:
+            tracking_results['heatmaps_all_runs'] = heatmaps_all_runs
+    
+    return tracking_results
+
+
+# Implementation of section 5b (Simulate runs)
+def run_variant_worker(
+    variant_id,
+    brain_module_name,
+    genome,
+    viz_enabled,
+    enable_per_run_tracking,
+    enable_per_tick_tracking,
+    enable_heat_map_tracking,
+    max_ticks,
+    n_runs,
+    viz_fps,
+    viz_brain_enabled,
+    viz_brain_fps,
+    grid_width,
+    grid_height,
+    start_pos,
+    worm_speed,
+    worm_energy_capacity,
+    worm_metabolic_rate,
+    worm_movement_cost,
+    sensor_cfg,
+    feeding_cfg,
+    brain_cfg,
+    variant_decision_seed,
+    variant_noise_seed,
+    run_seeds,
+    hdf5_path=None,
+    hdf5_lock=None,
+):
+    """Execute a single variant's simulation runs and write data directly to HDF5.
+    
+    Args:
+        variant_id: Index of this variant
+        brain_module_name: Name of brain module to import
+        genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
+        viz_enabled: Whether to create and display renderer visualization
+        enable_per_run_tracking: Whether to track per-run metrics
+        enable_per_tick_tracking: Whether to track per-tick data
+        enable_heat_map_tracking: Whether to track heatmaps
+        max_ticks: Maximum simulation ticks
+        n_runs: Number of runs per variant
+        viz_fps: World visualization FPS
+        viz_brain_enabled: Whether to enable brain visualization
+        viz_brain_fps: Brain visualization FPS
+        grid_width: World grid width
+        grid_height: World grid height
+        start_pos: Worm starting position (tuple)
+        worm_speed: Worm speed parameter
+        worm_energy_capacity: Worm energy capacity
+        worm_metabolic_rate: Worm metabolic rate
+        worm_movement_cost: Worm movement cost
+        sensor_cfg: Sensor configuration list
+        feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
+        brain_cfg: Dict with brain configuration (n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay)
+        variant_decision_seed: RNG seed for decision-making in this variant
+        variant_noise_seed: RNG seed for neuron noise in this variant
+        run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
+        hdf5_path: Path to HDF5 file to write to
+        hdf5_lock: multiprocessing.Lock() for synchronized writes
+    """
+    
+    # ============================================================
+    # 6a: Build RNG streams for this variant (persistent across all runs)
+    # ============================================================
+    rng_worker_decision = np.random.default_rng(variant_decision_seed)
+    rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
+    
+    # ============================================================
+    # 6b: Prepare simulation arrays
+    # ============================================================
+    tracking_results = eval_variant(
+        brain_module_name,
+        grid_width,
+        grid_height,
+        start_pos,
+        enable_per_run_tracking,
+        enable_per_tick_tracking,
+        enable_heat_map_tracking,
+        feeding_cfg,
+        worm_speed,
+        worm_energy_capacity,
+        worm_metabolic_rate,
+        worm_movement_cost,
+        n_runs,
+        run_seeds,
+        genome,
+        brain_cfg,
+        viz_enabled,
+        viz_fps,
+        viz_brain_enabled,
+        viz_brain_fps,
+        rng_worker_decision,
+        rng_worker_neuron_noise,
+        max_ticks,
+        sensor_cfg,
+    )
 
     # ============================================================
     # 6g: Batch write to HDF5
     # ============================================================
+    # Extract tracking results
+    lifespan_vector = tracking_results['lifespan_vector']
+    
     # Batch write all variant data after all runs complete (only if per-run tracking enabled)
     if enable_per_run_tracking:
+        summary_array = tracking_results['summary_array']
+        wiring_array = tracking_results['wiring_array']
+        modulation_array = tracking_results['modulation_array']
+        
         with hdf5_lock:
             # Write summary array only if per-run tracking is enabled
             if summary_array is not None:
@@ -815,11 +924,13 @@ def run_variant_worker(
                 
                 # Write accumulated per-tick data if any
                 if enable_per_tick_tracking:
+                    per_tick_all_runs = tracking_results.get('per_tick_all_runs', {})
                     for run_id, per_tick_data in per_tick_all_runs.items():
                         save_per_tick_to_hdf5(hdf5_path, variant_id, run_id, per_tick_data)
                 
                 # Write accumulated heatmap data if any
                 if enable_heat_map_tracking:
+                    heatmaps_all_runs = tracking_results.get('heatmaps_all_runs', {})
                     for run_id, staying_heatmap in heatmaps_all_runs.items():
                         save_heatmaps_to_hdf5(hdf5_path, variant_id, run_id, staying_heatmap)
                 
@@ -830,18 +941,6 @@ def run_variant_worker(
                         variant_group = f[variant_group_name]
                         variant_group.attrs['rng_seed_decision'] = int(variant_decision_seed)
                         variant_group.attrs['rng_seed_noise'] = int(variant_noise_seed)
-    
-    # Keep visualization window open if it was created (but not if exit was requested)
-    should_show_event_loop = (viz_enabled or viz_brain_enabled) and (pause_mgr is None or not pause_mgr.should_exit())
-    if should_show_event_loop:
-        try:
-            from PySide6.QtWidgets import QApplication
-            app = QApplication.instance()
-            if app is not None:
-                print("[INFO] Visualization complete. Close the window to continue.")
-                app.exec()
-        except Exception as e:
-            pass  # Silently fail if no Qt window exists
     
     return (variant_id, lifespan_vector)
 
@@ -1051,7 +1150,7 @@ def main():
     
     # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
     feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
-    brain_cfg_dict = {
+    brain_cfg = {
         'n_neurons': brain_n_neurons,
         'threshold': brain_threshold,
         'noise_level': brain_noise_level,
@@ -1141,7 +1240,7 @@ def main():
                     'worm_movement_cost': worm_movement_cost,
                     'sensor_cfg': sensor_cfg,
                     'feeding_cfg': feeding_cfg,
-                    'brain_cfg_dict': brain_cfg_dict,
+                    'brain_cfg': brain_cfg,
                     'variant_decision_seed': variant_decision_seeds[variant_id],
                     'variant_noise_seed': variant_noise_seeds[variant_id],
                     'run_seeds': run_seeds.copy(),
@@ -1182,7 +1281,7 @@ def main():
                         'worm_movement_cost': worm_movement_cost,
                         'sensor_cfg': sensor_cfg,
                         'feeding_cfg': feeding_cfg,
-                        'brain_cfg_dict': brain_cfg_dict,
+                        'brain_cfg': brain_cfg,
                         'variant_decision_seed': variant_decision_seeds[variant_id],
                         'variant_noise_seed': variant_noise_seeds[variant_id],
                         'run_seeds': run_seeds.copy(),
