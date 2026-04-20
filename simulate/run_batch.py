@@ -357,14 +357,17 @@ class MetricsRecorder:
     enable_heat_map_tracking: bool = True  # Whether to track heatmaps
 
     @classmethod
-    def empty(cls, worm: Worm, genome, enable_per_run_tracking=True, enable_per_tick_tracking=True, enable_heat_map_tracking=True, max_ticks=2000):
-        """Initialize recorder with genome and worm state.
+    def empty(cls, genome, start_y, start_x, grid_height, grid_width, enable_per_run_tracking=True, enable_per_tick_tracking=True, enable_heat_map_tracking=True, max_ticks=2000):
+        """Initialize recorder with genome and explicit configuration parameters.
         
         If enable_per_run_tracking is False, only lifetime metrics are tracked.
         
         Args:
-            worm: Worm instance
             genome: Genome dict with connection_weights
+            start_y: Starting Y position of worm
+            start_x: Starting X position of worm
+            grid_height: Height of world grid
+            grid_width: Width of world grid
             enable_per_run_tracking: Whether to track per-run metrics
             enable_per_tick_tracking: Whether to track per-tick data
             enable_heat_map_tracking: Whether to track heatmaps
@@ -377,19 +380,16 @@ class MetricsRecorder:
             for tgt in range(connection_weights.shape[1]):
                 if connection_weights[src, tgt, 0] != 0.0:
                     connections_to_track.append((src, tgt))
-        
-        grid_height = worm.world.height
-        grid_width = worm.world.width
                 
         if enable_per_run_tracking:
             kwargs = {
             'per_tick_count': 0,
             'connections_to_track': connections_to_track,
-            'start_y': worm.y,
-            'start_x': worm.x,
-            'prev_y': worm.y,
-            'prev_x': worm.x,
-            'prev_eats': worm.eats,
+            'start_y': start_y,
+            'start_x': start_x,
+            'prev_y': start_y,
+            'prev_x': start_x,
+            'prev_eats': 0,
             'prev_action': None,
             'grid_height': grid_height,
             'grid_width': grid_width,
@@ -687,10 +687,7 @@ def run_variant_worker(
                     connections_to_track.append((src, tgt))
         summary_array = None
         dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
-                         ('distance', 'i4'), ('final_energy', 'f4'),
-                         ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
-                         ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
-                         ('decisions', 'i4'), ('correct_decisions', 'i4')]
+                         ('distance', 'i4'), ('final_energy', 'f4')]
         summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
         # Pre-allocate wiring array with columns for all run final weights
@@ -722,7 +719,7 @@ def run_variant_worker(
     # ============================================================
     rec = None
     if enable_per_tick_tracking or enable_heat_map_tracking:
-        rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
+        rec = MetricsRecorder.empty(genome, start_pos[0], start_pos[1], grid_height, grid_width, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
         if enable_per_run_tracking:
             rec.record(worm)
     
@@ -837,16 +834,6 @@ def run_variant_worker(
             summary_array[run_id]['foods'] = worm.eats
             summary_array[run_id]['distance'] = worm.distance
             summary_array[run_id]['final_energy'] = worm.energy
-            summary_array[run_id]['moves_north'] = rec.moves_north
-            summary_array[run_id]['moves_south'] = rec.moves_south
-            summary_array[run_id]['moves_east'] = rec.moves_east
-            summary_array[run_id]['moves_west'] = rec.moves_west
-            summary_array[run_id]['food_sensed_north'] = rec.food_sensed_north
-            summary_array[run_id]['food_sensed_east'] = rec.food_sensed_east
-            summary_array[run_id]['food_sensed_south'] = rec.food_sensed_south
-            summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
-            summary_array[run_id]['decisions'] = rec.decisions
-            summary_array[run_id]['correct_decisions'] = rec.correct_decisions
 
     # Extract lifespan vector (always available)
     lifespan_vector = lifespan_array['lifetime_ticks']
