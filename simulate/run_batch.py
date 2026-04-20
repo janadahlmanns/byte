@@ -13,6 +13,7 @@ from multiprocessing import Manager
 
 import yaml
 import numpy as np
+import h5py
 
 from mvb.world import World
 from mvb.feeding import FeedingConfig, seed_food
@@ -149,13 +150,27 @@ def get_num_workers(viz_enabled, viz_brain_enabled):
         print("[INFO] Insufficient CPU cores. Running serially.")
         return None
 
-def build_rng_streams(seed: int, has_brain: bool):
-    """Build separate RNG streams for simulation aspects."""
+def build_rng_streams(seed: int):
+    """Build properly independent RNG streams using SeedSequence.
+    
+    Creates three independent random streams from a single seed, suitable for
+    continuous use throughout the batch (not reset between runs).
+    
+    Args:
+        seed: Master seed for the batch
+    
+    Returns:
+        Tuple of (rng_world, rng_decision, rng_neuron_noise) as independent streams
+    """
     seed = int(seed)
-    rng_food = np.random.default_rng(seed)
-    rng_decision = np.random.default_rng(seed)
-    rng_neuron_noise = np.random.default_rng(seed) if has_brain else None
-    return rng_food, rng_decision, rng_neuron_noise
+    seed_seq = np.random.SeedSequence(seed)
+    # Spawn 3 truly independent streams
+    streams = seed_seq.spawn(3)
+    return (
+        np.random.default_rng(streams[0]),
+        np.random.default_rng(streams[1]),
+        np.random.default_rng(streams[2]),
+    )
 
 # --- helpers ---
 
@@ -237,7 +252,9 @@ def _rename_world_config_keys(cfg: dict) -> dict:
     Rename world config keys to include prefixes for HDF5 attribute clarity.
     
     Transforms keys like:
+      experiment.simulation_seed → simulation_seed
       world.grid_width → world_grid_width
+      world.generation_seed → world_generation_seed
       food.feeding_paradigm.initial → feeding_initial
       worm.speed → worm_speed
       sensors.active → worm_sensors_active
@@ -246,6 +263,11 @@ def _rename_world_config_keys(cfg: dict) -> dict:
     Skips the 'viz' section entirely.
     """
     renamed = {}
+    
+    # Process experiment section
+    if "experiment" in cfg:
+        if "simulation_seed" in cfg["experiment"]:
+            renamed["simulation_seed"] = cfg["experiment"]["simulation_seed"]
     
     # Process world section
     if "world" in cfg:
@@ -593,7 +615,6 @@ def run_variant_worker(
     grid_width,
     grid_height,
     start_pos,
-    world_rng_seed,
     worm_speed,
     worm_energy_capacity,
     worm_metabolic_rate,
@@ -606,7 +627,9 @@ def run_variant_worker(
     brain_sensory_mapping,
     brain_output_mapping,
     brain_max_decision_delay,
-    rng_seed,
+    variant_decision_seed,
+    variant_noise_seed,
+    run_seeds,
     has_brain_config,
     hdf5_path=None,
     hdf5_lock=None,
@@ -629,7 +652,6 @@ def run_variant_worker(
         grid_width: World grid width
         grid_height: World grid height
         start_pos: Worm starting position (tuple)
-        world_rng_seed: RNG seed for world
         worm_speed: Worm speed parameter
         worm_energy_capacity: Worm energy capacity
         worm_metabolic_rate: Worm metabolic rate
@@ -642,33 +664,38 @@ def run_variant_worker(
         brain_sensory_mapping: Sensory input mapping dict
         brain_output_mapping: Output neuron mapping dict
         brain_max_decision_delay: Maximum decision delay
-        rng_seed: RNG seed for this variant
+        variant_decision_seed: RNG seed for decision-making in this variant
+        variant_noise_seed: RNG seed for neuron noise in this variant
+        run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
         has_brain_config: Whether brain is enabled
         hdf5_path: Path to HDF5 file to write to
         hdf5_lock: multiprocessing.Lock() for synchronized writes
     """
     
     # ============================================================
+    # 6a: Build RNG streams for this variant (persistent across all runs)
     # ============================================================
-    # 5a: Create World instance
+    rng_worker_decision = np.random.default_rng(variant_decision_seed)
+    rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
+    
     # ============================================================
-    world = World(grid_width, grid_height, start_pos, world_rng_seed)
-    world.feeding_cfg = feeding_cfg
-
-    # ============================================================
-    # 5b: Load Brain Module
+    # 6b: Load Brain Module
     # ============================================================
     brain_module = load_brain_module(brain_module_name)
 
     # ============================================================
-    # 5c: Create Worm instance
+    # 6c: Create temporary world and worm (will be reset per run)
     # ============================================================
-    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate,  worm_movement_cost,  world)
+    # Create world with first run seed as placeholder (will be replaced each run)
+    world = World(grid_width, grid_height, start_pos, run_seeds[0])
+    world.feeding_cfg = feeding_cfg
+    
+    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, world)
     worm.active_sensors = sensor_cfg
     worm.brain = brain_module
 
     # ============================================================
-    # 5d: Prepare simulation & Build RNG streams
+    # 6d: Prepare simulation arrays
     # ============================================================
 
     # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
@@ -695,7 +722,7 @@ def run_variant_worker(
         # Only allocate tracking structures if per-run tracking is enabled
         # Pre-allocate wiring array with columns for all run final weights
         dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
-        for run_id in range(1, n_runs + 1):
+        for run_id in range(n_runs):
             dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
         wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
 
@@ -718,25 +745,23 @@ def run_variant_worker(
         heatmaps_all_runs = {}
 
         # ============================================================
-        # 5e: Create MetricsRecorder to track per-tick data
+        # 6e: Create MetricsRecorder to track per-tick data
         # ============================================================
         rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
         rec.record(worm)
     
     # ============================================================
-    # 5f: Simulate runs. For each run do:
+    # 6f: Simulate runs. For each run do:
     # ============================================================
     for run_id in range(n_runs):
 
         # ============================================================
-        # 5f1: Prepare simulation & Build RNG streams
+        # 6f1: Set world seed for this run
         # ============================================================
-        rng_food, rng_decision, rng_neuron_noise = build_rng_streams(
-            rng_seed + run_id, has_brain_config
-        )
+        rng_world_run = np.random.default_rng(run_seeds[run_id])
 
         # ============================================================
-        # 5f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise)
+        # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise)
         # ============================================================
         brain_cfg_dict = {
             'n_neurons': brain_n_neurons,
@@ -746,15 +771,14 @@ def run_variant_worker(
             'output_mapping': brain_output_mapping,
             'max_decision_delay': brain_max_decision_delay,
         }
-        brain_module.init_brain(genome, brain_cfg_dict, rng_neuron_noise)
+        brain_module.init_brain(genome, brain_cfg_dict, rng_worker_neuron_noise)
 
         # ============================================================
-        # 5f3: Reset world & worm & simulation
+        # 6f3: Reset world & worm & simulation with run seed
         # ============================================================
         world.reset_food()
-        seed_food(world, feeding_cfg, rng_food)
+        seed_food(world, feeding_cfg, rng_world_run)
         worm.reset()
-        reset_sim(world, feeding_cfg, rng_food, worm)
         if enable_per_run_tracking:
             rec.reset()
 
@@ -796,7 +820,7 @@ def run_variant_worker(
                 pass
 
         # ============================================================
-        # 5f4: Simulate
+        # 6f4: Simulate
         # ============================================================
         try:
             while worm.alive and worm.ticks < max_ticks:
@@ -805,7 +829,7 @@ def run_variant_worker(
                     pause_mgr.check_pause()
                 
                 world.step()
-                worm.step_day(rng_decision)
+                worm.step_day(rng_worker_decision)
                 worm.ticks += 1
                 if enable_per_tick_tracking or enable_heat_map_tracking:
                     rec.record(worm)
@@ -822,10 +846,10 @@ def run_variant_worker(
         
         if enable_per_tick_tracking and rec.per_tick_data is not None:
             per_tick_data = rec.per_tick_data[:rec.per_tick_count]
-            per_tick_all_runs[run_id+1] = per_tick_data
+            per_tick_all_runs[run_id] = per_tick_data
         
         if enable_heat_map_tracking and rec.staying_heatmap is not None:
-            heatmaps_all_runs[run_id+1] = rec.staying_heatmap.copy()
+            heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
         
         # Always record lifespan
         lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
@@ -834,9 +858,9 @@ def run_variant_worker(
         if enable_per_run_tracking:
             for idx, (src, tgt) in enumerate(connections_to_track):
                 w = get_connection_weight(worm.brain, src, tgt)
-                wiring_array[idx][f'weight_final_run_{run_id+1:04d}'] = w
+                wiring_array[idx][f'weight_final_run_{run_id:04d}'] = w
             
-            summary_array[run_id]['run_id'] = run_id + 1
+            summary_array[run_id]['run_id'] = run_id
             summary_array[run_id]['lifetime_ticks'] = worm.ticks
             summary_array[run_id]['foods'] = worm.eats
             summary_array[run_id]['distance'] = worm.distance
@@ -856,26 +880,34 @@ def run_variant_worker(
     lifespan_vector = lifespan_array['lifetime_ticks']
 
     # ============================================================
-    # 5g: Batch write to HDF5
+    # 6g: Batch write to HDF5
     # ============================================================
     # Batch write all variant data after all runs complete (only if per-run tracking enabled)
     if enable_per_run_tracking:
         with hdf5_lock:
             # Write summary array only if per-run tracking is enabled
             if summary_array is not None:
-                save_variant_summary_to_hdf5(hdf5_path, variant_id + 1, summary_array)
-                save_wiring_to_hdf5(hdf5_path, variant_id + 1, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id + 1, modulation_array)
+                save_variant_summary_to_hdf5(hdf5_path, variant_id, summary_array)
+                save_wiring_to_hdf5(hdf5_path, variant_id, wiring_array)
+                save_modulation_to_hdf5(hdf5_path, variant_id, modulation_array)
                 
                 # Write accumulated per-tick data if any
                 if per_tick_all_runs:
                     for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id + 1, run_id, per_tick_data)
+                        save_per_tick_to_hdf5(hdf5_path, variant_id, run_id, per_tick_data)
                 
                 # Write accumulated heatmap data if any
                 if heatmaps_all_runs:
                     for run_id, staying_heatmap in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id + 1, run_id, staying_heatmap)
+                        save_heatmaps_to_hdf5(hdf5_path, variant_id, run_id, staying_heatmap)
+                
+                # Write RNG seed information to HDF5 variant attributes (to existing variant group)
+                with h5py.File(hdf5_path, 'a') as f:
+                    variant_group_name = f'variant_{variant_id}'
+                    if variant_group_name in f:
+                        variant_group = f[variant_group_name]
+                        variant_group.attrs['rng_seed_decision'] = int(variant_decision_seed)
+                        variant_group.attrs['rng_seed_noise'] = int(variant_noise_seed)
     
     # Keep visualization window open if it was created (but not if exit was requested)
     should_show_event_loop = viz_enabled or viz_brain_enabled
@@ -902,30 +934,51 @@ def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     """
     Validate tracking flags and adjust if necessary.
     
-    If enable_per_run is False but other tracking flags are True,
-    warn the user and ask whether to disable them or exit.
+    Per-run tracking is a prerequisite for detailed tracking (per-tick and heatmap).
+    If the user specifies detailed tracking without per-run tracking, ask them to choose:
+    1. Exit and reconsider configuration
+    2. Enable per-run tracking (keep the detailed flags)
+    3. Disable all detailed tracking (keep only lifespan)
     
     Args:
         enable_per_run: Whether per-run tracking is enabled
         enable_per_tick: Whether per-tick tracking is enabled
         enable_heat_map: Whether heatmap tracking is enabled
     
-    Returns: True to continue, False to exit
+    Returns: Tuple of (should_continue, corrected_enable_per_run, corrected_enable_per_tick, corrected_enable_heat_map)
     """
+    # Check for invalid configuration: detailed tracking without per-run tracking
     if not enable_per_run and (enable_per_tick or enable_heat_map):
-        print("\n[WARNING] Conflicting tracking configuration:")
+        print("\n" + "="*80)
+        print("[ERROR] Invalid tracking configuration:")
+        print("="*80)
         print(f"  ENABLE_PER_RUN_TRACKING = {enable_per_run}")
         print(f"  ENABLE_PER_TICK_TRACKING = {enable_per_tick}")
         print(f"  ENABLE_HEAT_MAP_TRACKING = {enable_heat_map}")
-        print("\nWhen per-run tracking is disabled, detailed per-tick and heatmap")
-        print("tracking are useless. Only lifespan metrics will be recorded.")
-        response = input("\nDisable all detailed tracking and continue? (y/n): ").strip().lower()
-        if response == 'y':
-            return True
-        else:
-            print("[EXIT] User cancelled due to tracking configuration conflict.")
-            return False
-    return True
+        print("\n[REASON] Per-tick and heatmap tracking can only be enabled if per-run")
+        print("tracking is also enabled. They require per-run data structures.")
+        print("\n[OPTIONS] Choose one of the following:")
+        print("  [1] Exit execution and reconsider your configuration")
+        print("  [2] Enable per-run tracking (keep the detailed flags as-is)")
+        print("  [3] Disable all detailed tracking (record only lifespan)")
+        print("="*80)
+        
+        while True:
+            response = input("\nEnter your choice (1-3): ").strip()
+            if response == '1':
+                print("[EXIT] Execution stopped. Please fix your configuration.\n")
+                return (False, False, False, False)
+            elif response == '2':
+                print("[CONFIG] Enabling per-run tracking with detailed flags enabled.")
+                return (True, True, enable_per_tick, enable_heat_map)
+            elif response == '3':
+                print("[CONFIG] Disabling all detailed tracking. Only lifespan will be recorded.")
+                return (True, False, False, False)
+            else:
+                print("[ERROR] Invalid choice. Enter 1, 2, or 3.")
+    
+    # No conflict: return original flags unchanged
+    return (True, enable_per_run, enable_per_tick, enable_heat_map)
 
 
 def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
@@ -1017,6 +1070,14 @@ def main():
     experiment_cfg = cfg["experiment"]
     brain_module_name = make_decision_cfg(cfg)
     
+    # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
+    SIMULATION_SEED = experiment_cfg["simulation_seed"]
+    GENERATION_SEED = cfg["world"]["generation_seed"]
+    
+    # Build independent RNG streams for decision-making and neuron noise
+    rng_decision, rng_neuron_noise, _ = build_rng_streams(SIMULATION_SEED)
+    # Build RNG stream for world (food distribution)
+    rng_world = build_rng_streams(GENERATION_SEED)[0]
     
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
@@ -1045,18 +1106,17 @@ def main():
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
     
-    if not validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING):
+    validation_result = validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING)
+    should_continue, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING = validation_result
+    if not should_continue:
         return
     
     VIZ_ENABLED, VIZ_BRAIN_ENABLED = validate_viz_flags(N_VARIANTS, N_RUNS, VIZ_ENABLED, VIZ_BRAIN_ENABLED)
     
-    # ============================================================
     # Extract config components for worker
-    # ============================================================
     grid_width = cfg["world"]["grid_width"]
     grid_height = cfg["world"]["grid_height"]
     start_pos = cfg["world"]["start_pos"]
-    world_rng_seed = cfg["world"]["rng_seed"]
     worm_speed = cfg["worm"]["speed"]
     worm_energy_capacity = cfg["worm"]["energy_capacity"]
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
@@ -1071,13 +1131,22 @@ def main():
     brain_sensory_mapping = cfg["brain"]["sensory_mapping"]
     brain_output_mapping = cfg["brain"]["output_mapping"]
     brain_max_decision_delay = cfg["brain"]["max_decision_delay"]
-    rng_seed = cfg["world"]["rng_seed"]
     
     # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
     feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
     
     # ============================================================
-    # 3. GENERATE GENOMES
+    # 3. DRAW SEEDS FOR RUNS AND VARIANTS
+    # ============================================================
+    # Draw N_RUNS seeds from rng_world for fair comparison across variants
+    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+    
+    # Draw N_VARIANTS seeds for decision-making and neuron noise
+    variant_decision_seeds = rng_decision.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
+    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
+    
+    # ============================================================
+    # 4. GENERATE GENOMES
     # ============================================================
     # Generate all genomes before dispatching workers
     genomes = []
@@ -1086,7 +1155,7 @@ def main():
         genomes.append(genome)
     
     # ============================================================
-    # 4. PREPARE DATA TRACKING IF ENABLED
+    # 5. PREPARE DATA TRACKING IF ENABLED
     # ============================================================
         
     # Only create HDF5 file and manager if per-run tracking is enabled
@@ -1096,13 +1165,20 @@ def main():
         create_hdf5_file(hdf5_path, cfg)
         # Save genome generation parameters to HDF5
         save_genome_properties_to_hdf5(hdf5_path, genomes)
+        # Save run_seeds for reproducibility
+        with h5py.File(hdf5_path, 'a') as f:
+            f.create_dataset('run_seeds', data=run_seeds)
+            # Save the actual tracking flags used (after validation/user input corrections)
+            f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
+            f.attrs['tracking_per_tick_enabled'] = int(ENABLE_PER_TICK_TRACKING)
+            f.attrs['tracking_heatmap_enabled'] = int(ENABLE_HEAT_MAP_TRACKING)
         
         # Create manager and lock for parallel HDF5 writing
         manager = Manager()
         hdf5_lock = manager.Lock()
 
     # ============================================================
-    # 5. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
+    # 6. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
     # ============================================================
     
     try:
@@ -1129,7 +1205,6 @@ def main():
                     'grid_width': grid_width,
                     'grid_height': grid_height,
                     'start_pos': start_pos,
-                    'world_rng_seed': world_rng_seed,
                     'worm_speed': worm_speed,
                     'worm_energy_capacity': worm_energy_capacity,
                     'worm_metabolic_rate': worm_metabolic_rate,
@@ -1142,7 +1217,9 @@ def main():
                     'brain_sensory_mapping': brain_sensory_mapping,
                     'brain_output_mapping': brain_output_mapping,
                     'brain_max_decision_delay': brain_max_decision_delay,
-                    'rng_seed': rng_seed,
+                    'variant_decision_seed': variant_decision_seeds[variant_id],
+                    'variant_noise_seed': variant_noise_seeds[variant_id],
+                    'run_seeds': run_seeds.copy(),
                     'has_brain_config': has_brain_config,
                 }
                 if ENABLE_PER_RUN_TRACKING:
@@ -1175,7 +1252,6 @@ def main():
                         'grid_width': grid_width,
                         'grid_height': grid_height,
                         'start_pos': start_pos,
-                        'world_rng_seed': world_rng_seed,
                         'worm_speed': worm_speed,
                         'worm_energy_capacity': worm_energy_capacity,
                         'worm_metabolic_rate': worm_metabolic_rate,
@@ -1188,7 +1264,9 @@ def main():
                         'brain_sensory_mapping': brain_sensory_mapping,
                         'brain_output_mapping': brain_output_mapping,
                         'brain_max_decision_delay': brain_max_decision_delay,
-                        'rng_seed': rng_seed,
+                        'variant_decision_seed': variant_decision_seeds[variant_id],
+                        'variant_noise_seed': variant_noise_seeds[variant_id],
+                        'run_seeds': run_seeds.copy(),
                         'has_brain_config': has_brain_config,
                     }
                     if ENABLE_PER_RUN_TRACKING:
@@ -1208,7 +1286,7 @@ def main():
         
         
         # ============================================================
-        # 6. WRAP-UP
+        # 7. WRAP-UP
         # ============================================================
         if ENABLE_PER_RUN_TRACKING:
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
@@ -1216,7 +1294,16 @@ def main():
             print(f"[batch] Simulation completed. (No data recording)")
             if all_lifespans:
                 total_lifespans = sum(len(v) for v in all_lifespans.values())
-                print(f"[placeholder] {total_lifespans} lifespans collected")
+                print(f"[results] {total_lifespans} lifespans collected")
+                print("\nVariant RNG Seeds (for reproducibility):")
+                print("-" * 80)
+                print(f"{'Variant':>10} {'Decision Seed':>20} {'Noise Seed':>20}")
+                print("-" * 80)
+                for variant_id in range(N_VARIANTS):
+                    decision_seed = variant_decision_seeds[variant_id]
+                    noise_seed = variant_noise_seeds[variant_id]
+                    print(f"{variant_id+1:>10} {int(decision_seed):>20} {int(noise_seed):>20}")
+                print("=" * 80)
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")

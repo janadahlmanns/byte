@@ -154,12 +154,12 @@ def save_variant_summary_to_hdf5(hdf5_path: Path, variant_id: int, summary_array
     
     Args:
         hdf5_path: Path to HDF5 file
-        variant_id: Variant identifier
+        variant_id: Variant identifier (0-based)
         summary_array: Data to save
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
     def _write():
-        group_name = f'variant_{variant_id:02d}'
+        group_name = f'variant_{variant_id}'
         with h5py.File(hdf5_path, 'a') as f:
             if group_name not in f:
                 grp = f.create_group(group_name)
@@ -181,12 +181,12 @@ def save_wiring_to_hdf5(hdf5_path: Path, variant_id: int, wiring_array: np.ndarr
     
     Args:
         hdf5_path: Path to HDF5 file
-        variant_id: Variant identifier
+        variant_id: Variant identifier (0-based)
         wiring_array: Data to save
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
     def _write():
-        group_name = f'variant_{variant_id:02d}'
+        group_name = f'variant_{variant_id}'
         with h5py.File(hdf5_path, 'a') as f:
             if group_name not in f:
                 grp = f.create_group(group_name)
@@ -208,12 +208,12 @@ def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: 
     
     Args:
         hdf5_path: Path to HDF5 file
-        variant_id: Variant identifier
+        variant_id: Variant identifier (0-based)
         modulation_array: Data to save
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
     def _write():
-        group_name = f'variant_{variant_id:02d}'
+        group_name = f'variant_{variant_id}'
         with h5py.File(hdf5_path, 'a') as f:
             if group_name not in f:
                 grp = f.create_group(group_name)
@@ -241,7 +241,7 @@ def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, staying
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
     def _write():
-        variant_group = f'variant_{variant_id:02d}'
+        variant_group = f'variant_{variant_id}'
         run_group = f'run_{run_id}'
         with h5py.File(hdf5_path, 'a') as f:
             if variant_group not in f:
@@ -274,7 +274,7 @@ def save_per_tick_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, per_tic
         lock: Optional multiprocessing.Lock() for synchronized parallel writes
     """
     def _write():
-        variant_group = f'variant_{variant_id:02d}'
+        variant_group = f'variant_{variant_id}'
         run_group = f'run_{run_id}'
         with h5py.File(hdf5_path, 'a') as f:
             if variant_group not in f:

@@ -5,6 +5,7 @@ experiment:
   # Output and file naming
   output_folder: "data/temp/"
   simulation_name: "lookup_validation"
+  simulation_seed: 1
   
   # Genome generation
   genome_type: "random"  # Options: "random", "lookup"
@@ -28,7 +29,7 @@ experiment:
   viz_brain_fps: 4
   
   # Data tracking
-  enable_per_run_tracking: true
+  enable_per_run_tracking: false
   enable_per_tick_tracking: false
   enable_heat_map_tracking: true
 
@@ -41,7 +42,7 @@ world:
   start_pos:
   - 26
   - 26
-  rng_seed: 1
+  generation_seed: 1
 
 food:
   feeding_paradigm:
