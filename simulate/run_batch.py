@@ -684,10 +684,9 @@ def run_variant_worker(
     brain_module = load_brain_module(brain_module_name)
 
     # ============================================================
-    # 6c: Create temporary world and worm (will be reset per run)
+    # 6c: Create temporary world and worm (will be reset per run so seed doesnt matter)
     # ============================================================
-    # Create world with first run seed as placeholder (will be replaced each run)
-    world = World(grid_width, grid_height, start_pos, run_seeds[0])
+    world = World(grid_width, grid_height, start_pos, 0)
     world.feeding_cfg = feeding_cfg
     
     worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, world)
@@ -698,7 +697,7 @@ def run_variant_worker(
     # 6d: Prepare simulation arrays
     # ============================================================
 
-    # Always allocate lightweight lifespan array (only lifetime_ticks tracking)
+    # Always allocate lightweight lifespan array
     dtype_lifespan = [('lifetime_ticks', 'i4')]
     lifespan_array = np.zeros(n_runs, dtype=dtype_lifespan)
 
@@ -719,7 +718,6 @@ def run_variant_worker(
                          ('decisions', 'i4'), ('correct_decisions', 'i4')]
         summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
-        # Only allocate tracking structures if per-run tracking is enabled
         # Pre-allocate wiring array with columns for all run final weights
         dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
         for run_id in range(n_runs):
@@ -761,7 +759,7 @@ def run_variant_worker(
         rng_world_run = np.random.default_rng(run_seeds[run_id])
 
         # ============================================================
-        # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise)
+        # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise) for a clean reset
         # ============================================================
         brain_cfg_dict = {
             'n_neurons': brain_n_neurons,
@@ -774,7 +772,7 @@ def run_variant_worker(
         brain_module.init_brain(genome, brain_cfg_dict, rng_worker_neuron_noise)
 
         # ============================================================
-        # 6f3: Reset world & worm & simulation with run seed
+        # 6f3: Reset worm & simulation, rest world with the according run rng 
         # ============================================================
         world.reset_food()
         seed_food(world, feeding_cfg, rng_world_run)
@@ -910,20 +908,16 @@ def run_variant_worker(
                         variant_group.attrs['rng_seed_noise'] = int(variant_noise_seed)
     
     # Keep visualization window open if it was created (but not if exit was requested)
-    should_show_event_loop = viz_enabled or viz_brain_enabled
+    should_show_event_loop = (viz_enabled or viz_brain_enabled) and (pause_mgr is None or not pause_mgr.should_exit())
     if should_show_event_loop:
-        if pause_mgr is not None and pause_mgr.should_exit():
-            should_show_event_loop = False
-        
-        if should_show_event_loop:
-            try:
-                from PySide6.QtWidgets import QApplication
-                app = QApplication.instance()
-                if app is not None:
-                    print("[INFO] Visualization complete. Close the window to continue.")
-                    app.exec()
-            except Exception as e:
-                pass  # Silently fail if no Qt window exists
+        try:
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                print("[INFO] Visualization complete. Close the window to continue.")
+                app.exec()
+        except Exception as e:
+            pass  # Silently fail if no Qt window exists
     
     return (variant_id, lifespan_vector)
 
@@ -1294,16 +1288,7 @@ def main():
             print(f"[batch] Simulation completed. (No data recording)")
             if all_lifespans:
                 total_lifespans = sum(len(v) for v in all_lifespans.values())
-                print(f"[results] {total_lifespans} lifespans collected")
-                print("\nVariant RNG Seeds (for reproducibility):")
-                print("-" * 80)
-                print(f"{'Variant':>10} {'Decision Seed':>20} {'Noise Seed':>20}")
-                print("-" * 80)
-                for variant_id in range(N_VARIANTS):
-                    decision_seed = variant_decision_seeds[variant_id]
-                    noise_seed = variant_noise_seeds[variant_id]
-                    print(f"{variant_id+1:>10} {int(decision_seed):>20} {int(noise_seed):>20}")
-                print("=" * 80)
+                print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
