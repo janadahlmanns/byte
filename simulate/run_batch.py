@@ -181,18 +181,7 @@ def load_brain_module(version: str):
         raise AttributeError(f"{module_name} has no decide()")
     return module
 
-def load_brain_init(brain_init_name: str, wiring_seed: int = None, **wiring_params):
-    """Load brain initialization config. Returns brain spec or None."""
-    if brain_init_name.lower() == "none" or not brain_init_name:
-        return None
-    module_name = f"configs.brain_init_{brain_init_name}"
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        raise ImportError(f"Could not find brain init module '{module_name}'.")
-    if not hasattr(module, "build_brain_spec"):
-        raise AttributeError(f"Brain init module '{module_name}' has no 'build_brain_spec' function.")
-    return module.build_brain_spec(wiring_seed=wiring_seed, **wiring_params)
+
 
 def load_genome_generator(genome_type: str):
     """Load genome generator function from mvb.genome module.
@@ -241,62 +230,6 @@ def make_sensor_cfg(cfg_yaml):
 def make_decision_cfg(cfg_yaml):
     return str(cfg_yaml["worm"]["decisionmaking"]["version"])
 
-def reset_sim(world, feeding_cfg, rng_food, worm):
-    world.reset_food()
-    seed_food(world, feeding_cfg, rng_food)
-    worm.reset()
-
-
-def _rename_world_config_keys(cfg: dict) -> dict:
-    """
-    Rename world config keys to include prefixes for HDF5 attribute clarity.
-    
-    Transforms keys like:
-      experiment.simulation_seed → simulation_seed
-      world.grid_width → world_grid_width
-      world.generation_seed → world_generation_seed
-      food.feeding_paradigm.initial → feeding_initial
-      worm.speed → worm_speed
-      sensors.active → worm_sensors_active
-      decisionmaking.version → decisionmaking_version
-    
-    Skips the 'viz' section entirely.
-    """
-    renamed = {}
-    
-    # Process experiment section
-    if "experiment" in cfg:
-        if "simulation_seed" in cfg["experiment"]:
-            renamed["simulation_seed"] = cfg["experiment"]["simulation_seed"]
-    
-    # Process world section
-    if "world" in cfg:
-        for key, val in cfg["world"].items():
-            renamed[f"world_{key}"] = val
-    
-    # Process food section - flatten feeding_paradigm keys
-    if "food" in cfg:
-        food_cfg = cfg["food"]
-        if "feeding_paradigm" in food_cfg:
-            for key, val in food_cfg["feeding_paradigm"].items():
-                renamed[f"feeding_{key}"] = val
-    
-    # Process worm section
-    if "worm" in cfg:
-        for key, val in cfg["worm"].items():
-            renamed[f"worm_{key}"] = val
-    
-    # Process sensors section
-    if "sensors" in cfg:
-        for key, val in cfg["sensors"].items():
-            renamed[f"worm_sensors_{key}"] = val
-    
-    # Process decisionmaking section
-    if "decisionmaking" in cfg:
-        for key, val in cfg["decisionmaking"].items():
-            renamed[f"decisionmaking_{key}"] = val
-    
-    return renamed
 
 
 def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) -> float:
@@ -630,7 +563,6 @@ def run_variant_worker(
     variant_decision_seed,
     variant_noise_seed,
     run_seeds,
-    has_brain_config,
     hdf5_path=None,
     hdf5_lock=None,
 ):
@@ -667,7 +599,6 @@ def run_variant_worker(
         variant_decision_seed: RNG seed for decision-making in this variant
         variant_noise_seed: RNG seed for neuron noise in this variant
         run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
-        has_brain_config: Whether brain is enabled
         hdf5_path: Path to HDF5 file to write to
         hdf5_lock: multiprocessing.Lock() for synchronized writes
     """
@@ -1044,7 +975,6 @@ def main():
     # Try to load config with helpful error message if not found
     try:
         cfg = load_config(args.config)
-        CONFIG_PATH = resolve_config_path(args.config)
     except FileNotFoundError as e:
         available_configs = find_available_configs()
         print("\n" + "="*80)
@@ -1130,12 +1060,10 @@ def main():
     feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
     
     # ============================================================
-    # 3. DRAW SEEDS FOR RUNS AND VARIANTS
+    # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
     # ============================================================
-    # Draw N_RUNS seeds from rng_world for fair comparison across variants
-    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
     
-    # Draw N_VARIANTS seeds for decision-making and neuron noise
+    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
     variant_decision_seeds = rng_decision.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
     variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
     
@@ -1149,20 +1077,16 @@ def main():
         genomes.append(genome)
     
     # ============================================================
-    # 5. PREPARE DATA TRACKING IF ENABLED
+    # 5. ONE-TIME HDF5 INITIALIZATION (if tracking enabled)
     # ============================================================
-        
-    # Only create HDF5 file and manager if per-run tracking is enabled
+    
     if ENABLE_PER_RUN_TRACKING:
         hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
         print(f"[batch] writing to {hdf5_path}\n")
         create_hdf5_file(hdf5_path, cfg)
-        # Save genome generation parameters to HDF5
-        save_genome_properties_to_hdf5(hdf5_path, genomes)
-        # Save run_seeds for reproducibility
+        
+        # Save the actual tracking flags used (after validation/user input corrections)
         with h5py.File(hdf5_path, 'a') as f:
-            f.create_dataset('run_seeds', data=run_seeds)
-            # Save the actual tracking flags used (after validation/user input corrections)
             f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
             f.attrs['tracking_per_tick_enabled'] = int(ENABLE_PER_TICK_TRACKING)
             f.attrs['tracking_heatmap_enabled'] = int(ENABLE_HEAT_MAP_TRACKING)
@@ -1171,10 +1095,21 @@ def main():
         manager = Manager()
         hdf5_lock = manager.Lock()
 
+
     # ============================================================
-    # 6. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
+    # 6. PREPARE WORKERS AND DATA TRACKING, THEN EITHER PARALLEL OR SERIAL
     # ============================================================
-    
+
+    # Draw RNG seeds for the N_RUNS to be handed to workers
+    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+    # Save per-generation data to HDF5 (only if per-run tracking is enabled)
+    if ENABLE_PER_RUN_TRACKING:
+        # Save genome generation parameters to HDF5
+        save_genome_properties_to_hdf5(hdf5_path, genomes)
+        # Save run_seeds for reproducibility
+        with h5py.File(hdf5_path, 'a') as f:
+            f.create_dataset('run_seeds', data=run_seeds)
+
     try:
         # Run simulation
         all_lifespans = {}
@@ -1214,7 +1149,6 @@ def main():
                     'variant_decision_seed': variant_decision_seeds[variant_id],
                     'variant_noise_seed': variant_noise_seeds[variant_id],
                     'run_seeds': run_seeds.copy(),
-                    'has_brain_config': has_brain_config,
                 }
                 if ENABLE_PER_RUN_TRACKING:
                     kwargs['hdf5_path'] = hdf5_path
@@ -1261,7 +1195,6 @@ def main():
                         'variant_decision_seed': variant_decision_seeds[variant_id],
                         'variant_noise_seed': variant_noise_seeds[variant_id],
                         'run_seeds': run_seeds.copy(),
-                        'has_brain_config': has_brain_config,
                     }
                     if ENABLE_PER_RUN_TRACKING:
                         kwargs['hdf5_path'] = hdf5_path

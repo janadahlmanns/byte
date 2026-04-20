@@ -9,7 +9,7 @@ experiment:
   
   # Genome generation
   genome_type: "random"  # Options: "random", "lookup"
-  n_variants: 1
+  n_variants: 2
 
   # genome type specific parameters - random
   wiring_randomization_seed: 1
@@ -23,15 +23,15 @@ experiment:
   n_runs: 4
   
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 4
   viz_brain_enabled: false
   viz_brain_fps: 4
   
   # Data tracking
-  enable_per_run_tracking: false
-  enable_per_tick_tracking: false
-  enable_heat_map_tracking: false
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
 
 # ============================================================
 # EMBEDDING CONFIGURATION
