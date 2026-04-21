@@ -77,8 +77,6 @@ def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise,
         pass  # Exit simulation gracefully
     
     return world, worm, rec, pause_mgr
-
-
 def eval_variant(
     brain_module_name,
     grid_width,
@@ -115,7 +113,7 @@ def eval_variant(
         enable_per_run_tracking: Whether to track per-run metrics
         enable_per_tick_tracking: Whether to track per-tick data
         enable_heat_map_tracking: Whether to track heatmaps
-        feeding_cfg: FeedingConfig object
+        feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         worm_speed: Worm speed parameter
         worm_energy_capacity: Worm energy capacity
         worm_metabolic_rate: Worm metabolic rate
@@ -366,7 +364,7 @@ def run_variant_worker(
         worm_metabolic_rate: Worm metabolic rate
         worm_movement_cost: Worm movement cost
         sensor_cfg: Sensor configuration list
-        feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
+        feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_cfg: Dict with brain configuration (n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay)
         variant_decision_seed: RNG seed for decision-making in this variant
         variant_noise_seed: RNG seed for neuron noise in this variant
@@ -483,7 +481,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         worm_metabolic_rate: Worm metabolic rate
         worm_movement_cost: Worm movement cost
         sensor_cfg: Sensor configuration list
-        feeding_cfg: FeedingConfig object
+        feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_cfg: Brain configuration dict
         variant_decision_seeds: Array of decision RNG seeds per variant
         variant_noise_seeds: Array of noise RNG seeds per variant

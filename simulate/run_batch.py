@@ -9,7 +9,6 @@ from pathlib import Path
 import yaml
 import numpy as np
 
-from mvb.feeding import FeedingConfig
 from mvb.simulation_API import eval_generation
 from .pause_manager import init_pause_manager, cleanup_pause_manager
 
@@ -96,36 +95,6 @@ def load_config(config_name: str):
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-# --- HELPER FUNCTIONS ---
-
-def build_rng_streams(seed: int):
-    """Build properly independent RNG streams using SeedSequence.
-    
-    Creates three independent random streams from a single seed, suitable for
-    continuous use throughout the batch (not reset between runs).
-    
-    Args:
-        seed: Master seed for the batch
-    
-    Returns:
-        Tuple of (rng_world, rng_decision, rng_neuron_noise) as independent streams
-    """
-    seed = int(seed)
-    seed_seq = np.random.SeedSequence(seed)
-    # Spawn 3 truly independent streams
-    streams = seed_seq.spawn(3)
-    return (
-        np.random.default_rng(streams[0]),
-        np.random.default_rng(streams[1]),
-        np.random.default_rng(streams[2]),
-    )
-
-# --- helpers ---
-
-
-
-
-
 def load_genome_generator(genome_type: str):
     """Load genome generator function from mvb.genome module.
     
@@ -160,22 +129,7 @@ def load_genome_generator(genome_type: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
-def make_feeding_cfg(feeding_paradigm, initial_fraction_per_cell, regrow_time):
-    return FeedingConfig(
-        feeding_paradigm=feeding_paradigm,
-        initial_fraction_per_cell=initial_fraction_per_cell,
-        regrow_time=regrow_time,
-    )
 
-def make_brain_cfg(n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay):
-    return {
-        'n_neurons': n_neurons,
-        'threshold': threshold,
-        'noise_level': noise_level,
-        'sensory_mapping': sensory_mapping,
-        'output_mapping': output_mapping,
-        'max_decision_delay': max_decision_delay,
-    }
 
 def make_sensor_cfg(cfg_yaml):
     return cfg_yaml.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
@@ -344,9 +298,14 @@ def main():
     GENERATION_SEED = cfg["world"]["generation_seed"]
     
     # Build independent RNG streams for decision-making and neuron noise
-    rng_decision, rng_neuron_noise, _ = build_rng_streams(SIMULATION_SEED)
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(2)
+    rng_decision = np.random.default_rng(streams_sim[0])
+    rng_neuron_noise = np.random.default_rng(streams_sim[1])
+    
     # Build RNG stream for world (food distribution)
-    rng_world = build_rng_streams(GENERATION_SEED)[0]
+    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
+    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
     
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
@@ -391,19 +350,10 @@ def main():
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
     worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = make_sensor_cfg(cfg)
-    feeding_paradigm = cfg["food"]["feeding_paradigm"]
-    feeding_initial_fraction_per_cell = cfg["food"]["initial_fraction_per_cell"]
-    feeding_regrow_time = cfg["food"]["regrow_time"]
-    brain_n_neurons = cfg["brain"]["n_neurons"]
-    brain_threshold = cfg["brain"]["threshold"]
-    brain_noise_level = cfg["brain"]["noise_level"]
-    brain_sensory_mapping = cfg["brain"]["sensory_mapping"]
-    brain_output_mapping = cfg["brain"]["output_mapping"]
-    brain_max_decision_delay = cfg["brain"]["max_decision_delay"]
     
-    # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
-    feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
-    brain_cfg = make_brain_cfg(brain_n_neurons, brain_threshold, brain_noise_level, brain_sensory_mapping, brain_output_mapping, brain_max_decision_delay)
+    # Use config subsections directly (no wrapping)
+    feeding_cfg = cfg["food"]
+    brain_cfg = cfg["brain"]
     
     # ============================================================
     # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
