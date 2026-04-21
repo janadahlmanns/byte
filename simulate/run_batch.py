@@ -224,6 +224,16 @@ def make_feeding_cfg(feeding_paradigm, initial_fraction_per_cell, regrow_time):
         regrow_time=regrow_time,
     )
 
+def make_brain_cfg(n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay):
+    return {
+        'n_neurons': n_neurons,
+        'threshold': threshold,
+        'noise_level': noise_level,
+        'sensory_mapping': sensory_mapping,
+        'output_mapping': output_mapping,
+        'max_decision_delay': max_decision_delay,
+    }
+
 def make_sensor_cfg(cfg_yaml):
     return cfg_yaml.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
 
@@ -944,6 +954,184 @@ def run_variant_worker(
     
     return (variant_id, lifespan_vector)
 
+def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+                                ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds):
+    
+# starting here instead of in place code execution we want to call a new function called eval_generation.
+# input arguments will be: EXPeriment folder, simulation name, enable per run tracking, enable per tick tracking, enable heatmap tracking
+# cfg, N_RUNS,  viz enabled viz brain enabled, genome, all of these that i have not already mentioned:                    'variant_id': variant_id,
+                    # 'brain_module_name': brain_module_name,
+                    # 'genome': genomes[variant_id],
+                    # 'viz_enabled': VIZ_ENABLED,
+                    # 'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
+                    # 'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
+                    # 'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
+                    # 'max_ticks': MAX_TICKS,
+                    # 'n_runs': N_RUNS,
+                    # 'viz_fps': VIZ_FPS,
+                    # 'viz_brain_enabled': VIZ_BRAIN_ENABLED,
+                    # 'viz_brain_fps': VIZ_BRAIN_FPS,
+                    # 'grid_width': grid_width,
+                    # 'grid_height': grid_height,
+                    # 'start_pos': start_pos,
+                    # 'worm_speed': worm_speed,
+                    # 'worm_energy_capacity': worm_energy_capacity,
+                    # 'worm_metabolic_rate': worm_metabolic_rate,
+                    # 'worm_movement_cost': worm_movement_cost,
+                    # 'sensor_cfg': sensor_cfg,
+                    # 'feeding_cfg': feeding_cfg,
+                    # 'brain_cfg': brain_cfg,
+                    # 'variant_decision_seed': variant_decision_seeds[variant_id],
+                    # 'variant_noise_seed': variant_noise_seeds[variant_id],
+                    # 'run_seeds': run_seeds.copy(),
+        
+
+
+
+    # ============================================================
+    # 5. ONE-TIME HDF5 INITIALIZATION (if tracking enabled)
+    # ============================================================
+    
+    if ENABLE_PER_RUN_TRACKING:
+        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
+        print(f"[batch] writing to {hdf5_path}\n")
+        create_hdf5_file(hdf5_path, cfg)
+        
+        # Save the actual tracking flags used (after validation/user input corrections)
+        with h5py.File(hdf5_path, 'a') as f:
+            f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
+            f.attrs['tracking_per_tick_enabled'] = int(ENABLE_PER_TICK_TRACKING)
+            f.attrs['tracking_heatmap_enabled'] = int(ENABLE_HEAT_MAP_TRACKING)
+        
+        # Create manager and lock for parallel HDF5 writing
+        manager = Manager()
+        hdf5_lock = manager.Lock()
+
+
+    # ============================================================
+    # 6. PREPARE WORKERS and , THEN EITHER PARALLEL OR SERIAL
+    # ============================================================
+
+    # Draw RNG seeds for the N_RUNS to be handed to workers
+    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+    # Save per-generation data to HDF5 (only if per-run tracking is enabled)
+    if ENABLE_PER_RUN_TRACKING:
+        # Save genome generation parameters to HDF5
+        save_genome_properties_to_hdf5(hdf5_path, genomes)
+        # Save run_seeds for reproducibility
+        with h5py.File(hdf5_path, 'a') as f:
+            f.create_dataset('run_seeds', data=run_seeds)
+
+    try:
+        # Run simulation
+        all_lifespans = {}
+        num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
+        if num_workers is None:
+            for variant_id in range(N_VARIANTS):
+                print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
+                
+                kwargs = {
+                    'variant_id': variant_id,
+                    'brain_module_name': brain_module_name,
+                    'genome': genomes[variant_id],
+                    'viz_enabled': VIZ_ENABLED,
+                    'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
+                    'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
+                    'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
+                    'max_ticks': MAX_TICKS,
+                    'n_runs': N_RUNS,
+                    'viz_fps': VIZ_FPS,
+                    'viz_brain_enabled': VIZ_BRAIN_ENABLED,
+                    'viz_brain_fps': VIZ_BRAIN_FPS,
+                    'grid_width': grid_width,
+                    'grid_height': grid_height,
+                    'start_pos': start_pos,
+                    'worm_speed': worm_speed,
+                    'worm_energy_capacity': worm_energy_capacity,
+                    'worm_metabolic_rate': worm_metabolic_rate,
+                    'worm_movement_cost': worm_movement_cost,
+                    'sensor_cfg': sensor_cfg,
+                    'feeding_cfg': feeding_cfg,
+                    'brain_cfg': brain_cfg,
+                    'variant_decision_seed': variant_decision_seeds[variant_id],
+                    'variant_noise_seed': variant_noise_seeds[variant_id],
+                    'run_seeds': run_seeds.copy(),
+                }
+                if ENABLE_PER_RUN_TRACKING:
+                    kwargs['hdf5_path'] = hdf5_path
+                    kwargs['hdf5_lock'] = hdf5_lock
+                
+                returned_variant_id, lifespan_vector = run_variant_worker(**kwargs)
+
+                all_lifespans[variant_id] = lifespan_vector
+                print(" done")
+        
+        else:
+            completed = 0            
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = set()
+                for variant_id in range(N_VARIANTS):
+                    kwargs = {
+                        'variant_id': variant_id,
+                        'brain_module_name': brain_module_name,
+                        'genome': genomes[variant_id],
+                        'viz_enabled': False,  # Never viz in parallel (serial only)
+                        'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
+                        'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
+                        'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
+                        'max_ticks': MAX_TICKS,
+                        'n_runs': N_RUNS,
+                        'viz_fps': VIZ_FPS,
+                        'viz_brain_enabled': VIZ_BRAIN_ENABLED,
+                        'viz_brain_fps': VIZ_BRAIN_FPS,
+                        'grid_width': grid_width,
+                        'grid_height': grid_height,
+                        'start_pos': start_pos,
+                        'worm_speed': worm_speed,
+                        'worm_energy_capacity': worm_energy_capacity,
+                        'worm_metabolic_rate': worm_metabolic_rate,
+                        'worm_movement_cost': worm_movement_cost,
+                        'sensor_cfg': sensor_cfg,
+                        'feeding_cfg': feeding_cfg,
+                        'brain_cfg': brain_cfg,
+                        'variant_decision_seed': variant_decision_seeds[variant_id],
+                        'variant_noise_seed': variant_noise_seeds[variant_id],
+                        'run_seeds': run_seeds.copy(),
+                    }
+                    if ENABLE_PER_RUN_TRACKING:
+                        kwargs['hdf5_path'] = hdf5_path
+                        kwargs['hdf5_lock'] = hdf5_lock
+                    
+                    future = executor.submit(run_variant_worker, **kwargs)
+                    futures.add(future)
+                
+                for future in as_completed(futures):
+                    completed += 1
+                    returned_variant_id, lifespan_vector = future.result()
+                    all_lifespans[returned_variant_id] = lifespan_vector
+                    print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
+            
+            print()
+        # ============================================================
+        # 7. WRAP-UP
+        # ============================================================
+        if ENABLE_PER_RUN_TRACKING:
+            print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
+        else:
+            print(f"[batch] Simulation completed. (No data recording)")
+            if all_lifespans:
+                total_lifespans = sum(len(v) for v in all_lifespans.values())
+                print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
+    
+    except PauseManagerExit:
+        print("[EXIT] Batch simulation stopped by user.")
+    finally:
+        if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
+            cleanup_pause_manager()
+        
+    # the new eval_generation will end here. return of the function will be: all lifespans     
+    return all_lifespans
 
 # --- TRACKING VALIDATION ---
 
@@ -1150,14 +1338,7 @@ def main():
     
     # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
     feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
-    brain_cfg = {
-        'n_neurons': brain_n_neurons,
-        'threshold': brain_threshold,
-        'noise_level': brain_noise_level,
-        'sensory_mapping': brain_sensory_mapping,
-        'output_mapping': brain_output_mapping,
-        'max_decision_delay': brain_max_decision_delay,
-    }
+    brain_cfg = make_brain_cfg(brain_n_neurons, brain_threshold, brain_noise_level, brain_sensory_mapping, brain_output_mapping, brain_max_decision_delay)
     
     # ============================================================
     # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
@@ -1175,149 +1356,15 @@ def main():
     for variant_id in range(N_VARIANTS):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
-    
-    # ============================================================
-    # 5. ONE-TIME HDF5 INITIALIZATION (if tracking enabled)
-    # ============================================================
-    
-    if ENABLE_PER_RUN_TRACKING:
-        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
-        print(f"[batch] writing to {hdf5_path}\n")
-        create_hdf5_file(hdf5_path, cfg)
-        
-        # Save the actual tracking flags used (after validation/user input corrections)
-        with h5py.File(hdf5_path, 'a') as f:
-            f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
-            f.attrs['tracking_per_tick_enabled'] = int(ENABLE_PER_TICK_TRACKING)
-            f.attrs['tracking_heatmap_enabled'] = int(ENABLE_HEAT_MAP_TRACKING)
-        
-        # Create manager and lock for parallel HDF5 writing
-        manager = Manager()
-        hdf5_lock = manager.Lock()
 
 
-    # ============================================================
-    # 6. PREPARE WORKERS and , THEN EITHER PARALLEL OR SERIAL
-    # ============================================================
+    all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
-    # Draw RNG seeds for the N_RUNS to be handed to workers
-    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
-    # Save per-generation data to HDF5 (only if per-run tracking is enabled)
-    if ENABLE_PER_RUN_TRACKING:
-        # Save genome generation parameters to HDF5
-        save_genome_properties_to_hdf5(hdf5_path, genomes)
-        # Save run_seeds for reproducibility
-        with h5py.File(hdf5_path, 'a') as f:
-            f.create_dataset('run_seeds', data=run_seeds)
 
-    try:
-        # Run simulation
-        all_lifespans = {}
-        num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
-        if num_workers is None:
-            for variant_id in range(N_VARIANTS):
-                print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
-                
-                kwargs = {
-                    'variant_id': variant_id,
-                    'brain_module_name': brain_module_name,
-                    'genome': genomes[variant_id],
-                    'viz_enabled': VIZ_ENABLED,
-                    'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
-                    'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
-                    'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
-                    'max_ticks': MAX_TICKS,
-                    'n_runs': N_RUNS,
-                    'viz_fps': VIZ_FPS,
-                    'viz_brain_enabled': VIZ_BRAIN_ENABLED,
-                    'viz_brain_fps': VIZ_BRAIN_FPS,
-                    'grid_width': grid_width,
-                    'grid_height': grid_height,
-                    'start_pos': start_pos,
-                    'worm_speed': worm_speed,
-                    'worm_energy_capacity': worm_energy_capacity,
-                    'worm_metabolic_rate': worm_metabolic_rate,
-                    'worm_movement_cost': worm_movement_cost,
-                    'sensor_cfg': sensor_cfg,
-                    'feeding_cfg': feeding_cfg,
-                    'brain_cfg': brain_cfg,
-                    'variant_decision_seed': variant_decision_seeds[variant_id],
-                    'variant_noise_seed': variant_noise_seeds[variant_id],
-                    'run_seeds': run_seeds.copy(),
-                }
-                if ENABLE_PER_RUN_TRACKING:
-                    kwargs['hdf5_path'] = hdf5_path
-                    kwargs['hdf5_lock'] = hdf5_lock
-                
-                returned_variant_id, lifespan_vector = run_variant_worker(**kwargs)
 
-                all_lifespans[variant_id] = lifespan_vector
-                print(" done")
-        
-        else:
-            completed = 0            
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = set()
-                for variant_id in range(N_VARIANTS):
-                    kwargs = {
-                        'variant_id': variant_id,
-                        'brain_module_name': brain_module_name,
-                        'genome': genomes[variant_id],
-                        'viz_enabled': False,  # Never viz in parallel (serial only)
-                        'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
-                        'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
-                        'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
-                        'max_ticks': MAX_TICKS,
-                        'n_runs': N_RUNS,
-                        'viz_fps': VIZ_FPS,
-                        'viz_brain_enabled': VIZ_BRAIN_ENABLED,
-                        'viz_brain_fps': VIZ_BRAIN_FPS,
-                        'grid_width': grid_width,
-                        'grid_height': grid_height,
-                        'start_pos': start_pos,
-                        'worm_speed': worm_speed,
-                        'worm_energy_capacity': worm_energy_capacity,
-                        'worm_metabolic_rate': worm_metabolic_rate,
-                        'worm_movement_cost': worm_movement_cost,
-                        'sensor_cfg': sensor_cfg,
-                        'feeding_cfg': feeding_cfg,
-                        'brain_cfg': brain_cfg,
-                        'variant_decision_seed': variant_decision_seeds[variant_id],
-                        'variant_noise_seed': variant_noise_seeds[variant_id],
-                        'run_seeds': run_seeds.copy(),
-                    }
-                    if ENABLE_PER_RUN_TRACKING:
-                        kwargs['hdf5_path'] = hdf5_path
-                        kwargs['hdf5_lock'] = hdf5_lock
-                    
-                    future = executor.submit(run_variant_worker, **kwargs)
-                    futures.add(future)
-                
-                for future in as_completed(futures):
-                    completed += 1
-                    returned_variant_id, lifespan_vector = future.result()
-                    all_lifespans[returned_variant_id] = lifespan_vector
-                    print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
-            
-            print()
-        
-        
-        # ============================================================
-        # 7. WRAP-UP
-        # ============================================================
-        if ENABLE_PER_RUN_TRACKING:
-            print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
-        else:
-            print(f"[batch] Simulation completed. (No data recording)")
-            if all_lifespans:
-                total_lifespans = sum(len(v) for v in all_lifespans.values())
-                print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
-    
-    except PauseManagerExit:
-        print("[EXIT] Batch simulation stopped by user.")
-    finally:
-        if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
-            cleanup_pause_manager()
+
 
 
 if __name__ == "__main__":
