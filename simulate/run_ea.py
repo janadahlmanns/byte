@@ -122,81 +122,30 @@ def load_genome_generator(genome_type: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
-def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
+def check_ea_input_parameters(experiment_cfg):
     """
-    Validate tracking flags and adjust if necessary.
+    Validate that all required evolutionary algorithm parameters are present.
     
-    Per-run tracking is a prerequisite for detailed tracking (per-tick and heatmap).
-    If the user specifies detailed tracking without per-run tracking, ask them to choose:
-    1. Exit and reconsider configuration
-    2. Enable per-run tracking (keep the detailed flags)
-    3. Disable all detailed tracking (keep only lifespan)
+    This function checks that the 'evolutionary_algorithm' section exists and
+    contains all required parameters with no defaults allowed.
     
     Args:
-        enable_per_run: Whether per-run tracking is enabled
-        enable_per_tick: Whether per-tick tracking is enabled
-        enable_heat_map: Whether heatmap tracking is enabled
+        experiment_cfg: The 'experiment' section of the YAML config
     
-    Returns: Tuple of (should_continue, corrected_enable_per_run, corrected_enable_per_tick, corrected_enable_heat_map)
+    Raises:
+        KeyError: If any required EA parameter is missing
     """
-    # Check for invalid configuration: detailed tracking without per-run tracking
-    if not enable_per_run and (enable_per_tick or enable_heat_map):
-        print("\n" + "="*80)
-        print("[ERROR] Invalid tracking configuration:")
-        print("="*80)
-        print(f"  ENABLE_PER_RUN_TRACKING = {enable_per_run}")
-        print(f"  ENABLE_PER_TICK_TRACKING = {enable_per_tick}")
-        print(f"  ENABLE_HEAT_MAP_TRACKING = {enable_heat_map}")
-        print("\n[REASON] Per-tick and heatmap tracking can only be enabled if per-run")
-        print("tracking is also enabled. They require per-run data structures.")
-        print("\n[OPTIONS] Choose one of the following:")
-        print("  [1] Exit execution and reconsider your configuration")
-        print("  [2] Enable per-run tracking (keep the detailed flags as-is)")
-        print("  [3] Disable all detailed tracking (record only lifespan)")
-        print("="*80)
-        
-        while True:
-            response = input("\nEnter your choice (1-3): ").strip()
-            if response == '1':
-                print("[EXIT] Execution stopped. Please fix your configuration.\n")
-                return (False, False, False, False)
-            elif response == '2':
-                print("[CONFIG] Enabling per-run tracking with detailed flags enabled.")
-                return (True, True, enable_per_tick, enable_heat_map)
-            elif response == '3':
-                print("[CONFIG] Disabling all detailed tracking. Only lifespan will be recorded.")
-                return (True, False, False, False)
-            else:
-                print("[ERROR] Invalid choice. Enter 1, 2, or 3.")
+    # REQUIRED: evolutionary_algorithm section must be present
+    try:
+        ea_cfg = experiment_cfg["evolutionary_algorithm"]
+    except KeyError:
+        raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed.")
     
-    # No conflict: return original flags unchanged
-    return (True, enable_per_run, enable_per_tick, enable_heat_map)
-
-def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
-    """
-    Validate visualization flags and adjust if necessary.
-    
-    If visualization is enabled for a large batch (total_simulations > 2),
-    warn the user that it will be slow and ask whether to disable it.
-    
-    Args:
-        n_variants: Number of variants
-        n_runs: Number of runs per variant
-        viz_enabled: Whether world visualization is enabled
-        viz_brain_enabled: Whether brain visualization is enabled
-    
-    Returns: Tuple of (updated_viz_enabled, updated_viz_brain_enabled)
-    """
-    total_simulations = n_variants * n_runs
-    if total_simulations > 2 and viz_enabled:
-        print(f"\n[WARNING] Visualization is enabled for {n_variants} variants × {n_runs} runs = {total_simulations} total simulations.")
-        print("This will be VERY SLOW. Batch runs typically disable visualization.")
-        response = input("Continue with visualization? (y/n): ").strip().lower()
-        if response != 'y':
-            print("[INFO] Disabling visualization for this batch run.")
-            return False, False
-    
-    return viz_enabled, viz_brain_enabled
+    # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_types", "mutation_seed"]
+    for param in required_params:
+        if param not in ea_cfg:
+            raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
 
 
 # ============================================================
@@ -232,46 +181,10 @@ def main():
     experiment_cfg = cfg["experiment"]
     brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
     
-    # REQUIRED: evolutionary_algorithm section must be present
-    try:
-        ea_cfg = experiment_cfg["evolutionary_algorithm"]
-    except KeyError:
-        raise KeyError("[ERROR] REQUIRED: 'evolutionary_algorithm' section not found in config. This is mandatory for run_ea.py. Please add it to your YAML with all required parameters: population_size, num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed.")
-    
-    # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    try:
-        POPULATION_SIZE = experiment_cfg["population_size"]
-    except KeyError as e:
-        raise KeyError(f"[ERROR] REQUIRED parameter missing: population_size in 'experiment' section")
-    
-    try:
-        NUM_GENERATIONS = ea_cfg["num_generations"]
-        ELITE_SIZE = ea_cfg["elite_size"]
-        ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
-        MUTATION_RATE = ea_cfg["mutation_rate"]
-        MUTATION_TYPES = ea_cfg["mutation_types"]
-        MUTATION_SEED = ea_cfg["mutation_seed"]
-    except KeyError as e:
-        raise KeyError(f"[ERROR] REQUIRED EA parameter missing: {e}. Please ensure all of these are specified in 'evolutionary_algorithm' section: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed")
-    
-    print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
-    print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
-    
-    # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
-    SIMULATION_SEED = experiment_cfg["simulation_seed"]
-    GENERATION_SEED = cfg["world"]["generation_seed"]
-    
-    # Build independent RNG streams for decision-making, neuron noise, and mutations
-    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
-    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-    streams_sim = seed_seq_sim.spawn(3)  # Changed from 2 to 3 to add mutation stream
-    rng_decision = np.random.default_rng(streams_sim[0])
-    rng_neuron_noise = np.random.default_rng(streams_sim[1])
-    rng_mutation = np.random.default_rng(streams_sim[2])  # New mutation RNG stream
-    
-    # Build RNG stream for world (food distribution)
-    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
-    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
+    # Check if EA is enabled and validate parameters
+    EA_ENABLED = experiment_cfg["evolutionary_algorithm_enabled"]
+    if EA_ENABLED:
+        check_ea_input_parameters(experiment_cfg)
     
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
@@ -286,6 +199,7 @@ def main():
         # For lookup or other genome types, wiring seed is not used
         WIRING_RANDOMIZATION_SEED = 0
     
+    POPULATION_SIZE = experiment_cfg["population_size"]
     MAX_TICKS = experiment_cfg["max_ticks"]
     N_RUNS = experiment_cfg["n_runs"]
     
@@ -296,7 +210,35 @@ def main():
     ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
     ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
     ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
+    
+    # Extract EA parameters if enabled
+    if EA_ENABLED:
+        ea_cfg = experiment_cfg["evolutionary_algorithm"]
+        NUM_GENERATIONS = ea_cfg["num_generations"]
+        ELITE_SIZE = ea_cfg["elite_size"]
+        ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
+        MUTATION_RATE = ea_cfg["mutation_rate"]
+        MUTATION_TYPES = ea_cfg["mutation_types"]
+        MUTATION_SEED = ea_cfg["mutation_seed"]
+        
+        print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
+        print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
 
+    # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
+    SIMULATION_SEED = experiment_cfg["simulation_seed"]
+    GENERATION_SEED = cfg["world"]["generation_seed"]
+    
+    # Build independent RNG streams for decision-making, neuron noise, and mutations
+    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(3)  # 3 streams: decision, neuron_noise, mutation
+    rng_decision = np.random.default_rng(streams_sim[0])
+    rng_neuron_noise = np.random.default_rng(streams_sim[1])
+    rng_mutation = np.random.default_rng(streams_sim[2])
+    
+    # Build RNG stream for world (food distribution)
+    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
+    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
 
     # ============================================================
     # 2. VALIDATION & USER CHECKS
