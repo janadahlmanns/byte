@@ -4,35 +4,16 @@
 import sys
 import argparse
 import importlib
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Manager
 
 import yaml
 import numpy as np
-import h5py
 
-from mvb.world import World
-from mvb.feeding import FeedingConfig, seed_food
-from mvb.worm import Worm, WormConfig
-from mvb.world_renderer_qt import QtRenderer
-from mvb.brain_renderer_qt import BrainQtRenderer
-from .pause_manager import init_pause_manager, cleanup_pause_manager, get_pause_manager, PauseManagerExit
-from .hdf5_utils import (
-    create_hdf5_file,
-    save_variant_summary_to_hdf5,
-    save_wiring_to_hdf5,
-    save_modulation_to_hdf5,
-    save_heatmaps_to_hdf5,
-    save_per_tick_to_hdf5,
-    save_genome_properties_to_hdf5,
-)
+from mvb.simulation_API import eval_generation
+from .pause_manager import init_pause_manager, cleanup_pause_manager
 
 
-# --- COMMAND-LINE ARGUMENT PARSING ---
+
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -48,7 +29,6 @@ Examples:
     parser.add_argument('--config', type=str, required=True,
                         help='Name of the experiment config file (without .yaml/.yml extension)')
     return parser.parse_args()
-
 
 def resolve_config_path(config_name: str, config_dir: str = "configs/experiments") -> str:
     """Resolve a config name to a full path.
@@ -80,7 +60,6 @@ def resolve_config_path(config_name: str, config_dir: str = "configs/experiments
     
     return str(full_path)
 
-
 def find_available_configs(config_dir: str = "configs/experiments") -> list:
     """Find all YAML configuration files in the configs/experiments directory.
     
@@ -98,7 +77,6 @@ def find_available_configs(config_dir: str = "configs/experiments") -> list:
     # Return just the names without extensions
     return [f.stem for f in yaml_files]
 
-
 def load_config(config_name: str):
     """Load YAML configuration file from configs/experiments directory.
     
@@ -109,90 +87,10 @@ def load_config(config_name: str):
         Parsed YAML configuration as dict
     """
     config_path = resolve_config_path(config_name)
-    if not os.path.exists(config_path):
+    if not Path(config_path).exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-# --- HELPER FUNCTIONS ---
-
-def get_num_workers(viz_enabled, viz_brain_enabled):
-    """Determine number of worker processes and handle viz/serial execution.
-    
-    If visualization is enabled, forces serial execution and initializes pause manager.
-    Otherwise, reserves 2 cores for system tasks and returns worker count.
-    Returns None if system has ≤2 cores or if visualization is enabled (force serial).
-    
-    Args:
-        viz_enabled: Whether world visualization is enabled
-        viz_brain_enabled: Whether brain visualization is enabled
-    
-    Returns:
-        Number of workers to use, or None for serial execution
-    """
-    # Force serial execution if any visualization is enabled
-    if viz_enabled or viz_brain_enabled:
-        print("[INFO] Visualization enabled. Running serially.")
-        init_pause_manager()
-        return None
-    
-    # Determine parallel worker count
-    try:
-        available_cores = os.cpu_count()
-        if available_cores is None or available_cores <= 2:
-            print("[INFO] Insufficient CPU cores. Running serially.")
-            return None
-        
-        num_workers = max(1, available_cores - 2)
-        print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
-        return num_workers
-    except Exception:
-        print("[INFO] Insufficient CPU cores. Running serially.")
-        return None
-
-def build_rng_streams(seed: int):
-    """Build properly independent RNG streams using SeedSequence.
-    
-    Creates three independent random streams from a single seed, suitable for
-    continuous use throughout the batch (not reset between runs).
-    
-    Args:
-        seed: Master seed for the batch
-    
-    Returns:
-        Tuple of (rng_world, rng_decision, rng_neuron_noise) as independent streams
-    """
-    seed = int(seed)
-    seed_seq = np.random.SeedSequence(seed)
-    # Spawn 3 truly independent streams
-    streams = seed_seq.spawn(3)
-    return (
-        np.random.default_rng(streams[0]),
-        np.random.default_rng(streams[1]),
-        np.random.default_rng(streams[2]),
-    )
-
-# --- helpers ---
-
-def load_brain_module(version: str):
-    module_name = f"mvb.brains.decisionmaking_{version}"
-    module = importlib.import_module(module_name)
-    if not hasattr(module, "decide"):
-        raise AttributeError(f"{module_name} has no decide()")
-    return module
-
-def load_brain_init(brain_init_name: str, wiring_seed: int = None, **wiring_params):
-    """Load brain initialization config. Returns brain spec or None."""
-    if brain_init_name.lower() == "none" or not brain_init_name:
-        return None
-    module_name = f"configs.brain_init_{brain_init_name}"
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        raise ImportError(f"Could not find brain init module '{module_name}'.")
-    if not hasattr(module, "build_brain_spec"):
-        raise AttributeError(f"Brain init module '{module_name}' has no 'build_brain_spec' function.")
-    return module.build_brain_spec(wiring_seed=wiring_seed, **wiring_params)
 
 def load_genome_generator(genome_type: str):
     """Load genome generator function from mvb.genome module.
@@ -227,702 +125,6 @@ def load_genome_generator(genome_type: str):
         return getattr(genome_module, function_name)
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
-
-def make_feeding_cfg(feeding_paradigm, initial_fraction_per_cell, regrow_time):
-    return FeedingConfig(
-        feeding_paradigm=feeding_paradigm,
-        initial_fraction_per_cell=initial_fraction_per_cell,
-        regrow_time=regrow_time,
-    )
-
-def make_sensor_cfg(cfg_yaml):
-    return cfg_yaml.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
-
-def make_decision_cfg(cfg_yaml):
-    return str(cfg_yaml["worm"]["decisionmaking"]["version"])
-
-def reset_sim(world, feeding_cfg, rng_food, worm):
-    world.reset_food()
-    seed_food(world, feeding_cfg, rng_food)
-    worm.reset()
-
-
-def _rename_world_config_keys(cfg: dict) -> dict:
-    """
-    Rename world config keys to include prefixes for HDF5 attribute clarity.
-    
-    Transforms keys like:
-      experiment.simulation_seed → simulation_seed
-      world.grid_width → world_grid_width
-      world.generation_seed → world_generation_seed
-      food.feeding_paradigm.initial → feeding_initial
-      worm.speed → worm_speed
-      sensors.active → worm_sensors_active
-      decisionmaking.version → decisionmaking_version
-    
-    Skips the 'viz' section entirely.
-    """
-    renamed = {}
-    
-    # Process experiment section
-    if "experiment" in cfg:
-        if "simulation_seed" in cfg["experiment"]:
-            renamed["simulation_seed"] = cfg["experiment"]["simulation_seed"]
-    
-    # Process world section
-    if "world" in cfg:
-        for key, val in cfg["world"].items():
-            renamed[f"world_{key}"] = val
-    
-    # Process food section - flatten feeding_paradigm keys
-    if "food" in cfg:
-        food_cfg = cfg["food"]
-        if "feeding_paradigm" in food_cfg:
-            for key, val in food_cfg["feeding_paradigm"].items():
-                renamed[f"feeding_{key}"] = val
-    
-    # Process worm section
-    if "worm" in cfg:
-        for key, val in cfg["worm"].items():
-            renamed[f"worm_{key}"] = val
-    
-    # Process sensors section
-    if "sensors" in cfg:
-        for key, val in cfg["sensors"].items():
-            renamed[f"worm_sensors_{key}"] = val
-    
-    # Process decisionmaking section
-    if "decisionmaking" in cfg:
-        for key, val in cfg["decisionmaking"].items():
-            renamed[f"decisionmaking_{key}"] = val
-    
-    return renamed
-
-
-def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) -> float:
-    """Get weight of specific neuron-to-neuron connection from brain state.
-    
-    Args:
-        brain_module: The brain module (e.g., decisionmaking_plasticity)
-        src_neuron_id: Source neuron ID
-        tgt_neuron_id: Target neuron ID
-    
-    Returns:
-        Current weight of the connection, or 0.0 if not found
-    """
-    if not hasattr(brain_module, '_brain_state'):
-        return 0.0
-    
-    brain_state = brain_module._brain_state
-    if brain_state is None:
-        return 0.0
-    
-    # Search through connections for the one from src to tgt
-    for conn in brain_state.connections:
-        # Check if this is a neuron-to-neuron connection (not input source)
-        if hasattr(conn.source, 'id'):
-            if conn.source.id == src_neuron_id:
-                # Check target by finding which neuron has this in its incoming list
-                for neuron in brain_state.neurons:
-                    if neuron.id == tgt_neuron_id and conn in neuron.incoming:
-                        return conn.weight
-    
-    return 0.0
-
-
-# --- output + metrics ---
-
-def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
-    """Create HDF5 file path for experiment.
-    
-    Args:
-        experiment_folder: Base folder for experiment output
-        simulation_name: Name of the simulation
-    
-    Returns:
-        Path to HDF5 file for saving all results.
-    """
-    base = Path(experiment_folder)
-    base.mkdir(parents=True, exist_ok=True)
-
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    hdf5_path = base / f"{ts}_{simulation_name}.h5"
-    
-    return hdf5_path
-
-
-
-
-
-@dataclass
-class MetricsRecorder:
-    per_tick_data: np.ndarray = None
-    per_tick_count: int = 0
-    connections_to_track: list[tuple] = None
-    start_y: int = 0  # Starting Y position for manhattan distance calculation
-    start_x: int = 0  # Starting X position for manhattan distance calculation
-    prev_y: int = 0
-    prev_x: int = 0
-    prev_eats: int = 0  # Track food consumption this tick
-    prev_action: tuple = None  # Track which movement happened
-    grid_height: int = 0  # World grid height for heatmap indexing
-    grid_width: int = 0  # World grid width for heatmap indexing
-    staying_heatmap: np.ndarray = None  # 2D array (height, width) - field ticks spent
-    moves_north: int = 0
-    moves_south: int = 0
-    moves_east: int = 0
-    moves_west: int = 0
-    food_sensed_north: int = 0
-    food_sensed_east: int = 0
-    food_sensed_south: int = 0
-    food_sensed_west: int = 0
-    prev_on_food: bool = False  # Track if worm was on food before the action
-    prev_action_was_decision: bool = False  # Track if previous action was a decision
-    decisions: int = 0
-    correct_decisions: int = 0
-    enable_per_tick_tracking: bool = True  # Whether to track per-tick metrics
-    enable_heat_map_tracking: bool = True  # Whether to track heatmaps
-
-    @classmethod
-    def empty(cls, worm: Worm, genome, enable_per_run_tracking=True, enable_per_tick_tracking=True, enable_heat_map_tracking=True, max_ticks=2000):
-        """Initialize recorder with genome and worm state.
-        
-        If enable_per_run_tracking is False, only lifetime metrics are tracked.
-        
-        Args:
-            worm: Worm instance
-            genome: Genome dict with connection_weights
-            enable_per_run_tracking: Whether to track per-run metrics
-            enable_per_tick_tracking: Whether to track per-tick data
-            enable_heat_map_tracking: Whether to track heatmaps
-            max_ticks: Maximum simulation ticks
-        """
-        connection_weights = genome["connection_weights"]
-        
-        connections_to_track = []
-        for src in range(connection_weights.shape[0]):
-            for tgt in range(connection_weights.shape[1]):
-                if connection_weights[src, tgt, 0] != 0.0:
-                    connections_to_track.append((src, tgt))
-        
-        grid_height = worm.world.height
-        grid_width = worm.world.width
-                
-        if enable_per_run_tracking:
-            kwargs = {
-            'per_tick_count': 0,
-            'connections_to_track': connections_to_track,
-            'start_y': worm.y,
-            'start_x': worm.x,
-            'prev_y': worm.y,
-            'prev_x': worm.x,
-            'prev_eats': worm.eats,
-            'prev_action': None,
-            'grid_height': grid_height,
-            'grid_width': grid_width,
-            'moves_north': 0,
-            'moves_south': 0,
-            'moves_east': 0,
-            'moves_west': 0,
-            'food_sensed_north': 0,
-            'food_sensed_east': 0,
-            'food_sensed_south': 0,
-            'food_sensed_west': 0,
-            'prev_on_food': False,
-            'prev_action_was_decision': False,
-            'decisions': 0,
-            'correct_decisions': 0,
-            'enable_per_tick_tracking': enable_per_tick_tracking,
-            'enable_heat_map_tracking': enable_heat_map_tracking,
-            }
-            if enable_per_tick_tracking:
-                dtype_fields = [
-                    ('tick', 'i4'),
-                    ('food_sensed_N', 'u1'),
-                    ('food_sensed_E', 'u1'),
-                    ('food_sensed_S', 'u1'),
-                    ('food_sensed_W', 'u1'),
-                    ('movement', 'S4'),
-                    ('food_consumed', 'u1'),
-                    ('energy', 'f4'),
-                    ('manhattan_dist', 'u2'),
-                    ('decision_made', 'u1'),
-                ]
-                for src, tgt in connections_to_track:
-                    dtype_fields.append((f'{src}_{tgt}', 'f4'))
-                kwargs['per_tick_data'] = np.zeros(max_ticks, dtype=dtype_fields)
-            
-            if enable_heat_map_tracking:
-                staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
-                kwargs['staying_heatmap'] = staying_heatmap
-            return cls(**kwargs)
-        else:
-            return cls()        
-        
-    def reset(self):
-        """Reset all counters and state for a new run while keeping arrays allocated."""
-        self.per_tick_count = 0
-        self.prev_y = self.start_y
-        self.prev_x = self.start_x
-        self.prev_eats = 0
-        self.prev_action = None
-        self.moves_north = 0
-        self.moves_south = 0
-        self.moves_east = 0
-        self.moves_west = 0
-        self.food_sensed_north = 0
-        self.food_sensed_east = 0
-        self.food_sensed_south = 0
-        self.food_sensed_west = 0
-        self.prev_on_food = False
-        self.prev_action_was_decision = False
-        self.decisions = 0
-        self.correct_decisions = 0
-        # Clear array data if allocated
-        if self.per_tick_data is not None:
-            self.per_tick_data.fill(0)
-        if self.staying_heatmap is not None:
-            self.staying_heatmap.fill(0)
-
-    def record(self, worm: Worm):
-        """Record metrics for this tick."""
-        dy = worm.y - self.prev_y
-        dx = worm.x - self.prev_x
-        
-        if dy > 0:
-            self.moves_south += 1
-        elif dy < 0:
-            self.moves_north += 1
-        
-        if dx > 0:
-            self.moves_east += 1
-        elif dx < 0:
-            self.moves_west += 1
-        
-        # Check if food was sensed in any direction (regardless of other directions)
-        sense = getattr(worm, "sensory_information", {})
-        food_north = sense.get("food_north", 0.0) > 0.0
-        food_east = sense.get("food_east", 0.0) > 0.0
-        food_south = sense.get("food_south", 0.0) > 0.0
-        food_west = sense.get("food_west", 0.0) > 0.0
-        
-        # Count food sensing occurrences
-        if food_north:
-            self.food_sensed_north += 1
-        if food_east:
-            self.food_sensed_east += 1
-        if food_south:
-            self.food_sensed_south += 1
-        if food_west:
-            self.food_sensed_west += 1
-        
-        # Track decision-making accuracy using new rules:
-        # Rule 1: Stay is a decision if worm is NOT on food CURRENTLY (before the stay action)
-        # Rule 2: Movement is a decision if ANY food is sensed on the 5 current sensing fields
-        # Rule 3: Decision is correct if it was deemed a decision AND worm is on food in NEXT tick
-        on_food = sense.get("on_food", 0) > 0
-        any_food_sensed = food_north or food_east or food_south or food_west
-        
-        # Check if the previous action was correct (in this tick after previous action)
-        if self.prev_action_was_decision and on_food:
-            self.correct_decisions += 1
-        
-        # Determine if current action (about to happen) is a decision
-        # We use prev_on_food because the decision is made BEFORE the action
-        stayed = (dy == 0 and dx == 0)
-        
-        is_decision = False
-        if stayed:
-            # Stay is a decision only if worm is NOT on food CURRENTLY (before the stay)
-            is_decision = not self.prev_on_food
-        else:
-            # Movement is a decision if ANY food is sensed on the 5 current sensing fields
-            is_decision = any_food_sensed
-        
-        if is_decision:
-            self.decisions += 1
-        
-        # Update state for next tick
-        self.prev_on_food = on_food
-        self.prev_action_was_decision = is_decision
-        
-        # Track comprehensive per-tick data (if enabled)
-        if self.enable_per_tick_tracking and self.per_tick_data is not None:
-            # Determine movement direction from previous action
-            movement_str = "stay"
-            if self.prev_action is not None:
-                if self.prev_action[0] == "move":
-                    move_y, move_x = self.prev_action[1]
-                    if move_y < self.prev_y:
-                        movement_str = "N"
-                    elif move_y > self.prev_y:
-                        movement_str = "S"
-                    elif move_x > self.prev_x:
-                        movement_str = "E"
-                    elif move_x < self.prev_x:
-                        movement_str = "W"
-            
-            # Check if food was consumed this tick
-            food_consumed = 1 if worm.eats > self.prev_eats else 0
-            
-            # Calculate manhattan distance from start position
-            manhattan_dist = abs(worm.y - self.start_y) + abs(worm.x - self.start_x)
-            
-            # Check if decision was made (action is not None)
-            decision_made = 1 if worm.action is not None else 0
-            
-            # Populate array at current tick index
-            tick_idx = worm.ticks
-            self.per_tick_data[tick_idx] = (
-                worm.ticks,
-                int(food_north),
-                int(food_east),
-                int(food_south),
-                int(food_west),
-                movement_str,
-                food_consumed,
-                worm.energy,
-                manhattan_dist,
-                decision_made,
-            ) + tuple(get_connection_weight(worm.brain, src, tgt) for src, tgt in self.connections_to_track)
-            
-            self.per_tick_count = tick_idx + 1
-        
-        if self.enable_heat_map_tracking and self.staying_heatmap is not None:
-            self.staying_heatmap[worm.y, worm.x] += 1
-        
-        self.prev_y = worm.y
-        self.prev_x = worm.x
-        self.prev_eats = worm.eats
-        self.prev_action = worm.action
-
-
-
-# Implementation of section 5b (Simulate runs)
-def run_variant_worker(
-    variant_id,
-    brain_module_name,
-    genome,
-    viz_enabled,
-    enable_per_run_tracking,
-    enable_per_tick_tracking,
-    enable_heat_map_tracking,
-    max_ticks,
-    n_runs,
-    viz_fps,
-    viz_brain_enabled,
-    viz_brain_fps,
-    grid_width,
-    grid_height,
-    start_pos,
-    worm_speed,
-    worm_energy_capacity,
-    worm_metabolic_rate,
-    worm_movement_cost,
-    sensor_cfg,
-    feeding_cfg,
-    brain_n_neurons,
-    brain_threshold,
-    brain_noise_level,
-    brain_sensory_mapping,
-    brain_output_mapping,
-    brain_max_decision_delay,
-    variant_decision_seed,
-    variant_noise_seed,
-    run_seeds,
-    has_brain_config,
-    hdf5_path=None,
-    hdf5_lock=None,
-):
-    """Execute a single variant's simulation runs and write data directly to HDF5.
-    
-    Args:
-        variant_id: Index of this variant
-        brain_module_name: Name of brain module to import
-        genome: Pre-generated genome dict with connection_weights, modulation_spec, etc.
-        viz_enabled: Whether to create and display renderer visualization
-        enable_per_run_tracking: Whether to track per-run metrics
-        enable_per_tick_tracking: Whether to track per-tick data
-        enable_heat_map_tracking: Whether to track heatmaps
-        max_ticks: Maximum simulation ticks
-        n_runs: Number of runs per variant
-        viz_fps: World visualization FPS
-        viz_brain_enabled: Whether to enable brain visualization
-        viz_brain_fps: Brain visualization FPS
-        grid_width: World grid width
-        grid_height: World grid height
-        start_pos: Worm starting position (tuple)
-        worm_speed: Worm speed parameter
-        worm_energy_capacity: Worm energy capacity
-        worm_metabolic_rate: Worm metabolic rate
-        worm_movement_cost: Worm movement cost
-        sensor_cfg: Sensor configuration list
-        feeding_cfg: FeedingConfig object with feeding_paradigm, initial_fraction_per_cell, regrow_time
-        brain_n_neurons: Number of neurons in brain
-        brain_threshold: Neuron threshold (applied to all neurons)
-        brain_noise_level: Neuron noise level (applied to all neurons)
-        brain_sensory_mapping: Sensory input mapping dict
-        brain_output_mapping: Output neuron mapping dict
-        brain_max_decision_delay: Maximum decision delay
-        variant_decision_seed: RNG seed for decision-making in this variant
-        variant_noise_seed: RNG seed for neuron noise in this variant
-        run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
-        has_brain_config: Whether brain is enabled
-        hdf5_path: Path to HDF5 file to write to
-        hdf5_lock: multiprocessing.Lock() for synchronized writes
-    """
-    
-    # ============================================================
-    # 6a: Build RNG streams for this variant (persistent across all runs)
-    # ============================================================
-    rng_worker_decision = np.random.default_rng(variant_decision_seed)
-    rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
-    
-    # ============================================================
-    # 6b: Load Brain Module
-    # ============================================================
-    brain_module = load_brain_module(brain_module_name)
-
-    # ============================================================
-    # 6c: Create temporary world and worm (will be reset per run so seed doesnt matter)
-    # ============================================================
-    world = World(grid_width, grid_height, start_pos, 0)
-    world.feeding_cfg = feeding_cfg
-    
-    worm = Worm(worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, world)
-    worm.active_sensors = sensor_cfg
-    worm.brain = brain_module
-
-    # ============================================================
-    # 6d: Prepare simulation arrays
-    # ============================================================
-
-    # Always allocate lightweight lifespan array
-    dtype_lifespan = [('lifetime_ticks', 'i4')]
-    lifespan_array = np.zeros(n_runs, dtype=dtype_lifespan)
-
-    # Conditionally allocate full summary array (only if per-run tracking enabled)
-    if enable_per_run_tracking:
-        # Extract genome components for tracking
-        connection_weights = genome["connection_weights"]
-        connections_to_track = []
-        for src in range(connection_weights.shape[0]):
-            for tgt in range(connection_weights.shape[1]):
-                if connection_weights[src, tgt, 0] != 0.0:
-                    connections_to_track.append((src, tgt))
-        summary_array = None
-        dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
-                         ('distance', 'i4'), ('final_energy', 'f4'),
-                         ('moves_north', 'i4'), ('moves_south', 'i4'), ('moves_east', 'i4'), ('moves_west', 'i4'),
-                         ('food_sensed_north', 'i4'), ('food_sensed_east', 'i4'), ('food_sensed_south', 'i4'), ('food_sensed_west', 'i4'),
-                         ('decisions', 'i4'), ('correct_decisions', 'i4')]
-        summary_array = np.zeros(n_runs, dtype=dtype_summary)
-
-        # Pre-allocate wiring array with columns for all run final weights
-        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
-        for run_id in range(n_runs):
-            dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
-        wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
-
-        for idx, (src, tgt) in enumerate(connections_to_track):
-            wiring_array[idx]['src'] = src
-            wiring_array[idx]['tgt'] = tgt
-            wiring_array[idx]['weight_initial'] = connection_weights[src, tgt, 0]
-
-        # Pre-allocate modulation array
-        dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
-        modulation_list = []
-        modulator_spec = genome["modulation_spec"]
-        for (target_src, target_tgt), modulators in modulator_spec.items():
-            for mod_src, mod_weight in modulators:
-                modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
-        modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
-
-        # Accumulate per-tick and heatmap data for batch write after all runs
-        per_tick_all_runs = {}
-        heatmaps_all_runs = {}
-
-        # ============================================================
-        # 6e: Create MetricsRecorder to track per-tick data
-        # ============================================================
-        rec = MetricsRecorder.empty(worm, genome, enable_per_run_tracking, enable_per_tick_tracking, enable_heat_map_tracking, max_ticks)
-        rec.record(worm)
-    
-    # ============================================================
-    # 6f: Simulate runs. For each run do:
-    # ============================================================
-    for run_id in range(n_runs):
-
-        # ============================================================
-        # 6f1: Set world seed for this run
-        # ============================================================
-        rng_world_run = np.random.default_rng(run_seeds[run_id])
-
-        # ============================================================
-        # 6f2: Call brain_module.init_brain(genome, brain_cfg, rng_noise) for a clean reset
-        # ============================================================
-        brain_cfg_dict = {
-            'n_neurons': brain_n_neurons,
-            'threshold': brain_threshold,
-            'noise_level': brain_noise_level,
-            'sensory_mapping': brain_sensory_mapping,
-            'output_mapping': brain_output_mapping,
-            'max_decision_delay': brain_max_decision_delay,
-        }
-        brain_module.init_brain(genome, brain_cfg_dict, rng_worker_neuron_noise)
-
-        # ============================================================
-        # 6f3: Reset worm & simulation, rest world with the according run rng 
-        # ============================================================
-        world.reset_food()
-        seed_food(world, feeding_cfg, rng_world_run)
-        worm.reset()
-        if enable_per_run_tracking:
-            rec.reset()
-
-        # Create world renderer independently if world visualization is enabled
-        if viz_enabled:
-            try:
-                if viz_fps > 0:
-                    worm.renderer = QtRenderer(world, worm, viz_fps)
-                    print(f"[viz] Created world renderer at {viz_fps} FPS")
-                else:
-                    worm.renderer = None
-            except Exception as e:
-                print(f"[WARNING] Failed to create world renderer: {e}.")
-                worm.renderer = None
-        else:
-            worm.renderer = None
-        
-        # Create brain renderer independently if brain visualization is enabled
-        if viz_brain_enabled:
-            try:
-                if viz_brain_fps > 0:
-                    brain_renderer = BrainQtRenderer(fps=viz_brain_fps)
-                    brain_module._brain_renderer = brain_renderer
-                    print(f"[viz] Created brain renderer at {viz_brain_fps} FPS")
-                else:
-                    brain_module._brain_renderer = None
-            except Exception as e:
-                print(f"[WARNING] Failed to create brain renderer: {e}.")
-                brain_module._brain_renderer = None
-        else:
-            brain_module._brain_renderer = None
-
-        # Get pause manager for checkpoints (if any visualization enabled)
-        pause_mgr = None
-        if viz_enabled or viz_brain_enabled:
-            try:
-                pause_mgr = get_pause_manager()
-            except RuntimeError:
-                pass
-
-        # ============================================================
-        # 6f4: Simulate
-        # ============================================================
-        try:
-            while worm.alive and worm.ticks < max_ticks:
-                # Check pause/exit at start of each tick
-                if pause_mgr is not None:
-                    pause_mgr.check_pause()
-                
-                world.step()
-                worm.step_day(rng_worker_decision)
-                worm.ticks += 1
-                if enable_per_tick_tracking or enable_heat_map_tracking:
-                    rec.record(worm)
-                
-                # Double-check exit flag after each step
-                if pause_mgr is not None and pause_mgr.should_exit():
-                    raise PauseManagerExit("Exit requested during simulation")
-                
-                # Wait to maintain FPS if visualization is enabled
-                if worm.renderer is not None:
-                    worm.renderer.wait_frame()
-        except PauseManagerExit:
-            pass  # Exit simulation gracefully
-        
-        if enable_per_tick_tracking and rec.per_tick_data is not None:
-            per_tick_data = rec.per_tick_data[:rec.per_tick_count]
-            per_tick_all_runs[run_id] = per_tick_data
-        
-        if enable_heat_map_tracking and rec.staying_heatmap is not None:
-            heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
-        
-        # Always record lifespan
-        lifespan_array[run_id]['lifetime_ticks'] = worm.ticks
-        
-        # Conditionally record full summary metrics
-        if enable_per_run_tracking:
-            for idx, (src, tgt) in enumerate(connections_to_track):
-                w = get_connection_weight(worm.brain, src, tgt)
-                wiring_array[idx][f'weight_final_run_{run_id:04d}'] = w
-            
-            summary_array[run_id]['run_id'] = run_id
-            summary_array[run_id]['lifetime_ticks'] = worm.ticks
-            summary_array[run_id]['foods'] = worm.eats
-            summary_array[run_id]['distance'] = worm.distance
-            summary_array[run_id]['final_energy'] = worm.energy
-            summary_array[run_id]['moves_north'] = rec.moves_north
-            summary_array[run_id]['moves_south'] = rec.moves_south
-            summary_array[run_id]['moves_east'] = rec.moves_east
-            summary_array[run_id]['moves_west'] = rec.moves_west
-            summary_array[run_id]['food_sensed_north'] = rec.food_sensed_north
-            summary_array[run_id]['food_sensed_east'] = rec.food_sensed_east
-            summary_array[run_id]['food_sensed_south'] = rec.food_sensed_south
-            summary_array[run_id]['food_sensed_west'] = rec.food_sensed_west
-            summary_array[run_id]['decisions'] = rec.decisions
-            summary_array[run_id]['correct_decisions'] = rec.correct_decisions
-
-    # Extract lifespan vector (always available)
-    lifespan_vector = lifespan_array['lifetime_ticks']
-
-    # ============================================================
-    # 6g: Batch write to HDF5
-    # ============================================================
-    # Batch write all variant data after all runs complete (only if per-run tracking enabled)
-    if enable_per_run_tracking:
-        with hdf5_lock:
-            # Write summary array only if per-run tracking is enabled
-            if summary_array is not None:
-                save_variant_summary_to_hdf5(hdf5_path, variant_id, summary_array)
-                save_wiring_to_hdf5(hdf5_path, variant_id, wiring_array)
-                save_modulation_to_hdf5(hdf5_path, variant_id, modulation_array)
-                
-                # Write accumulated per-tick data if any
-                if per_tick_all_runs:
-                    for run_id, per_tick_data in per_tick_all_runs.items():
-                        save_per_tick_to_hdf5(hdf5_path, variant_id, run_id, per_tick_data)
-                
-                # Write accumulated heatmap data if any
-                if heatmaps_all_runs:
-                    for run_id, staying_heatmap in heatmaps_all_runs.items():
-                        save_heatmaps_to_hdf5(hdf5_path, variant_id, run_id, staying_heatmap)
-                
-                # Write RNG seed information to HDF5 variant attributes (to existing variant group)
-                with h5py.File(hdf5_path, 'a') as f:
-                    variant_group_name = f'variant_{variant_id}'
-                    if variant_group_name in f:
-                        variant_group = f[variant_group_name]
-                        variant_group.attrs['rng_seed_decision'] = int(variant_decision_seed)
-                        variant_group.attrs['rng_seed_noise'] = int(variant_noise_seed)
-    
-    # Keep visualization window open if it was created (but not if exit was requested)
-    should_show_event_loop = (viz_enabled or viz_brain_enabled) and (pause_mgr is None or not pause_mgr.should_exit())
-    if should_show_event_loop:
-        try:
-            from PySide6.QtWidgets import QApplication
-            app = QApplication.instance()
-            if app is not None:
-                print("[INFO] Visualization complete. Close the window to continue.")
-                app.exec()
-        except Exception as e:
-            pass  # Silently fail if no Qt window exists
-    
-    return (variant_id, lifespan_vector)
-
-
-# --- TRACKING VALIDATION ---
 
 def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     """
@@ -974,7 +176,6 @@ def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     # No conflict: return original flags unchanged
     return (True, enable_per_run, enable_per_tick, enable_heat_map)
 
-
 def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
     """
     Validate visualization flags and adjust if necessary.
@@ -1002,37 +203,9 @@ def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
     return viz_enabled, viz_brain_enabled
 
 
-def print_lifespan_summary(all_lifespans: dict):
-    """Print lifespan (lifetime ticks) from all variants to terminal.
-    
-    Args:
-        all_lifespans: Dict mapping variant_id to lifespan_vector (1D array of lifetime_ticks)
-    """
-    print("\n" + "="*80)
-    print("[lifespan] SIMULATION SUMMARY")
-    print("="*80)
-    
-    for variant_id in sorted(all_lifespans.keys()):
-        lifespan_vector = all_lifespans[variant_id]
-        print(f"\nVariant {variant_id:02d}:")
-        print("-" * 80)
-        print(f"{'Run':>4} {'Ticks':>10}")
-        print("-" * 80)
-        
-        for run_idx, ticks in enumerate(lifespan_vector, start=1):
-            print(f"{run_idx:>4} {int(ticks):>10}")
-        
-        # Print variant average
-        avg_ticks = np.mean(lifespan_vector)
-        print("-" * 80)
-        print(f"{'AVG':>4} {avg_ticks:>10.1f}")
-        print("=" * 80)
-
-
 # ============================================================
 # main
 # ============================================================
-
 
 
 def main():
@@ -1044,7 +217,6 @@ def main():
     # Try to load config with helpful error message if not found
     try:
         cfg = load_config(args.config)
-        CONFIG_PATH = resolve_config_path(args.config)
     except FileNotFoundError as e:
         available_configs = find_available_configs()
         print("\n" + "="*80)
@@ -1062,16 +234,21 @@ def main():
         sys.exit(1)
     
     experiment_cfg = cfg["experiment"]
-    brain_module_name = make_decision_cfg(cfg)
+    brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
     
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
     GENERATION_SEED = cfg["world"]["generation_seed"]
     
     # Build independent RNG streams for decision-making and neuron noise
-    rng_decision, rng_neuron_noise, _ = build_rng_streams(SIMULATION_SEED)
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(2)
+    rng_decision = np.random.default_rng(streams_sim[0])
+    rng_neuron_noise = np.random.default_rng(streams_sim[1])
+    
     # Build RNG stream for world (food distribution)
-    rng_world = build_rng_streams(GENERATION_SEED)[0]
+    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
+    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
     
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
@@ -1115,27 +292,17 @@ def main():
     worm_energy_capacity = cfg["worm"]["energy_capacity"]
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
     worm_movement_cost = cfg["worm"]["movement_cost"]
-    sensor_cfg = make_sensor_cfg(cfg)
-    feeding_paradigm = cfg["food"]["feeding_paradigm"]
-    feeding_initial_fraction_per_cell = cfg["food"]["initial_fraction_per_cell"]
-    feeding_regrow_time = cfg["food"]["regrow_time"]
-    brain_n_neurons = cfg["brain"]["n_neurons"]
-    brain_threshold = cfg["brain"]["threshold"]
-    brain_noise_level = cfg["brain"]["noise_level"]
-    brain_sensory_mapping = cfg["brain"]["sensory_mapping"]
-    brain_output_mapping = cfg["brain"]["output_mapping"]
-    brain_max_decision_delay = cfg["brain"]["max_decision_delay"]
+    sensor_cfg = cfg.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
     
-    # Wrap configs once to pass to workers (avoid 300k redundant wrappings)
-    feeding_cfg = make_feeding_cfg(feeding_paradigm, feeding_initial_fraction_per_cell, feeding_regrow_time)
+    # Use config subsections directly (no wrapping)
+    feeding_cfg = cfg["food"]
+    brain_cfg = cfg["brain"]
     
     # ============================================================
-    # 3. DRAW SEEDS FOR RUNS AND VARIANTS
+    # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
     # ============================================================
-    # Draw N_RUNS seeds from rng_world for fair comparison across variants
-    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
     
-    # Draw N_VARIANTS seeds for decision-making and neuron noise
+    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
     variant_decision_seeds = rng_decision.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
     variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
     
@@ -1147,154 +314,14 @@ def main():
     for variant_id in range(N_VARIANTS):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
-    
-    # ============================================================
-    # 5. PREPARE DATA TRACKING IF ENABLED
-    # ============================================================
-        
-    # Only create HDF5 file and manager if per-run tracking is enabled
-    if ENABLE_PER_RUN_TRACKING:
-        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
-        print(f"[batch] writing to {hdf5_path}\n")
-        create_hdf5_file(hdf5_path, cfg)
-        # Save genome generation parameters to HDF5
-        save_genome_properties_to_hdf5(hdf5_path, genomes)
-        # Save run_seeds for reproducibility
-        with h5py.File(hdf5_path, 'a') as f:
-            f.create_dataset('run_seeds', data=run_seeds)
-            # Save the actual tracking flags used (after validation/user input corrections)
-            f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
-            f.attrs['tracking_per_tick_enabled'] = int(ENABLE_PER_TICK_TRACKING)
-            f.attrs['tracking_heatmap_enabled'] = int(ENABLE_HEAT_MAP_TRACKING)
-        
-        # Create manager and lock for parallel HDF5 writing
-        manager = Manager()
-        hdf5_lock = manager.Lock()
 
-    # ============================================================
-    # 6. PREPARE WORKERS, THEN EITHER PARALLEL OR SERIAL
-    # ============================================================
-    
-    try:
-        # Run simulation
-        all_lifespans = {}
-        num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
-        if num_workers is None:
-            for variant_id in range(N_VARIANTS):
-                print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
-                
-                kwargs = {
-                    'variant_id': variant_id,
-                    'brain_module_name': brain_module_name,
-                    'genome': genomes[variant_id],
-                    'viz_enabled': VIZ_ENABLED,
-                    'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
-                    'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
-                    'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
-                    'max_ticks': MAX_TICKS,
-                    'n_runs': N_RUNS,
-                    'viz_fps': VIZ_FPS,
-                    'viz_brain_enabled': VIZ_BRAIN_ENABLED,
-                    'viz_brain_fps': VIZ_BRAIN_FPS,
-                    'grid_width': grid_width,
-                    'grid_height': grid_height,
-                    'start_pos': start_pos,
-                    'worm_speed': worm_speed,
-                    'worm_energy_capacity': worm_energy_capacity,
-                    'worm_metabolic_rate': worm_metabolic_rate,
-                    'worm_movement_cost': worm_movement_cost,
-                    'sensor_cfg': sensor_cfg,
-                    'feeding_cfg': feeding_cfg,
-                    'brain_n_neurons': brain_n_neurons,
-                    'brain_threshold': brain_threshold,
-                    'brain_noise_level': brain_noise_level,
-                    'brain_sensory_mapping': brain_sensory_mapping,
-                    'brain_output_mapping': brain_output_mapping,
-                    'brain_max_decision_delay': brain_max_decision_delay,
-                    'variant_decision_seed': variant_decision_seeds[variant_id],
-                    'variant_noise_seed': variant_noise_seeds[variant_id],
-                    'run_seeds': run_seeds.copy(),
-                    'has_brain_config': has_brain_config,
-                }
-                if ENABLE_PER_RUN_TRACKING:
-                    kwargs['hdf5_path'] = hdf5_path
-                    kwargs['hdf5_lock'] = hdf5_lock
-                
-                returned_variant_id, lifespan_vector = run_variant_worker(**kwargs)
 
-                all_lifespans[variant_id] = lifespan_vector
-                print(" done")
-        
-        else:
-            completed = 0            
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = set()
-                for variant_id in range(N_VARIANTS):
-                    kwargs = {
-                        'variant_id': variant_id,
-                        'brain_module_name': brain_module_name,
-                        'genome': genomes[variant_id],
-                        'viz_enabled': False,  # Never viz in parallel (serial only)
-                        'enable_per_run_tracking': ENABLE_PER_RUN_TRACKING,
-                        'enable_per_tick_tracking': ENABLE_PER_TICK_TRACKING,
-                        'enable_heat_map_tracking': ENABLE_HEAT_MAP_TRACKING,
-                        'max_ticks': MAX_TICKS,
-                        'n_runs': N_RUNS,
-                        'viz_fps': VIZ_FPS,
-                        'viz_brain_enabled': VIZ_BRAIN_ENABLED,
-                        'viz_brain_fps': VIZ_BRAIN_FPS,
-                        'grid_width': grid_width,
-                        'grid_height': grid_height,
-                        'start_pos': start_pos,
-                        'worm_speed': worm_speed,
-                        'worm_energy_capacity': worm_energy_capacity,
-                        'worm_metabolic_rate': worm_metabolic_rate,
-                        'worm_movement_cost': worm_movement_cost,
-                        'sensor_cfg': sensor_cfg,
-                        'feeding_cfg': feeding_cfg,
-                        'brain_n_neurons': brain_n_neurons,
-                        'brain_threshold': brain_threshold,
-                        'brain_noise_level': brain_noise_level,
-                        'brain_sensory_mapping': brain_sensory_mapping,
-                        'brain_output_mapping': brain_output_mapping,
-                        'brain_max_decision_delay': brain_max_decision_delay,
-                        'variant_decision_seed': variant_decision_seeds[variant_id],
-                        'variant_noise_seed': variant_noise_seeds[variant_id],
-                        'run_seeds': run_seeds.copy(),
-                        'has_brain_config': has_brain_config,
-                    }
-                    if ENABLE_PER_RUN_TRACKING:
-                        kwargs['hdf5_path'] = hdf5_path
-                        kwargs['hdf5_lock'] = hdf5_lock
-                    
-                    future = executor.submit(run_variant_worker, **kwargs)
-                    futures.add(future)
-                
-                for future in as_completed(futures):
-                    completed += 1
-                    returned_variant_id, lifespan_vector = future.result()
-                    all_lifespans[returned_variant_id] = lifespan_vector
-                    print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
-            
-            print()
-        
-        
-        # ============================================================
-        # 7. WRAP-UP
-        # ============================================================
-        if ENABLE_PER_RUN_TRACKING:
-            print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
-        else:
-            print(f"[batch] Simulation completed. (No data recording)")
-            if all_lifespans:
-                total_lifespans = sum(len(v) for v in all_lifespans.values())
-                print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
-    
-    except PauseManagerExit:
-        print("[EXIT] Batch simulation stopped by user.")
-    finally:
-        if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
-            cleanup_pause_manager()
+    all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+
+    total_lifespans = sum(len(v) for v in all_lifespans.values())
+    print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
 
 
 if __name__ == "__main__":

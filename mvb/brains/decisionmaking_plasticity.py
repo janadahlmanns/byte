@@ -158,7 +158,7 @@ class BrainState:
 # Initialization
 # ============================================================
 
-def init_brain(genome, yaml_config, rng_neuron_noise):
+def init_brain(genome, yaml_config):
     """
     Initialize brain from genome and YAML configuration.
     
@@ -181,9 +181,6 @@ def init_brain(genome, yaml_config, rng_neuron_noise):
         - 'sensory_mapping': dict
         - 'output_mapping': dict (neuron_id → action_name)
         - 'max_decision_delay': float
-    
-    rng_neuron_noise : np.random.Generator
-        RNG for neuron noise
     
     Returns
     -------
@@ -266,9 +263,6 @@ def init_brain(genome, yaml_config, rng_neuron_noise):
     warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(_brain_state)
     _brain_state.warmup_ticks = warmup_ticks
     _brain_state.max_ticks = max_ticks
-    
-    # Store RNG for neuron noise
-    _brain_state.rng_neuron_noise = rng_neuron_noise
 
 
 def _calculate_warmup_and_max_ticks(state: BrainState) -> tuple:
@@ -414,9 +408,6 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
     warmup_ticks, max_ticks = _calculate_warmup_and_max_ticks(_brain_state)
     _brain_state.warmup_ticks = warmup_ticks
     _brain_state.max_ticks = max_ticks
-    
-    # Store the neuron noise RNG stream
-    _brain_state.rng_neuron_noise = rng_neuron_noise
 
     # DEBUG OUTPUT (commented out - uncomment to see circuit details)
     # print("\n" + "="*70)
@@ -445,7 +436,7 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
 # Decision process
 # ============================================================
 
-def decide(world: World, worm, rng_decision, inputs: dict):
+def decide(world: World, worm, rng_decision, inputs: dict, rng_neuron_noise):
     state = _brain_state
 
     # load sensory inputs
@@ -469,7 +460,7 @@ def decide(world: World, worm, rng_decision, inputs: dict):
             # ---------------- Actual brain beat ----------------
             # 1. All neurons compute next activity based on current state
             for neuron in state.neurons:
-                neuron.update(state.rng_neuron_noise)
+                neuron.update(rng_neuron_noise)
             
             # 2. All connections compute next weight based on current neuron activities
             for conn in state.connections:
