@@ -5,14 +5,10 @@ import sys
 import argparse
 import importlib
 from pathlib import Path
-
 import yaml
 import numpy as np
-
 from mvb.simulation_API import eval_generation
 from .pause_manager import init_pause_manager, cleanup_pause_manager
-
-
 
 
 def parse_arguments():
