@@ -147,6 +147,70 @@ def check_ea_input_parameters(experiment_cfg):
         if param not in ea_cfg:
             raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
 
+def calculate_lifespan_statistics(lifespans_array):
+    """
+    Calculate statistics on an array of lifespans.
+    
+    Args:
+        lifespans_array: 1D numpy array of lifespan values
+    
+    Returns:
+        dict with keys: mean, median, min, max, std, iqr
+    """
+    lifespans_array = np.asarray(lifespans_array)
+    stats = {
+        'mean': float(np.mean(lifespans_array)),
+        'median': float(np.median(lifespans_array)),
+        'min': float(np.min(lifespans_array)),
+        'max': float(np.max(lifespans_array)),
+        'std': float(np.std(lifespans_array)),
+        'iqr': float(np.percentile(lifespans_array, 75) - np.percentile(lifespans_array, 25))
+    }
+    return stats
+
+def pick_elite_deterministic(all_lifespans, elite_selection_metric, elite_size):
+    """
+    Select elite genomes based on fitness metric.
+    
+    Ranks variants according to elite_selection_metric (average, max, or median lifespan)
+    and returns the indices of the top elite_size variants.
+    
+    Args:
+        all_lifespans: dict mapping variant_id → lifespan array
+        elite_selection_metric: 'average', 'max', or 'median'
+        elite_size: number of elite genomes to select
+    
+    Returns:
+        Tuple of (elite_indices, stats_dict)
+        - elite_indices: list of variant_ids of elite genomes
+        - stats_dict: dict with 'population' (population-level stats) and 'per_variant' (per-variant stats)
+    """
+    # Calculate statistics for each variant (1st call)
+    stats = {}
+    for variant_id, lifespans in all_lifespans.items():
+        stats[variant_id] = calculate_lifespan_statistics(lifespans)
+    
+    # Extract fitness values from per-variant stats based on selection metric (2nd: use existing stats)
+    variant_fitness = {}
+    for variant_id, var_stats in stats.items():
+        if elite_selection_metric == 'average':
+            fitness = var_stats['mean']
+        elif elite_selection_metric == 'max':
+            fitness = var_stats['max']
+        elif elite_selection_metric == 'median':
+            fitness = var_stats['median']
+        else:
+            raise ValueError(f"Unknown elite_selection_metric: {elite_selection_metric}")
+        variant_fitness[variant_id] = fitness
+    
+    # Sort variants by fitness (descending), with variant_id as tiebreaker
+    sorted_variants = sorted(variant_fitness.items(), key=lambda x: (-x[1], x[0]))
+    
+    # Pick top elite_size
+    elite_indices = [variant_id for variant_id, fitness in sorted_variants[:elite_size]]
+    
+    return elite_indices, stats
+
 
 # ============================================================
 # main
@@ -235,10 +299,8 @@ def main():
     rng_decision = np.random.default_rng(streams_sim[0])
     rng_neuron_noise = np.random.default_rng(streams_sim[1])
     rng_mutation = np.random.default_rng(streams_sim[2])
-    
     # Build RNG stream for world (food distribution)
-    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
-    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
+    rng_world = np.random.default_rng(int(GENERATION_SEED))
 
     # ============================================================
     # 2. VALIDATION & USER CHECKS
@@ -279,28 +341,48 @@ def main():
     # 3. GENERATE RNG SEEDS FOR VARIANTS
     # ============================================================
     
-   
     variant_decision_seeds = rng_decision.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
     variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
     
     # ============================================================
     # 4. GENERATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
-    print(f"\n[Gen 0] Generating {POPULATION_SIZE} initial genomes...")
+    stats = []
     genomes = []
     for variant_id in range(POPULATION_SIZE):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
     
-    print(f"[Gen 0] Evaluating {POPULATION_SIZE} genomes...")
+    # ============================================================
+    # 5. EVALUATE INITIAL POPULATION (GENERATION 0)
+    # ============================================================
+
     all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+
 
     total_lifespans = sum(len(v) for v in all_lifespans.values())
     print(f"\n[Gen 0 Results] {total_lifespans} lifespans collected from {POPULATION_SIZE} genomes")
     print(f"[Gen 0 Results] Average lifespan per genome: {np.mean([np.mean(ls) for ls in all_lifespans.values()]):.2f} ticks")
 
+    # ============================================================
+    # 6. SELECTION ON INITIAL POPULATION (GENERATION 0)
+    # ============================================================
+    
+    elite_idx, gen_stats = pick_elite_deterministic(all_lifespans, ELITE_SELECTION_METRIC, ELITE_SIZE)
+    stats.append(gen_stats)
+    
+    print(f"\n[Gen 0 Selection] Elite selection metric: {ELITE_SELECTION_METRIC}")
+    print(f"[Gen 0 Selection] Elite indices: {elite_idx}")
+    print(f"[Gen 0 Selection] Average lifespan (Gen 0): {np.mean([stats[0][v]['mean'] for v in stats[0]]):.2f} ticks")
+
+    # ============================================================
+    # 7. APPLY SELECTION
+    # ============================================================
+    
+    elite_genomes = [genomes[i] for i in elite_idx]
+    elite_lifespans = {i: all_lifespans[i] for i in elite_idx}
 
 if __name__ == "__main__":
     try:
