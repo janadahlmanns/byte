@@ -1120,9 +1120,6 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
         else:
             print(f"[batch] Simulation completed. (No data recording)")
-            if all_lifespans:
-                total_lifespans = sum(len(v) for v in all_lifespans.values())
-                print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
     
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
@@ -1362,9 +1359,8 @@ def main():
                                     ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
-
-
-
+    total_lifespans = sum(len(v) for v in all_lifespans.values())
+    print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
 
 
 if __name__ == "__main__":
