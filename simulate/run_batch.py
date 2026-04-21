@@ -13,7 +13,7 @@ from mvb.simulation_API import eval_generation
 from .pause_manager import init_pause_manager, cleanup_pause_manager
 
 
-# --- COMMAND-LINE ARGUMENT PARSING ---
+
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -131,11 +131,7 @@ def load_genome_generator(genome_type: str):
 
 
 
-def make_sensor_cfg(cfg_yaml):
-    return cfg_yaml.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
 
-def make_decision_cfg(cfg_yaml):
-    return str(cfg_yaml["worm"]["decisionmaking"]["version"])
 
 
 
@@ -291,7 +287,7 @@ def main():
         sys.exit(1)
     
     experiment_cfg = cfg["experiment"]
-    brain_module_name = make_decision_cfg(cfg)
+    brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
     
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
@@ -349,7 +345,7 @@ def main():
     worm_energy_capacity = cfg["worm"]["energy_capacity"]
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
     worm_movement_cost = cfg["worm"]["movement_cost"]
-    sensor_cfg = make_sensor_cfg(cfg)
+    sensor_cfg = cfg.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
     
     # Use config subsections directly (no wrapping)
     feeding_cfg = cfg["food"]
