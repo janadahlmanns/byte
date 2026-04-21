@@ -232,15 +232,42 @@ def main():
     experiment_cfg = cfg["experiment"]
     brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
     
+    # REQUIRED: evolutionary_algorithm section must be present
+    try:
+        ea_cfg = experiment_cfg["evolutionary_algorithm"]
+    except KeyError:
+        raise KeyError("[ERROR] REQUIRED: 'evolutionary_algorithm' section not found in config. This is mandatory for run_ea.py. Please add it to your YAML with all required parameters: population_size, num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed.")
+    
+    # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
+    try:
+        POPULATION_SIZE = experiment_cfg["population_size"]
+    except KeyError as e:
+        raise KeyError(f"[ERROR] REQUIRED parameter missing: population_size in 'experiment' section")
+    
+    try:
+        NUM_GENERATIONS = ea_cfg["num_generations"]
+        ELITE_SIZE = ea_cfg["elite_size"]
+        ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
+        MUTATION_RATE = ea_cfg["mutation_rate"]
+        MUTATION_TYPES = ea_cfg["mutation_types"]
+        MUTATION_SEED = ea_cfg["mutation_seed"]
+    except KeyError as e:
+        raise KeyError(f"[ERROR] REQUIRED EA parameter missing: {e}. Please ensure all of these are specified in 'evolutionary_algorithm' section: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed")
+    
+    print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
+    print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
+    
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
     GENERATION_SEED = cfg["world"]["generation_seed"]
     
-    # Build independent RNG streams for decision-making and neuron noise
+    # Build independent RNG streams for decision-making, neuron noise, and mutations
+    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
     seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-    streams_sim = seed_seq_sim.spawn(2)
+    streams_sim = seed_seq_sim.spawn(3)  # Changed from 2 to 3 to add mutation stream
     rng_decision = np.random.default_rng(streams_sim[0])
     rng_neuron_noise = np.random.default_rng(streams_sim[1])
+    rng_mutation = np.random.default_rng(streams_sim[2])  # New mutation RNG stream
     
     # Build RNG stream for world (food distribution)
     seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
@@ -259,7 +286,6 @@ def main():
         # For lookup or other genome types, wiring seed is not used
         WIRING_RANDOMIZATION_SEED = 0
     
-    N_VARIANTS = experiment_cfg["population_size"]
     MAX_TICKS = experiment_cfg["max_ticks"]
     N_RUNS = experiment_cfg["n_runs"]
     
@@ -280,12 +306,18 @@ def main():
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
     
-    validation_result = validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING)
-    should_continue, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING = validation_result
-    if not should_continue:
-        return
-    
-    VIZ_ENABLED, VIZ_BRAIN_ENABLED = validate_viz_flags(N_VARIANTS, N_RUNS, VIZ_ENABLED, VIZ_BRAIN_ENABLED)
+    # Check if tracking/viz is enabled for EA - not recommended for evolutionary algorithm
+    if ENABLE_PER_RUN_TRACKING or ENABLE_PER_TICK_TRACKING or ENABLE_HEAT_MAP_TRACKING or VIZ_ENABLED or VIZ_BRAIN_ENABLED:
+        response = input("[WARNING] Tracking and/or visualization is enabled. Continue without? (y/n): ").strip().lower()
+        if response != 'y':
+            print("[EXIT] EA execution stopped.")
+            return
+        
+        ENABLE_PER_RUN_TRACKING = False
+        ENABLE_PER_TICK_TRACKING = False
+        ENABLE_HEAT_MAP_TRACKING = False
+        VIZ_ENABLED = False
+        VIZ_BRAIN_ENABLED = False
     
     # Extract config components for worker
     grid_width = cfg["world"]["grid_width"]
@@ -295,36 +327,37 @@ def main():
     worm_energy_capacity = cfg["worm"]["energy_capacity"]
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
     worm_movement_cost = cfg["worm"]["movement_cost"]
-    sensor_cfg = cfg.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
+    sensor_cfg = cfg["worm"]["sensors"]["active"]
     
     # Use config subsections directly (no wrapping)
     feeding_cfg = cfg["food"]
     brain_cfg = cfg["brain"]
     
     # ============================================================
-    # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
+    # 3. GENERATE RNG SEEDS FOR VARIANTS
     # ============================================================
     
-    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
-    variant_decision_seeds = rng_decision.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
-    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
+   
+    variant_decision_seeds = rng_decision.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
+    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
     
     # ============================================================
-    # 4. GENERATE GENOMES
+    # 4. GENERATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
-    # Generate all genomes before dispatching workers
+    print(f"\n[Gen 0] Generating {POPULATION_SIZE} initial genomes...")
     genomes = []
-    for variant_id in range(N_VARIANTS):
+    for variant_id in range(POPULATION_SIZE):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
-
-
+    
+    print(f"[Gen 0] Evaluating {POPULATION_SIZE} genomes...")
     all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
     total_lifespans = sum(len(v) for v in all_lifespans.values())
-    print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
+    print(f"\n[Gen 0 Results] {total_lifespans} lifespans collected from {POPULATION_SIZE} genomes")
+    print(f"[Gen 0 Results] Average lifespan per genome: {np.mean([np.mean(ls) for ls in all_lifespans.values()]):.2f} ticks")
 
 
 if __name__ == "__main__":
