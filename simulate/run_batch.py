@@ -30,7 +30,6 @@ Examples:
                         help='Name of the experiment config file (without .yaml/.yml extension)')
     return parser.parse_args()
 
-
 def resolve_config_path(config_name: str, config_dir: str = "configs/experiments") -> str:
     """Resolve a config name to a full path.
     
@@ -61,7 +60,6 @@ def resolve_config_path(config_name: str, config_dir: str = "configs/experiments
     
     return str(full_path)
 
-
 def find_available_configs(config_dir: str = "configs/experiments") -> list:
     """Find all YAML configuration files in the configs/experiments directory.
     
@@ -78,7 +76,6 @@ def find_available_configs(config_dir: str = "configs/experiments") -> list:
     yaml_files = sorted(config_path.glob("*.yaml")) + sorted(config_path.glob("*.yml"))
     # Return just the names without extensions
     return [f.stem for f in yaml_files]
-
 
 def load_config(config_name: str):
     """Load YAML configuration file from configs/experiments directory.
@@ -128,27 +125,6 @@ def load_genome_generator(genome_type: str):
         return getattr(genome_module, function_name)
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# --- TRACKING VALIDATION ---
-
-
 
 def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     """
@@ -200,7 +176,6 @@ def validate_tracking_flags(enable_per_run, enable_per_tick, enable_heat_map):
     # No conflict: return original flags unchanged
     return (True, enable_per_run, enable_per_tick, enable_heat_map)
 
-
 def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
     """
     Validate visualization flags and adjust if necessary.
@@ -228,37 +203,9 @@ def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
     return viz_enabled, viz_brain_enabled
 
 
-def print_lifespan_summary(all_lifespans: dict):
-    """Print lifespan (lifetime ticks) from all variants to terminal.
-    
-    Args:
-        all_lifespans: Dict mapping variant_id to lifespan_vector (1D array of lifetime_ticks)
-    """
-    print("\n" + "="*80)
-    print("[lifespan] SIMULATION SUMMARY")
-    print("="*80)
-    
-    for variant_id in sorted(all_lifespans.keys()):
-        lifespan_vector = all_lifespans[variant_id]
-        print(f"\nVariant {variant_id:02d}:")
-        print("-" * 80)
-        print(f"{'Run':>4} {'Ticks':>10}")
-        print("-" * 80)
-        
-        for run_idx, ticks in enumerate(lifespan_vector, start=1):
-            print(f"{run_idx:>4} {int(ticks):>10}")
-        
-        # Print variant average
-        avg_ticks = np.mean(lifespan_vector)
-        print("-" * 80)
-        print(f"{'AVG':>4} {avg_ticks:>10.1f}")
-        print("=" * 80)
-
-
 # ============================================================
 # main
 # ============================================================
-
 
 
 def main():
