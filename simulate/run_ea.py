@@ -5,8 +5,10 @@ import sys
 import argparse
 import importlib
 from pathlib import Path
+from datetime import datetime
 import yaml
 import numpy as np
+import h5py
 from mvb.simulation_API import eval_generation
 from mvb.genome import generate_genome_mutate_simple
 from .pause_manager import init_pause_manager, cleanup_pause_manager
@@ -215,24 +217,20 @@ def pick_elite_deterministic(all_lifespans, elite_selection_metric, elite_size):
         elite_size: number of elite genomes to select
     
     Returns:
-        Tuple of (elite_indices, stats_dict)
+        Tuple of (elite_indices, generation_stats_tuple)
         - elite_indices: list of variant_ids of elite genomes
-        - stats_dict: dict with 'population' (population-level stats) and 'per_variant' (per-variant stats)
+        - generation_stats_tuple: tuple (mean, median, min, max, std, iqr) from ALL variants' fitness metrics
     """
-    # Calculate statistics for each variant (1st call)
-    stats = {}
-    for variant_id, lifespans in all_lifespans.items():
-        stats[variant_id] = calculate_lifespan_statistics(lifespans)
-    
-    # Extract fitness values from per-variant stats based on selection metric (2nd: use existing stats)
+    # Calculate fitness metric for each variant
     variant_fitness = {}
-    for variant_id, var_stats in stats.items():
+    for variant_id, lifespans in all_lifespans.items():
+        lifespans_array = np.asarray(lifespans)
         if elite_selection_metric == 'average':
-            fitness = var_stats['mean']
+            fitness = np.mean(lifespans_array)
         elif elite_selection_metric == 'max':
-            fitness = var_stats['max']
+            fitness = np.max(lifespans_array)
         elif elite_selection_metric == 'median':
-            fitness = var_stats['median']
+            fitness = np.median(lifespans_array)
         else:
             raise ValueError(f"Unknown elite_selection_metric: {elite_selection_metric}")
         variant_fitness[variant_id] = fitness
@@ -243,7 +241,64 @@ def pick_elite_deterministic(all_lifespans, elite_selection_metric, elite_size):
     # Pick top elite_size
     elite_indices = [variant_id for variant_id, fitness in sorted_variants[:elite_size]]
     
-    return elite_indices, stats
+    # Compute generation-level statistics from ALL variants' fitness metrics (not just elite)
+    all_fitness_values = np.array(list(variant_fitness.values()))
+    
+    generation_stats_tuple = (
+        float(np.mean(all_fitness_values)),
+        float(np.median(all_fitness_values)),
+        float(np.min(all_fitness_values)),
+        float(np.max(all_fitness_values)),
+        float(np.std(all_fitness_values)),
+        float(np.percentile(all_fitness_values, 75) - np.percentile(all_fitness_values, 25))
+    )
+    
+    return elite_indices, generation_stats_tuple
+
+
+def save_config_recursive(hdf5_group, config_dict, prefix=""):
+    """Recursively save config dict to HDF5 attributes."""
+    for key, value in config_dict.items():
+        attr_name = f"{prefix}{key}" if prefix else key
+        if isinstance(value, dict):
+            save_config_recursive(hdf5_group, value, f"{attr_name}_")
+        elif isinstance(value, list):
+            # Convert lists to string representation
+            hdf5_group.attrs[attr_name] = str(value)
+        elif isinstance(value, (str, int, float, bool, type(None))):
+            hdf5_group.attrs[attr_name] = value
+
+
+def initialize_hdf5_file(experiment_folder, simulation_name, cfg):
+    """Initialize HDF5 file and save configuration.
+    
+    Creates the HDF5 file with timestamp naming and saves all configuration
+    as attributes. This should be called early, before the experiment runs.
+    
+    Args:
+        experiment_folder: Path to output folder
+        simulation_name: Name of the simulation for the filename
+        cfg: Full configuration dictionary
+    
+    Returns:
+        Path to the created HDF5 file
+    """
+    # Create HDF5 file path with timestamp
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    hdf5_filename = f"{ts}_{simulation_name}.h5"
+    hdf5_path = Path(experiment_folder) / hdf5_filename
+    Path(experiment_folder).mkdir(parents=True, exist_ok=True)
+    
+    # Create file and save configuration
+    with h5py.File(hdf5_path, 'w') as f:
+        # Save full config as attributes
+        save_config_recursive(f, cfg)
+        
+        # Create placeholder groups for results (will be populated later)
+        f.create_group("elite_genomes")
+    
+    print(f"\n[HDF5 Init] File created: {hdf5_path}")
+    return str(hdf5_path)
 
 
 # ============================================================
@@ -381,18 +436,27 @@ def main():
     brain_cfg = cfg["brain"]
     
     # ============================================================
+    # 2b. INITIALIZE HDF5 FILE & SAVE CONFIGURATION
+    # ============================================================
+    # Create HDF5 file early to catch file system errors before experiment runs
+    hdf5_path = initialize_hdf5_file(EXPERIMENT_FOLDER, SIMULATION_NAME, cfg)
+    
+    # ============================================================
     # 3. GENERATE RNG SEEDS FOR VARIANTS
     # ============================================================
     
-    variant_decision_seeds = rng_decision.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
-    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=POPULATION_SIZE, dtype=np.uint32)
+    # Calculate initial population size (Gen 0 includes room for elite to compete)
+    gen0_population_size = POPULATION_SIZE + ELITE_SIZE if EA_ENABLED else POPULATION_SIZE
+    
+    variant_decision_seeds = rng_decision.integers(0, 2**32, size=gen0_population_size, dtype=np.uint32)
+    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=gen0_population_size, dtype=np.uint32)
     
     # ============================================================
     # 4. GENERATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
-    stats = []
+    stats = []  # Collect generation statistics as tuples for direct array creation
     genomes = []
-    for variant_id in range(POPULATION_SIZE):
+    for variant_id in range(gen0_population_size):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
     
@@ -401,12 +465,12 @@ def main():
     # ============================================================
 
     lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
+                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
 
     total_lifespans = sum(len(v) for v in lifespans.values())
-    print(f"\n[Gen 0 Results] {total_lifespans} lifespans collected from {POPULATION_SIZE} genomes")
+    print(f"\n[Gen 0 Results] {total_lifespans} lifespans collected from {gen0_population_size} genomes")
     print(f"[Gen 0 Results] Average lifespan per genome: {np.mean([np.mean(ls) for ls in lifespans.values()]):.2f} ticks")
 
     # ============================================================
@@ -414,11 +478,13 @@ def main():
     # ============================================================
     
     elite_idx, gen_stats = pick_elite_deterministic(lifespans, ELITE_SELECTION_METRIC, ELITE_SIZE)
-    stats.append(gen_stats)
+    
+    # Append directly: (generation_idx,) + stats_tuple
+    stats.append((0,) + gen_stats)
     
     print(f"\n[Gen 0 Selection] Elite selection metric: {ELITE_SELECTION_METRIC}")
     print(f"[Gen 0 Selection] Elite indices: {elite_idx}")
-    print(f"[Gen 0 Selection] Average lifespan (Gen 0): {np.mean([stats[0][v]['mean'] for v in stats[0]]):.2f} ticks")
+    print(f"[Gen 0 Selection] Elite {ELITE_SELECTION_METRIC} (mean): {gen_stats[0]:.2f} ticks")
 
     # ============================================================
     # 7. APPLY SELECTION
@@ -454,6 +520,111 @@ def main():
         # ============================================================
         genomes_combined = elite_genomes + genomes_new
         lifespans_combined = {i: v for i, v in enumerate(list(elite_lifespans.values()) + list(lifespans_new.values()))} 
+
+        # ============================================================
+        # 12. PICK ELITE FROM COMBINED SET OF PREVIOUS ELITE AND NEW GENERATION
+        # ============================================================
+
+        elite_idx, gen_stats = pick_elite_deterministic(lifespans_combined, ELITE_SELECTION_METRIC, ELITE_SIZE)
+        
+        # Append directly: (generation_idx,) + stats_tuple
+        stats.append((generation + 1,) + gen_stats)
+        
+        print(f"\n[Gen {generation + 1} Selection] Elite selection metric: {ELITE_SELECTION_METRIC}")
+        print(f"[Gen {generation + 1} Selection] Elite indices: {elite_idx}")
+        print(f"[Gen {generation + 1} Selection] Elite {ELITE_SELECTION_METRIC} (mean): {gen_stats[0]:.2f} ticks")
+
+        # ============================================================
+        # 13. APPLY SELECTION
+        # ============================================================
+
+        elite_genomes = [genomes_combined[i] for i in elite_idx]
+        elite_lifespans = {i: lifespans_combined[i] for i in elite_idx}
+
+    # ============================================================
+    # 14. SAVE RESULTS TO HDF5
+    # ============================================================
+    with h5py.File(hdf5_path, 'a') as f:
+        # ============================================================
+        # Save generation statistics as single dataset (no reshaping!)
+        # ============================================================
+        gen_stats_dtype = np.dtype([
+            ('generation', np.int32),
+            ('mean', np.float32),
+            ('median', np.float32),
+            ('min', np.float32),
+            ('max', np.float32),
+            ('std', np.float32),
+            ('iqr', np.float32)
+        ])
+        f.create_dataset("generation_stats", data=stats, dtype=gen_stats_dtype)
+        
+        # ============================================================
+        # Save elite lifespans statistics (one row per elite variant)
+        # ============================================================
+        elite_lifespans_stats = []
+        for elite_id, lifespans in elite_lifespans.items():
+            lifespans_array = np.asarray(lifespans)
+            elite_lifespans_stats.append((
+                elite_id,
+                float(np.mean(lifespans_array)),
+                float(np.median(lifespans_array)),
+                float(np.min(lifespans_array)),
+                float(np.max(lifespans_array)),
+                float(np.std(lifespans_array)),
+                float(np.percentile(lifespans_array, 75) - np.percentile(lifespans_array, 25))
+            ))
+        
+        elite_lifespans_dtype = np.dtype([
+            ('elite_id', np.int32),
+            ('mean', np.float32),
+            ('median', np.float32),
+            ('min', np.float32),
+            ('max', np.float32),
+            ('std', np.float32),
+            ('iqr', np.float32)
+        ])
+        f.create_dataset("elite_lifespans", data=elite_lifespans_stats, dtype=elite_lifespans_dtype)
+        
+        # ============================================================
+        # Save elite genomes
+        # ============================================================
+        elite_group = f["elite_genomes"]
+        for elite_id, elite_genome in zip(elite_idx, elite_genomes):
+            elite_subgroup = elite_group.create_group(f"elite_{elite_id}")
+            
+            # Connection weights
+            elite_subgroup.create_dataset("connection_weights", data=elite_genome.connection_weights)
+            
+            # Tonic activations
+            elite_subgroup.create_dataset("tonic_activations", data=elite_genome.tonic_activations)
+            
+            # Eta as dataset
+            elite_subgroup.create_dataset("eta", data=np.array([elite_genome.eta]))
+            
+            # Modulation spec as structured dataset
+            mod_spec_list = []
+            for (source, target), modulators in elite_genome.modulation_spec.items():
+                for mod_neuron, mod_weight in modulators:
+                    mod_spec_list.append((mod_neuron, source, target, mod_weight))
+            
+            if mod_spec_list:
+                mod_spec_dtype = np.dtype([
+                    ('modulating_neuron', np.int32),
+                    ('source_neuron', np.int32),
+                    ('target_neuron', np.int32),
+                    ('modulation_weight', np.float32)
+                ])
+                mod_spec_array = np.array(mod_spec_list, dtype=mod_spec_dtype)
+                elite_subgroup.create_dataset("modulation_spec", data=mod_spec_array)
+    
+    print("\n" + "="*80)
+    print("EVOLUTIONARY ALGORITHM COMPLETED")
+    print("="*80)
+    print(f"\nResults saved to: {hdf5_path}")
+    print(f"Total generations evolved: {NUM_GENERATIONS}")
+    print(f"Final elite size: {ELITE_SIZE}")
+    print("="*80 + "\n")
 
 if __name__ == "__main__":
     try:
