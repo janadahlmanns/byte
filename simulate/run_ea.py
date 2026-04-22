@@ -381,6 +381,67 @@ def initialize_hdf5_file(experiment_folder, simulation_name, cfg, num_generation
     return str(hdf5_path)
 
 
+def print_results(hdf5_path, num_generations, elite_size):
+    """Print evolutionary algorithm completion summary."""
+    print("\n" + "="*80)
+    print("EVOLUTIONARY ALGORITHM COMPLETED")
+    print("="*80)
+    print(f"\nResults saved to: {hdf5_path}")
+    print(f"Total generations evolved: {num_generations}")
+    print(f"Final elite size: {elite_size}")
+    print("="*80 + "\n")
+
+
+def plot_results(hdf5_path):
+    """Plot generation statistics from HDF5 file.
+    
+    Displays a plot with mean±std and median±IQR shading, plus min/max lines.
+    """
+    # Load generation stats from HDF5
+    with h5py.File(hdf5_path, 'r') as f:
+        gen_stats_data = f["generation_stats"][:]
+    
+    # Extract columns
+    generations = gen_stats_data['generation']
+    mean_vals = gen_stats_data['mean']
+    median_vals = gen_stats_data['median']
+    min_vals = gen_stats_data['min']
+    max_vals = gen_stats_data['max']
+    std_vals = gen_stats_data['std']
+    iqr_vals = gen_stats_data['iqr']
+    
+    # Color scheme
+    primary_color = "#0B3D2E"      # Dark green
+    secondary_color = "#8B3A3A"    # Wine red
+    tertiary_color = "#4A7C8C"     # Grayish ice blue
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot mean with std shading (primary)
+    ax.fill_between(generations, mean_vals - std_vals, mean_vals + std_vals, 
+                    alpha=0.3, color=primary_color, label='Mean with std')
+    ax.plot(generations, mean_vals, '-', linewidth=2.5, color=primary_color)
+    
+    # Plot median with IQR shading (secondary)
+    ax.fill_between(generations, median_vals - iqr_vals/2, median_vals + iqr_vals/2, 
+                    alpha=0.3, color=secondary_color, label='Median with IQR')
+    ax.plot(generations, median_vals, '-', linewidth=2.5, color=secondary_color)
+    
+    # Plot min and max (tertiary)
+    ax.plot(generations, min_vals, '--', linewidth=2, color=tertiary_color, label='Min and max')
+    ax.plot(generations, max_vals, '--', linewidth=2, color=tertiary_color)
+    
+    ax.set_xlabel('Generations', fontsize=12)
+    ax.set_ylabel('Lifespan [ticks]', fontsize=12)
+    ax.set_title('Lifespan Across Generations', fontsize=14)
+    ax.legend(fontsize=11, loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    fig.tight_layout()
+    plt.show()
+
+
 # ============================================================
 # main
 # ============================================================
@@ -549,7 +610,6 @@ def main():
                                     ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
-
     total_lifespans = sum(len(v) for v in lifespans.values())
 
     # ============================================================
@@ -622,59 +682,20 @@ def main():
         write_generation_stats_to_hdf5(hdf5_path, generation + 1, gen_stats)
         print(f"[Gen {generation + 1}/{NUM_GENERATIONS}] Checkpoint saved")
 
+    # ============================================================
+    # 15. PRINT AND PLOT RESULTS
+    # ============================================================
 
-    
-    print("\n" + "="*80)
-    print("EVOLUTIONARY ALGORITHM COMPLETED")
-    print("="*80)
-    print(f"\nResults saved to: {hdf5_path}")
-    print(f"Total generations evolved: {NUM_GENERATIONS}")
-    print(f"Final elite size: {ELITE_SIZE}")
-    print("="*80 + "\n")
+    print_results(hdf5_path, NUM_GENERATIONS, ELITE_SIZE)
     
     # Ask user if they want to visualize results
     response = input("Display generation statistics plot? (y/n): ").strip().lower()
     if response == 'y':
-        # Load generation stats from HDF5
-        with h5py.File(hdf5_path, 'r') as f:
-            gen_stats_data = f["generation_stats"][:]
-        
-        # Extract columns
-        generations = gen_stats_data['generation']
-        mean_vals = gen_stats_data['mean']
-        median_vals = gen_stats_data['median']
-        min_vals = gen_stats_data['min']
-        max_vals = gen_stats_data['max']
-        std_vals = gen_stats_data['std']
-        iqr_vals = gen_stats_data['iqr']
-        
-        # Create figure with dual y-axes
-        fig, ax1 = plt.subplots(figsize=(12, 6))
-        
-        # Primary y-axis: mean, median, min, max
-        ax1.set_xlabel('Generation')
-        ax1.set_ylabel('Fitness (mean, median, min, max)', color='tab:blue')
-        ax1.plot(generations, mean_vals, 'o-', label='Mean', color='tab:blue')
-        ax1.plot(generations, median_vals, 's-', label='Median', color='tab:cyan')
-        ax1.plot(generations, min_vals, '^-', label='Min', color='tab:orange')
-        ax1.plot(generations, max_vals, 'v-', label='Max', color='tab:green')
-        ax1.tick_params(axis='y', labelcolor='tab:blue')
-        ax1.legend(loc='upper left')
-        ax1.grid(True, alpha=0.3)
-        
-        # Secondary y-axis: std, iqr
-        ax2 = ax1.twinx()
-        ax2.set_ylabel('Spread (std, iqr)', color='tab:red')
-        ax2.plot(generations, std_vals, 'd-', label='Std Dev', color='tab:red')
-        ax2.plot(generations, iqr_vals, 'x-', label='IQR', color='tab:purple')
-        ax2.tick_params(axis='y', labelcolor='tab:red')
-        ax2.legend(loc='upper right')
-        
-        plt.title('Evolutionary Algorithm Progress')
-        fig.tight_layout()
-        plt.show()
+        plot_results(hdf5_path)
     
     print("Done.\n")
+
+
 
 if __name__ == "__main__":
     try:

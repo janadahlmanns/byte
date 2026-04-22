@@ -628,5 +628,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         from simulate.pause_manager import cleanup_pause_manager
         if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
             cleanup_pause_manager()
-        
+    
+    # Sort lifespans by variant ID to ensure deterministic ordering regardless of parallel task completion
+    all_lifespans = dict(sorted(all_lifespans.items()))
     return all_lifespans
