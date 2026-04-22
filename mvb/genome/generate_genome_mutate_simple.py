@@ -68,7 +68,7 @@ def generate_genome_mutate_simple(elite_genome, mutation_rate, rng_mutation):
                 non_zero_connections.append((src, tgt))
     
     # Determine how many connections to mutate
-    num_connections_to_mutate = int(len(non_zero_connections) * mutation_rate)
+    num_connections_to_mutate = max(1, int(len(non_zero_connections) * mutation_rate))
     
     if num_connections_to_mutate > 0 and non_zero_connections:
         # Randomly select which connections to mutate
@@ -158,7 +158,7 @@ def generate_genome_mutate_simple(elite_genome, mutation_rate, rng_mutation):
     all_modulations = list(modulation_spec.items())
     
     # Determine how many modulations to mutate
-    num_modulations_to_mutate = int(len(all_modulations) * mutation_rate)
+    num_modulations_to_mutate = max(1, int(len(all_modulations) * mutation_rate))
     
     if num_modulations_to_mutate > 0 and all_modulations:
         # Randomly select which modulations to mutate

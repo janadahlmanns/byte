@@ -3,8 +3,8 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/temp/"
-  simulation_name: "lookup"
+  output_folder: "data/first_ea/"
+  simulation_name: "random"
   simulation_seed: 1
   
   # Simulation runtime
@@ -13,8 +13,8 @@ experiment:
   evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
-  genome_type: "lookup"  # Options: "random", "lookup"
-  population_size: 1
+  genome_type: "random"  # Options: "random", "lookup"
+  population_size: 100
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
