@@ -97,45 +97,59 @@ def generate_genome_mutate_simple(elite_genome, mutation_rate, rng_mutation):
             
             elif action == 2:
                 # Resample source neuron
-                new_src = rng_mutation.integers(0, n_neurons)
-                # Move the connection: remove from (src, tgt), add to (new_src, tgt)
-                # Also update any modulations that refer to this connection
-                old_key = (src, tgt)
-                new_key = (new_src, tgt)
+                # Find an empty destination or skip if all are occupied
+                available_srcs = []
+                for candidate_src in range(n_neurons):
+                    if connection_weights[candidate_src, tgt, 0] == 0.0:
+                        available_srcs.append(candidate_src)
                 
-                # Transfer modulation spec if it exists
-                if old_key in modulation_spec:
-                    if new_key not in modulation_spec:
-                        modulation_spec[new_key] = modulation_spec[old_key]
-                    else:
-                        # Merge if destination already has modulations
-                        modulation_spec[new_key].extend(modulation_spec[old_key])
-                    del modulation_spec[old_key]
-                
-                # Transfer weight and reliability
-                connection_weights[new_src, tgt] = connection_weights[src, tgt].copy()
-                connection_weights[src, tgt] = [0.0, 0.0]
+                if available_srcs:
+                    new_src = available_srcs[rng_mutation.integers(0, len(available_srcs))]
+                    # Move the connection: remove from (src, tgt), add to (new_src, tgt)
+                    # Also update any modulations that refer to this connection
+                    old_key = (src, tgt)
+                    new_key = (new_src, tgt)
+                    
+                    # Transfer modulation spec if it exists
+                    if old_key in modulation_spec:
+                        if new_key not in modulation_spec:
+                            modulation_spec[new_key] = modulation_spec[old_key]
+                        else:
+                            # Merge if destination already has modulations
+                            modulation_spec[new_key].extend(modulation_spec[old_key])
+                        del modulation_spec[old_key]
+                    
+                    # Transfer weight and reliability
+                    connection_weights[new_src, tgt] = connection_weights[src, tgt].copy()
+                    connection_weights[src, tgt] = [0.0, 0.0]
             
             elif action == 3:
                 # Resample target neuron
-                new_tgt = rng_mutation.integers(0, n_neurons)
-                # Move the connection: remove from (src, tgt), add to (src, new_tgt)
-                # Also update any modulations that refer to this connection
-                old_key = (src, tgt)
-                new_key = (src, new_tgt)
+                # Find an empty destination or skip if all are occupied
+                available_tgts = []
+                for candidate_tgt in range(n_neurons):
+                    if connection_weights[src, candidate_tgt, 0] == 0.0:
+                        available_tgts.append(candidate_tgt)
                 
-                # Transfer modulation spec if it exists
-                if old_key in modulation_spec:
-                    if new_key not in modulation_spec:
-                        modulation_spec[new_key] = modulation_spec[old_key]
-                    else:
-                        # Merge if destination already has modulations
-                        modulation_spec[new_key].extend(modulation_spec[old_key])
-                    del modulation_spec[old_key]
-                
-                # Transfer weight and reliability
-                connection_weights[src, new_tgt] = connection_weights[src, tgt].copy()
-                connection_weights[src, tgt] = [0.0, 0.0]
+                if available_tgts:
+                    new_tgt = available_tgts[rng_mutation.integers(0, len(available_tgts))]
+                    # Move the connection: remove from (src, tgt), add to (src, new_tgt)
+                    # Also update any modulations that refer to this connection
+                    old_key = (src, tgt)
+                    new_key = (src, new_tgt)
+                    
+                    # Transfer modulation spec if it exists
+                    if old_key in modulation_spec:
+                        if new_key not in modulation_spec:
+                            modulation_spec[new_key] = modulation_spec[old_key]
+                        else:
+                            # Merge if destination already has modulations
+                            modulation_spec[new_key].extend(modulation_spec[old_key])
+                        del modulation_spec[old_key]
+                    
+                    # Transfer weight and reliability
+                    connection_weights[src, new_tgt] = connection_weights[src, tgt].copy()
+                    connection_weights[src, tgt] = [0.0, 0.0]
     
     # ============================================================
     # 4. MUTATE MODULATIONS
