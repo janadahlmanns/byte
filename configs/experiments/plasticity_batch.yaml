@@ -29,12 +29,8 @@ experiment:
     elite_size: 5
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.3  # Fraction of connections to mutate per individual
-    mutation_types:
-      - weight_change
-      - sign_flip
-      - resample_source
-      - resample_target
-    mutation_seed: 1  
+    mutation_method: simple  # Options: 'simple'
+    mutation_seed: 1
 
   # Visualization
   viz_enabled: false

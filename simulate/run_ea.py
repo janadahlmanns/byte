@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 import numpy as np
 from mvb.simulation_API import eval_generation
+from mvb.genome import generate_genome_mutate_simple
 from .pause_manager import init_pause_manager, cleanup_pause_manager
 
 
@@ -122,6 +123,39 @@ def load_genome_generator(genome_type: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
+def load_mutation_method(mutation_method: str):
+    """Load mutation method function from mvb.genome module.
+    
+    Parameters
+    ----------
+    mutation_method : str
+        Name of the mutation method (e.g., "simple")
+    
+    Returns
+    -------
+    callable
+        The mutation function (generate_genome_mutate_simple, etc.)
+    """
+    if not mutation_method or mutation_method.lower() == "none":
+        raise ValueError(f"Invalid mutation method: '{mutation_method}'")
+    
+    # Map mutation method names to actual function names
+    function_map = {
+        "simple": "generate_genome_mutate_simple",
+    }
+    
+    function_name = function_map.get(mutation_method.lower())
+    if not function_name:
+        raise ValueError(f"Unknown mutation method '{mutation_method}'. Available methods: {list(function_map.keys())}")
+    
+    try:
+        from mvb import genome as genome_module
+        if not hasattr(genome_module, function_name):
+            raise AttributeError(f"Genome module has no function '{function_name}'.")
+        return getattr(genome_module, function_name)
+    except ImportError:
+        raise ImportError(f"Could not import genome module from mvb.")
+
 def check_ea_input_parameters(experiment_cfg):
     """
     Validate that all required evolutionary algorithm parameters are present.
@@ -139,10 +173,10 @@ def check_ea_input_parameters(experiment_cfg):
     try:
         ea_cfg = experiment_cfg["evolutionary_algorithm"]
     except KeyError:
-        raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_types, mutation_seed.")
+        raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_method, mutation_seed.")
     
     # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_types", "mutation_seed"]
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_seed"]
     for param in required_params:
         if param not in ea_cfg:
             raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
@@ -282,11 +316,20 @@ def main():
         ELITE_SIZE = ea_cfg["elite_size"]
         ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
         MUTATION_RATE = ea_cfg["mutation_rate"]
-        MUTATION_TYPES = ea_cfg["mutation_types"]
+        MUTATION_METHOD = ea_cfg["mutation_method"]
         MUTATION_SEED = ea_cfg["mutation_seed"]
+        mutation_function = load_mutation_method(MUTATION_METHOD)
         
         print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
         print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
+        print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
+        
+        # Calculate offspring distribution vector (e.g., [4, 4, 4, 5])
+        offspring_per_parent_base = POPULATION_SIZE // ELITE_SIZE
+        remainder = POPULATION_SIZE % ELITE_SIZE
+        offspring_counts = [offspring_per_parent_base] * ELITE_SIZE
+        if remainder > 0:
+            offspring_counts[-1] += remainder  # Last parent gets remainder
 
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
@@ -383,6 +426,22 @@ def main():
     
     elite_genomes = [genomes[i] for i in elite_idx]
     elite_lifespans = {i: all_lifespans[i] for i in elite_idx}
+
+    # ============================================================
+    # 8. LOOP OVER GENERATIONS
+    # ============================================================
+
+    for generation in range(NUM_GENERATIONS):
+
+        # ============================================================
+        # 9. GENERATE NEW POPULATION VIA MUTATION
+        # ============================================================
+        new_genomes = []
+        for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
+            for offspring_num in range(num_offspring):
+                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, rng_mutation)
+                new_genomes.append(mutated_genome)
+
 
 if __name__ == "__main__":
     try:
