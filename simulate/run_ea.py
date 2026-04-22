@@ -372,9 +372,9 @@ def initialize_hdf5_file(experiment_folder, simulation_name, cfg, num_generation
                 ('std', np.float32),
                 ('iqr', np.float32)
             ])
-            # Create with size num_generations + 1 (for gen 0 + generations 1..num_generations)
+            # Create with size num_generations 
             f.create_dataset("generation_stats",
-                           shape=(num_generations + 1,),
+                           shape=(num_generations,),
                            dtype=gen_stats_dtype)
     
     print(f"\n[HDF5 Init] File created: {hdf5_path}")
@@ -666,7 +666,7 @@ def main():
         elite_idx, gen_stats = pick_elite_deterministic(lifespans_combined, ELITE_SELECTION_METRIC, ELITE_SIZE)
         
         # Append directly: (generation_idx,) + stats_tuple
-        stats.append((generation + 1,) + gen_stats)
+        stats.append((generation,) + gen_stats)
         
         # ============================================================
         # 13. APPLY SELECTION
@@ -679,7 +679,7 @@ def main():
         # 14. SAVE GENERATION RESULTS 
         # ============================================================
         save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespans)
-        write_generation_stats_to_hdf5(hdf5_path, generation + 1, gen_stats)
+        write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats)
         print(f"[Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
 
     # ============================================================

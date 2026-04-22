@@ -3,13 +3,13 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_ea/"
+  output_folder: "data/temp/"
   simulation_name: "first_ea"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 300
+  n_runs: 12
   evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
@@ -25,7 +25,7 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 100
+    num_generations: 2
     elite_size: 3
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.3  # Fraction of connections to mutate per individual
