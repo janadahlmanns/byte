@@ -5,14 +5,10 @@ import sys
 import argparse
 import importlib
 from pathlib import Path
-
 import yaml
 import numpy as np
-
 from mvb.simulation_API import eval_generation
 from .pause_manager import init_pause_manager, cleanup_pause_manager
-
-
 
 
 def parse_arguments():
@@ -255,8 +251,15 @@ def main():
     SIMULATION_NAME = experiment_cfg["simulation_name"]
     GENOME_TYPE = experiment_cfg["genome_type"]
     genome_generator = load_genome_generator(GENOME_TYPE)
-    WIRING_RANDOMIZATION_SEED = experiment_cfg["wiring_randomization_seed"]
-    N_VARIANTS = experiment_cfg["n_variants"]
+    
+    # Get wiring randomization seed from genome-type-specific config
+    if GENOME_TYPE.lower() == "random":
+        WIRING_RANDOMIZATION_SEED = experiment_cfg["random_genome"]["wiring_randomization_seed"]
+    else:
+        # For lookup or other genome types, wiring seed is not used
+        WIRING_RANDOMIZATION_SEED = 0
+    
+    N_VARIANTS = experiment_cfg["population_size"]
     MAX_TICKS = experiment_cfg["max_ticks"]
     N_RUNS = experiment_cfg["n_runs"]
     
