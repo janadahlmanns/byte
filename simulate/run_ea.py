@@ -400,20 +400,20 @@ def main():
     # 5. EVALUATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
 
-    all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+    lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
 
-    total_lifespans = sum(len(v) for v in all_lifespans.values())
+    total_lifespans = sum(len(v) for v in lifespans.values())
     print(f"\n[Gen 0 Results] {total_lifespans} lifespans collected from {POPULATION_SIZE} genomes")
-    print(f"[Gen 0 Results] Average lifespan per genome: {np.mean([np.mean(ls) for ls in all_lifespans.values()]):.2f} ticks")
+    print(f"[Gen 0 Results] Average lifespan per genome: {np.mean([np.mean(ls) for ls in lifespans.values()]):.2f} ticks")
 
     # ============================================================
     # 6. SELECTION ON INITIAL POPULATION (GENERATION 0)
     # ============================================================
     
-    elite_idx, gen_stats = pick_elite_deterministic(all_lifespans, ELITE_SELECTION_METRIC, ELITE_SIZE)
+    elite_idx, gen_stats = pick_elite_deterministic(lifespans, ELITE_SELECTION_METRIC, ELITE_SIZE)
     stats.append(gen_stats)
     
     print(f"\n[Gen 0 Selection] Elite selection metric: {ELITE_SELECTION_METRIC}")
@@ -425,7 +425,7 @@ def main():
     # ============================================================
     
     elite_genomes = [genomes[i] for i in elite_idx]
-    elite_lifespans = {i: all_lifespans[i] for i in elite_idx}
+    elite_lifespans = {i: lifespans[i] for i in elite_idx}
 
     # ============================================================
     # 8. LOOP OVER GENERATIONS
@@ -436,12 +436,24 @@ def main():
         # ============================================================
         # 9. GENERATE NEW POPULATION VIA MUTATION
         # ============================================================
-        new_genomes = []
+        genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
             for offspring_num in range(num_offspring):
                 mutated_genome = mutation_function(elite_genome, MUTATION_RATE, rng_mutation)
-                new_genomes.append(mutated_genome)
+                genomes_new.append(mutated_genome)
 
+        # ============================================================
+        # 10. EVAL NEW GENERATION
+        # ============================================================
+        lifespans_new = eval_generation(genomes_new, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
+                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+
+        # ============================================================
+        # 11. COMBINE NEW GENERATION AND PREVIOUS ELITE FOR SELECTION
+        # ============================================================
+        genomes_combined = elite_genomes + genomes_new
+        lifespans_combined = {i: v for i, v in enumerate(list(elite_lifespans.values()) + list(lifespans_new.values()))} 
 
 if __name__ == "__main__":
     try:
