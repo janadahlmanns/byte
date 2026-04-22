@@ -392,10 +392,15 @@ def print_results(hdf5_path, num_generations, elite_size):
     print("="*80 + "\n")
 
 
-def plot_results(hdf5_path):
+def plot_results(hdf5_path, save_path=None, show=False):
     """Plot generation statistics from HDF5 file.
     
     Displays a plot with mean±std and median±IQR shading, plus min/max lines.
+    
+    Args:
+        hdf5_path: Path to HDF5 file with generation_stats dataset
+        save_path: Optional path to save the figure as PNG. If None, figure is not saved.
+        show: Whether to display the plot interactively (plt.show())
     """
     # Load generation stats from HDF5
     with h5py.File(hdf5_path, 'r') as f:
@@ -439,7 +444,17 @@ def plot_results(hdf5_path):
     ax.grid(True, alpha=0.3)
     
     fig.tight_layout()
-    plt.show()
+    
+    # Save to file if requested
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[Plot Saved] {save_path}")
+    
+    # Show interactively if requested
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 # ============================================================
@@ -688,10 +703,14 @@ def main():
 
     print_results(hdf5_path, NUM_GENERATIONS, ELITE_SIZE)
     
-    # Ask user if they want to visualize results
+    # Generate and save results plot
+    plot_save_path = str(Path(hdf5_path).with_name(Path(hdf5_path).stem + "_results.png"))
+    plot_results(hdf5_path, save_path=plot_save_path, show=False)
+    
+    # Ask user if they want to view it interactively
     response = input("Display generation statistics plot? (y/n): ").strip().lower()
     if response == 'y':
-        plot_results(hdf5_path)
+        plot_results(hdf5_path, save_path=None, show=True)
     
     print("Done.\n")
 
