@@ -635,7 +635,7 @@ def main():
     # 8. LOOP OVER GENERATIONS
     # ============================================================
 
-    for generation in range(NUM_GENERATIONS):
+    for generation in range(1, NUM_GENERATIONS):
 
         # ============================================================
         # 9. GENERATE NEW POPULATION VIA MUTATION
@@ -680,7 +680,7 @@ def main():
         # ============================================================
         save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespans)
         write_generation_stats_to_hdf5(hdf5_path, generation + 1, gen_stats)
-        print(f"[Gen {generation + 1}/{NUM_GENERATIONS}] Checkpoint saved")
+        print(f"[Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
 
     # ============================================================
     # 15. PRINT AND PLOT RESULTS

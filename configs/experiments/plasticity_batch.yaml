@@ -4,29 +4,29 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "lookup_validation"
+  simulation_name: "first_ea"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 2
+  n_runs: 300
   evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup"
-  population_size: 20
+  population_size: 100
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
-    connectivity_degree_excitatory: 0.2
-    connectivity_degree_inhibitory: 0.4
-    modulation_degree_potentiation: 0.5
-    modulation_degree_depression: 0.5
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.2
+    modulation_degree_potentiation: 0.25
+    modulation_degree_depression: 0.25
 
   # evolutionary algorithm
   evolutionary_algorithm:
     num_generations: 10
-    elite_size: 5
+    elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.3  # Fraction of connections to mutate per individual
     mutation_method: simple  # Options: 'simple'
