@@ -14,15 +14,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.stats import skew, kurtosis, shapiro, f_oneway, kruskal, mannwhitneyu, ttest_ind
-try:
-    from scipy.integrate import trapezoid as trapz
-except ImportError:
-    from scipy.integrate import trapz
-from statsmodels.stats.multitest import multipletests
-from itertools import combinations
 import sys
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from docx import Document
 
 # Add workspace root to path for imports
 _current_path = Path(__file__).resolve()
@@ -313,58 +306,105 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
     return df
 
 
+def plot_ea_results(hdf5_path, doc, figures_dir):
+    """
+    Plot generation statistics from HDF5 file and add to Word document.
+    
+    Displays a plot with mean±std and median±IQR shading, plus min/max lines.
+    Saves the figure to a PNG file and adds it to the report.
+    
+    Args:
+        hdf5_path: Path to HDF5 file with generation_stats dataset
+        doc: python-docx Document object to add the figure to
+        figures_dir: Path to directory where figure PNG files are saved
+    """
+    # Load generation stats from HDF5
+    with h5py.File(hdf5_path, 'r') as f:
+        gen_stats_data = f["generation_stats"][:]
+    
+    # Extract columns
+    generations = gen_stats_data['generation']
+    mean_vals = gen_stats_data['mean']
+    median_vals = gen_stats_data['median']
+    min_vals = gen_stats_data['min']
+    max_vals = gen_stats_data['max']
+    std_vals = gen_stats_data['std']
+    iqr_vals = gen_stats_data['iqr']
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Plot mean with std shading (primary)
+    ax.fill_between(generations, mean_vals - std_vals, mean_vals + std_vals, 
+                    alpha=0.3, color=PRIMARY_COLOR, label='Mean with std')
+    ax.plot(generations, mean_vals, '-', linewidth=2.5, color=PRIMARY_COLOR)
+    
+    # Plot median with IQR shading (secondary)
+    ax.fill_between(generations, median_vals - iqr_vals/2, median_vals + iqr_vals/2, 
+                    alpha=0.3, color=SECONDARY_COLOR, label='Median with IQR')
+    ax.plot(generations, median_vals, '-', linewidth=2.5, color=SECONDARY_COLOR)
+    
+    # Plot min and max (tertiary)
+    ax.plot(generations, min_vals, '--', linewidth=2, color=TERTIARY_COLOR, label='Min and max')
+    ax.plot(generations, max_vals, '--', linewidth=2, color=TERTIARY_COLOR)
+    
+    ax.set_xlabel('Generations', fontsize=12)
+    ax.set_ylabel('Lifespan [ticks]', fontsize=12)
+    ax.set_title('Lifespan Across Generations', fontsize=14)
+    ax.legend(fontsize=11, loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    fig.tight_layout()
+    
+    # Save to file
+    figures_dir.mkdir(exist_ok=True)
+    figure_path = figures_dir / 'ea_lifespan_generations.png'
+    figure_path_abs = figure_path.resolve()
+    fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
+    
+    fig.tight_layout()
+    
+    # Add to report
+    doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # Close figure
+    plt.close(fig)
+
 
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
 
-print("\n=== SECTION C: DATA LOADING ===")
-print("Loading experiment data...")
-print(f"Loading experiment data from: {EXPERIMENT_HDF5}")
+
+
 experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
 
 # Load experiment attributes
-print("  Loading experiment parameters...")
 experiment_attrs = _load_ea_attributes(experiment_hdf5_path)
-print(f"  Found {len(experiment_attrs)} experiment parameters")
+
 
 # Load experiment generation stats
-print("  Loading generation_stats...")
 df_generation_stats_exp = _load_generation_stats(experiment_hdf5_path)
-print(f"  Loaded generation_stats with {len(df_generation_stats_exp)} generations")
-print("\nExperiment generation_stats head:")
-print(df_generation_stats_exp.head())
+
 
 # Load experiment elite lifespans
-print("  Loading elite lifespans...")
 df_elite_lifespans_exp = _load_elite_lifespans(experiment_hdf5_path)
-print(f"  Loaded elite_lifespans with shape {df_elite_lifespans_exp.shape}")
-print("\nExperiment elite_lifespans head:")
-print(df_elite_lifespans_exp.head())
 
 # Load experiment elite genomes
-print("  Loading elite genomes...")
 df_elite_genomes_exp = _load_elite_genomes(experiment_hdf5_path)
-print(f"  Loaded {len(df_elite_genomes_exp)} elite genomes with {len(df_elite_genomes_exp.columns)} columns")
-print("\nExperiment elite_genomes head:")
-print(df_elite_genomes_exp.head())
+
 
 # Load experiment connection weights
-print("  Loading connection weights...")
 connection_weights_experiment = _load_connection_weights(experiment_hdf5_path)
-print(f"  Loaded connection weights for {len(connection_weights_experiment)} elite genomes")
-for elite_id, weights in connection_weights_experiment.items():
-    print(f"    elite_{elite_id}: shape {weights.shape}")
+
 
 # Load experiment modulation specs
-print("  Loading modulation specs...")
+
 df_modulation_specs_exp = _load_modulation_specs(experiment_hdf5_path, 'experiment')
-print(f"  Loaded modulation specs with {len(df_modulation_specs_exp)} total entries")
-print("\nExperiment modulation_specs head:")
-print(df_modulation_specs_exp.head())
+
 
 print("\nExperiment data loaded.")
-print("Loading benchmark data...")
 
 # Load benchmark data if specified
 df_benchmarks_generations_stats = None
@@ -378,12 +418,12 @@ if BENCHMARK_HDF5_FILES:
     for bench_name, bench_hdf5 in BENCHMARK_HDF5_FILES:
         try:
             bench_path = _find_hdf5_file(bench_hdf5)
-            print(f"\n  Loading benchmark '{bench_name}'...")
+            print(f"\nLoading benchmark '{bench_name}'...")
             
             # Load benchmark attributes
             bench_attrs = _load_ea_attributes(bench_path)
             benchmark_attrs[bench_name] = bench_attrs
-            print(f"    Found {len(bench_attrs)} benchmark parameters")
+
             
             # Load benchmark generation stats
             df_gen_stats = _load_generation_stats(bench_path)
@@ -392,11 +432,10 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_generations_stats = df_gen_stats
             else:
                 df_benchmarks_generations_stats = pd.concat([df_benchmarks_generations_stats, df_gen_stats], ignore_index=True)
-            print(f"    Loaded generation_stats with {len(df_gen_stats)} generations")
+
             
             # Load benchmark elite lifespans
             df_lifespans = _load_elite_lifespans(bench_path)
-            print(f"    Loaded elite_lifespans with shape {df_lifespans.shape}")
             df_lifespans['source'] = bench_name
             if df_benchmarks_elite_lifespans is None:
                 df_benchmarks_elite_lifespans = df_lifespans
@@ -410,7 +449,6 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_elite_genomes = df_genomes
             else:
                 df_benchmarks_elite_genomes = pd.concat([df_benchmarks_elite_genomes, df_genomes], ignore_index=True)
-            print(f"    Loaded {len(df_genomes)} elite genomes")
             
             # Load benchmark connection weights
             # Create a sanitized name for the dictionary key (replace spaces with underscores)
@@ -418,7 +456,6 @@ if BENCHMARK_HDF5_FILES:
             connection_weights_key = f"connection_weights_{bench_key}"
             connection_weights_data = _load_connection_weights(bench_path)
             connection_weights_collection[connection_weights_key] = connection_weights_data
-            print(f"    Loaded connection weights for {len(connection_weights_data)} elite genomes")
             
             # Load benchmark modulation specs
             df_mod_specs = _load_modulation_specs(bench_path, bench_name)
@@ -426,70 +463,44 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_modulation_specs = df_mod_specs
             else:
                 df_benchmarks_modulation_specs = pd.concat([df_benchmarks_modulation_specs, df_mod_specs], ignore_index=True)
-            print(f"    Loaded modulation specs with {len(df_mod_specs)} entries")
             
         except FileNotFoundError as e:
-            print(f"  Warning: Could not load benchmark '{bench_name}': {e}")
+            print(f"Warning: Could not load benchmark '{bench_name}': {e}")
         except Exception as e:
-            print(f"  Warning: Error loading benchmark '{bench_name}': {e}")
+            print(f"Warning: Error loading benchmark '{bench_name}': {e}")
 else:
-    print("  No benchmarks specified.")
+    print("No benchmarks specified.")
 
 print("\nAll HDF5 data loaded.")
 
-# Print summary of connection weights collections
-print("\nConnection Weights Collections:")
-print(f"  connection_weights_experiment: {len(connection_weights_experiment)} elite genomes")
-for elite_id, weights in connection_weights_experiment.items():
-    print(f"    elite_{elite_id}: shape {weights.shape}")
-
-if connection_weights_collection:
-    for cw_key, cw_data in connection_weights_collection.items():
-        print(f"  {cw_key}: {len(cw_data)} elite genomes")
-        for elite_id, weights in cw_data.items():
-            print(f"    elite_{elite_id}: shape {weights.shape}")
-
-# Print summary of modulation specs
-print("\nModulation Specs Collections:")
-print(f"  df_modulation_specs_exp: {len(df_modulation_specs_exp)} entries")
-if df_benchmarks_modulation_specs is not None:
-    print(f"  df_benchmarks_modulation_specs: {len(df_benchmarks_modulation_specs)} total entries")
-    for bench_name in df_benchmarks_modulation_specs['source'].unique():
-        count = len(df_benchmarks_modulation_specs[df_benchmarks_modulation_specs['source'] == bench_name])
-        print(f"    {bench_name}: {count} entries")
-
-print("=== END SECTION C ===")
+# Create figures directory
+figures_dir = Path(__file__).resolve().parent / 'figures'
 
 
 # ==================================================================================================================================================
 # SECTION D) ANALYSIS
 # ==================================================================================================================================================
 
-print("\n=== SECTION D: ANALYSIS ===")
-print("Creating document...")
-
-from docx import Document
-
 doc = Document()
 doc.add_heading(f"EA Analysis Report: {EXPERIMENT_NAME}", level=0)
-print("Document created.")
 
 
 
-# endregion 5
+# Plot and add first figure
+plot_ea_results(experiment_hdf5_path, doc, figures_dir)
+
+
 
 # ==================================================================================================================================================
 # SAVE REPORT
 # ==================================================================================================================================================
 
-print("Saving document...")
 
-output_dir = Path(__file__).resolve().parent / 'reports'
-output_dir.mkdir(exist_ok=True)
-output_path = output_dir / f'{EXPERIMENT_NAME}_analysis_report.docx'
+
+output_dir = Path(__file__).resolve().parent
+output_path = output_dir / f'results_{EXPERIMENT_NAME}.docx'
 
 doc.save(str(output_path))
 print(f"Report saved to: {output_path}")
 
-print("=== END SECTION D ===")
-print("\nAnalysis complete!")
+
