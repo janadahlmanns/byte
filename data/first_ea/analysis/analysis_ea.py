@@ -249,6 +249,71 @@ def _load_connection_weights(hdf5_path: Path) -> dict:
     return connection_weights
 
 
+def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
+    """
+    Load modulation specifications for all elite genomes from HDF5 file.
+    
+    Each row represents one modulation entry (source neuron → target neuron, modulated by modulating_neuron).
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        source_label: Label to add as 'source' column (e.g., 'experiment', benchmark name)
+    
+    Returns:
+        DataFrame with columns: source, elite, source, target, modulating_neuron, modulation_weight
+        (Note: 'source' at front is the experiment/benchmark label)
+    """
+    all_data = []
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            raise ValueError("elite_genomes folder not found in HDF5 file")
+        
+        elite_group = f['elite_genomes']
+        # Find all elite_N folders
+        elite_folders = sorted([key for key in elite_group.keys() if key.startswith('elite_')])
+        
+        for elite_folder in elite_folders:
+            try:
+                elite_id = int(elite_folder.split('_')[1])
+                folder = elite_group[elite_folder]
+                
+                # Load modulation_spec
+                if 'modulation_spec' not in folder:
+                    print(f"  Warning: modulation_spec not found in {elite_folder}")
+                    continue
+                
+                mod_data = folder['modulation_spec'][:]
+                
+                # Convert structured array to DataFrame
+                df_mod = pd.DataFrame(mod_data)
+                
+                # Add elite identifier
+                df_mod['elite'] = elite_id
+                
+                # Add source label
+                df_mod['source'] = source_label
+                
+                all_data.append(df_mod)
+            except Exception as e:
+                print(f"  Warning: Error loading modulation_spec from {elite_folder}: {e}")
+                continue
+    
+    if not all_data:
+        # Return empty DataFrame with correct structure
+        return pd.DataFrame(columns=['source', 'elite', 'source_neuron', 'target_neuron', 'modulating_neuron', 'modulation_weight'])
+    
+    df = pd.concat(all_data, ignore_index=True)
+    
+    # Reorder columns: source at front, then elite, then the modulation columns
+    # Get the modulation columns (exclude 'source' and 'elite')
+    mod_cols = [col for col in df.columns if col not in ['source', 'elite']]
+    df = df[['source', 'elite'] + mod_cols]
+    
+    return df
+
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
@@ -291,6 +356,13 @@ print(f"  Loaded connection weights for {len(connection_weights_experiment)} eli
 for elite_id, weights in connection_weights_experiment.items():
     print(f"    elite_{elite_id}: shape {weights.shape}")
 
+# Load experiment modulation specs
+print("  Loading modulation specs...")
+df_modulation_specs_exp = _load_modulation_specs(experiment_hdf5_path, 'experiment')
+print(f"  Loaded modulation specs with {len(df_modulation_specs_exp)} total entries")
+print("\nExperiment modulation_specs head:")
+print(df_modulation_specs_exp.head())
+
 print("\nExperiment data loaded.")
 print("Loading benchmark data...")
 
@@ -298,6 +370,7 @@ print("Loading benchmark data...")
 df_benchmarks_generations_stats = None
 df_benchmarks_elite_lifespans = None
 df_benchmarks_elite_genomes = None
+df_benchmarks_modulation_specs = None
 benchmark_attrs = {}
 connection_weights_collection = {}  # Will collect all connection_weights structures
 
@@ -347,6 +420,14 @@ if BENCHMARK_HDF5_FILES:
             connection_weights_collection[connection_weights_key] = connection_weights_data
             print(f"    Loaded connection weights for {len(connection_weights_data)} elite genomes")
             
+            # Load benchmark modulation specs
+            df_mod_specs = _load_modulation_specs(bench_path, bench_name)
+            if df_benchmarks_modulation_specs is None:
+                df_benchmarks_modulation_specs = df_mod_specs
+            else:
+                df_benchmarks_modulation_specs = pd.concat([df_benchmarks_modulation_specs, df_mod_specs], ignore_index=True)
+            print(f"    Loaded modulation specs with {len(df_mod_specs)} entries")
+            
         except FileNotFoundError as e:
             print(f"  Warning: Could not load benchmark '{bench_name}': {e}")
         except Exception as e:
@@ -368,16 +449,16 @@ if connection_weights_collection:
         for elite_id, weights in cw_data.items():
             print(f"    elite_{elite_id}: shape {weights.shape}")
 
-print("=== END SECTION C ===")
+# Print summary of modulation specs
+print("\nModulation Specs Collections:")
+print(f"  df_modulation_specs_exp: {len(df_modulation_specs_exp)} entries")
+if df_benchmarks_modulation_specs is not None:
+    print(f"  df_benchmarks_modulation_specs: {len(df_benchmarks_modulation_specs)} total entries")
+    for bench_name in df_benchmarks_modulation_specs['source'].unique():
+        count = len(df_benchmarks_modulation_specs[df_benchmarks_modulation_specs['source'] == bench_name])
+        print(f"    {bench_name}: {count} entries")
 
-# HDF5 files dictionary for reference
-hdf5_files_dict = {'experiment': experiment_hdf5_path}
-if BENCHMARK_HDF5_FILES:
-    for bench_name, bench_hdf5 in BENCHMARK_HDF5_FILES:
-        try:
-            hdf5_files_dict[bench_name] = _find_hdf5_file(bench_hdf5)
-        except FileNotFoundError:
-            pass
+print("=== END SECTION C ===")
 
 
 # ==================================================================================================================================================
