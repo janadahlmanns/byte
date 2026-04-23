@@ -174,14 +174,12 @@ def _load_elite_genomes(hdf5_path: Path) -> pd.DataFrame:
                 
                 # Load eta (it's stored as a 1D array with one element)
                 if 'eta' not in folder:
-                    print(f"  Warning: eta not found in {elite_folder}")
                     continue
                 eta_array = folder['eta'][:]
                 eta = eta_array[0] if len(eta_array) > 0 else eta_array[()]
                 
                 # Load tonic_activations
                 if 'tonic_activations' not in folder:
-                    print(f"  Warning: tonic_activations not found in {elite_folder}")
                     continue
                 tonic_acts = folder['tonic_activations'][:]
                 
@@ -191,7 +189,6 @@ def _load_elite_genomes(hdf5_path: Path) -> pd.DataFrame:
                     row[f'tonic_activation_{i}'] = val
                 all_data.append(row)
             except Exception as e:
-                print(f"  Warning: Error loading {elite_folder}: {e}")
                 continue
     
     if not all_data:
@@ -230,13 +227,11 @@ def _load_connection_weights(hdf5_path: Path) -> dict:
                 
                 # Load connection_weights
                 if 'connection_weights' not in folder:
-                    print(f"  Warning: connection_weights not found in {elite_folder}")
                     continue
                 
                 weights = folder['connection_weights'][:]
                 connection_weights[elite_id] = weights
             except Exception as e:
-                print(f"  Warning: Error loading connection_weights from {elite_folder}: {e}")
                 continue
     
     return connection_weights
@@ -273,7 +268,6 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
                 
                 # Load modulation_spec
                 if 'modulation_spec' not in folder:
-                    print(f"  Warning: modulation_spec not found in {elite_folder}")
                     continue
                 
                 mod_data = folder['modulation_spec'][:]
@@ -289,7 +283,6 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
                 
                 all_data.append(df_mod)
             except Exception as e:
-                print(f"  Warning: Error loading modulation_spec from {elite_folder}: {e}")
                 continue
     
     if not all_data:
@@ -372,10 +365,119 @@ def plot_ea_results(hdf5_path, doc, figures_dir):
     plt.close(fig)
 
 
+def summarize_parameter(doc, experiment_attrs, experiment_filename, benchmark_attrs=None, benchmark_hdf5_files=None):
+    """
+    Add experiment and benchmark parameters summary to the Word document.
+    
+    Creates formatted tables showing selected parameters loaded from HDF5 attributes,
+    plus the filenames used.
+    
+    Args:
+        doc: python-docx Document object to add tables to
+        experiment_attrs: Dictionary of experiment attributes from HDF5
+        experiment_filename: String of experiment HDF5 filename (without .h5)
+        benchmark_attrs: Optional dict mapping benchmark name to attributes dict
+        benchmark_hdf5_files: Optional list of tuples (benchmark_name, hdf5_filename)
+    """
+    # Build benchmark filenames mapping
+    benchmark_filenames_map = {name: filename for name, filename in benchmark_hdf5_files} if benchmark_hdf5_files else {}
+    
+    # Define which attributes to include (actual HDF5 attribute names from data)
+    attributes_to_include = {
+        'brain_max_decision_delay',
+        'brain_n_neurons',
+        'brain_noise_level',
+        'experiment_evolutionary_algorithm_elite_selection_metric',
+        'experiment_evolutionary_algorithm_elite_size',
+        'experiment_evolutionary_algorithm_mutation_method',
+        'experiment_evolutionary_algorithm_mutation_rate',
+        'experiment_evolutionary_algorithm_num_generations',
+        'experiment_genome_type',
+        'experiment_max_ticks',
+        'experiment_n_runs',
+        'experiment_population_size',
+        'food_feeding_paradigm_initial',
+        'food_feeding_paradigm_regrow',
+        'food_initial_fraction_per_cell',
+        'food_regrow_time',
+        'worm_decisionmaking_version',
+        'worm_energy_capacity',
+        'worm_metabolic_rate',
+        'worm_movement_cost'
+    }
+    
+    def filter_attributes(attrs_dict):
+        """Filter attributes to only include those in the list (case-insensitive)."""
+        filtered = {}
+        attrs_lower = {k.lower(): (k, v) for k, v in attrs_dict.items()}
+        for attr_name in attributes_to_include:
+            if attr_name.lower() in attrs_lower:
+                original_key, value = attrs_lower[attr_name.lower()]
+                filtered[original_key] = value
+        return filtered
+    
+    # Add experiment parameters section
+    doc.add_heading('Experiment Parameters', level=2)
+    
+    # Filter experiment attributes
+    filtered_exp_attrs = filter_attributes(experiment_attrs)
+    
+    # Create table for experiment parameters (filename + filtered attributes)
+    num_rows = len(filtered_exp_attrs) + 2  # +2 for header and filename row
+    exp_table = doc.add_table(rows=num_rows, cols=2)
+    exp_table.style = 'Light Grid Accent 1'
+    
+    # Header row
+    exp_table.rows[0].cells[0].text = 'Parameter'
+    exp_table.rows[0].cells[1].text = 'Value'
+    
+    # Filename row
+    exp_table.rows[1].cells[0].text = 'Filename'
+    exp_table.rows[1].cells[1].text = experiment_filename
+    
+    # Parameters from filtered attributes (sorted by key)
+    for row_idx, (key, value) in enumerate(sorted(filtered_exp_attrs.items()), 2):
+        exp_table.rows[row_idx].cells[0].text = str(key)
+        exp_table.rows[row_idx].cells[1].text = str(value)
+    
+    doc.add_paragraph()
+    
+    # Add benchmark parameters if available
+    if benchmark_attrs:
+        for bench_name in sorted(benchmark_attrs.keys()):
+            bench_attrs_dict = benchmark_attrs[bench_name]
+            bench_filename = benchmark_filenames_map.get(bench_name, 'Unknown')
+            
+            # Filter benchmark attributes
+            filtered_bench_attrs = filter_attributes(bench_attrs_dict)
+            
+            # Add heading for this benchmark
+            doc.add_heading(f'Benchmark: {bench_name} Parameters', level=2)
+            
+            # Create table for benchmark parameters
+            num_rows_bench = len(filtered_bench_attrs) + 2  # +2 for header and filename row
+            bench_table = doc.add_table(rows=num_rows_bench, cols=2)
+            bench_table.style = 'Light Grid Accent 1'
+            
+            # Header row
+            bench_table.rows[0].cells[0].text = 'Parameter'
+            bench_table.rows[0].cells[1].text = 'Value'
+            
+            # Filename row
+            bench_table.rows[1].cells[0].text = 'Filename'
+            bench_table.rows[1].cells[1].text = bench_filename
+            
+            # Parameters from filtered attributes (sorted by key)
+            for row_idx, (key, value) in enumerate(sorted(filtered_bench_attrs.items()), 2):
+                bench_table.rows[row_idx].cells[0].text = str(key)
+                bench_table.rows[row_idx].cells[1].text = str(value)
+            
+            doc.add_paragraph()
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
-
 
 
 experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
@@ -465,9 +567,9 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_modulation_specs = pd.concat([df_benchmarks_modulation_specs, df_mod_specs], ignore_index=True)
             
         except FileNotFoundError as e:
-            print(f"Warning: Could not load benchmark '{bench_name}': {e}")
+            pass
         except Exception as e:
-            print(f"Warning: Error loading benchmark '{bench_name}': {e}")
+            pass
 else:
     print("No benchmarks specified.")
 
@@ -484,10 +586,26 @@ figures_dir = Path(__file__).resolve().parent / 'figures'
 doc = Document()
 doc.add_heading(f"EA Analysis Report: {EXPERIMENT_NAME}", level=0)
 
+# region Overview
 
+# Call parameter summary function
+summarize_parameter(doc, experiment_attrs, EXPERIMENT_HDF5, benchmark_attrs, BENCHMARK_HDF5_FILES)
+
+# endregion Overview
+# region EA Results / Fitness
 
 # Plot and add first figure
 plot_ea_results(experiment_hdf5_path, doc, figures_dir)
+
+# endregion EA Results / Fitness
+# region connectivity
+
+# endregion connectivity
+# region plasticity
+
+# endregion plasticity
+
+
 
 
 
