@@ -136,7 +136,7 @@ def _load_hdf5_variants_to_dataframe(hdf5_path: Path, source_label: str = None) 
         raise ValueError(f"No variant data found in {hdf5_path}")
     
     df = pd.concat(all_data, ignore_index=True)
-    return df
+    return df 
 
 
 def _calculate_overview_statistics(data_series: pd.Series) -> dict:
