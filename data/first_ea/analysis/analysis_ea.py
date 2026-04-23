@@ -208,6 +208,45 @@ def _load_elite_genomes(hdf5_path: Path) -> pd.DataFrame:
     return df 
 
 
+def _load_connection_weights(hdf5_path: Path) -> dict:
+    """
+    Load connection weights for all elite genomes from HDF5 file.
+    
+    Returns a dictionary mapping elite_id -> connection_weights array.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+    
+    Returns:
+        Dictionary {elite_id: connection_weights_array, ...}
+    """
+    connection_weights = {}
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            raise ValueError("elite_genomes folder not found in HDF5 file")
+        
+        elite_group = f['elite_genomes']
+        # Find all elite_N folders
+        elite_folders = sorted([key for key in elite_group.keys() if key.startswith('elite_')])
+        
+        for elite_folder in elite_folders:
+            try:
+                elite_id = int(elite_folder.split('_')[1])
+                folder = elite_group[elite_folder]
+                
+                # Load connection_weights
+                if 'connection_weights' not in folder:
+                    print(f"  Warning: connection_weights not found in {elite_folder}")
+                    continue
+                
+                weights = folder['connection_weights'][:]
+                connection_weights[elite_id] = weights
+            except Exception as e:
+                print(f"  Warning: Error loading connection_weights from {elite_folder}: {e}")
+                continue
+    
+    return connection_weights
 
 
 # ==================================================================================================================================================
@@ -245,6 +284,13 @@ print(f"  Loaded {len(df_elite_genomes_exp)} elite genomes with {len(df_elite_ge
 print("\nExperiment elite_genomes head:")
 print(df_elite_genomes_exp.head())
 
+# Load experiment connection weights
+print("  Loading connection weights...")
+connection_weights_experiment = _load_connection_weights(experiment_hdf5_path)
+print(f"  Loaded connection weights for {len(connection_weights_experiment)} elite genomes")
+for elite_id, weights in connection_weights_experiment.items():
+    print(f"    elite_{elite_id}: shape {weights.shape}")
+
 print("\nExperiment data loaded.")
 print("Loading benchmark data...")
 
@@ -253,6 +299,7 @@ df_benchmarks_generations_stats = None
 df_benchmarks_elite_lifespans = None
 df_benchmarks_elite_genomes = None
 benchmark_attrs = {}
+connection_weights_collection = {}  # Will collect all connection_weights structures
 
 if BENCHMARK_HDF5_FILES:
     for bench_name, bench_hdf5 in BENCHMARK_HDF5_FILES:
@@ -282,6 +329,8 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_elite_lifespans = df_lifespans
             else:
                 df_benchmarks_elite_lifespans = pd.concat([df_benchmarks_elite_lifespans, df_lifespans], ignore_index=True)
+            
+            # Load benchmark elite genomes
             df_genomes = _load_elite_genomes(bench_path)
             df_genomes['source'] = bench_name
             if df_benchmarks_elite_genomes is None:
@@ -289,6 +338,14 @@ if BENCHMARK_HDF5_FILES:
             else:
                 df_benchmarks_elite_genomes = pd.concat([df_benchmarks_elite_genomes, df_genomes], ignore_index=True)
             print(f"    Loaded {len(df_genomes)} elite genomes")
+            
+            # Load benchmark connection weights
+            # Create a sanitized name for the dictionary key (replace spaces with underscores)
+            bench_key = bench_name.replace(" ", "_").replace("-", "_").lower()
+            connection_weights_key = f"connection_weights_{bench_key}"
+            connection_weights_data = _load_connection_weights(bench_path)
+            connection_weights_collection[connection_weights_key] = connection_weights_data
+            print(f"    Loaded connection weights for {len(connection_weights_data)} elite genomes")
             
         except FileNotFoundError as e:
             print(f"  Warning: Could not load benchmark '{bench_name}': {e}")
@@ -298,6 +355,19 @@ else:
     print("  No benchmarks specified.")
 
 print("\nAll HDF5 data loaded.")
+
+# Print summary of connection weights collections
+print("\nConnection Weights Collections:")
+print(f"  connection_weights_experiment: {len(connection_weights_experiment)} elite genomes")
+for elite_id, weights in connection_weights_experiment.items():
+    print(f"    elite_{elite_id}: shape {weights.shape}")
+
+if connection_weights_collection:
+    for cw_key, cw_data in connection_weights_collection.items():
+        print(f"  {cw_key}: {len(cw_data)} elite genomes")
+        for elite_id, weights in cw_data.items():
+            print(f"    elite_{elite_id}: shape {weights.shape}")
+
 print("=== END SECTION C ===")
 
 # HDF5 files dictionary for reference

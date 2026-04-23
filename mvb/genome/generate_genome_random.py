@@ -148,7 +148,7 @@ def generate_random_genome(yaml_config, rng_seed):
         src = pair_idx // n_neurons
         tgt = pair_idx % n_neurons
         weight = rng.uniform(0.1, 1.0)  # Positive weight for excitatory
-        reliability = rng.uniform(0.5, 1.0)
+        reliability = rng.uniform(0.0, 1.0)
         connection_weights[src, tgt] = [weight, reliability]
     
     # Generate inhibitory connections
@@ -163,7 +163,7 @@ def generate_random_genome(yaml_config, rng_seed):
         src = pair_idx // n_neurons
         tgt = pair_idx % n_neurons
         weight = rng.uniform(-1.0, -0.1)  # Negative weight for inhibitory
-        reliability = rng.uniform(0.5, 1.0)
+        reliability = rng.uniform(0.0, 1.0)
         connection_weights[src, tgt] = [weight, reliability]
     
     # Generate modulation specification
