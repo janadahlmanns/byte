@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
+import random
 from docx import Document
 
 # Add workspace root to path for imports
@@ -54,6 +55,9 @@ PRIMARY_COLOR = "#0B3D2E"      # Dark green for best performing variants
 SECONDARY_COLOR = "#8B3A3A"    # Wine red for worst performing variants
 TERTIARY_COLOR = "#4A7C8C"     # Grayish ice blue for benchmarks
 HIGHLIGHT_COLOR = "#D4AF37"     # Gold for highlights
+
+# Color palette for different experiments/benchmarks (uses random if more than 4)
+COLOR_PALETTE = [PRIMARY_COLOR, SECONDARY_COLOR, TERTIARY_COLOR, "#F0E2E7"]
 
 # ==================================================================================================================================================
 # SECTION B) HELPER FUNCTIONS
@@ -299,30 +303,60 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
     return df
 
 
-def plot_ea_results(hdf5_path, doc, figures_dir):
+def _close_word_document(filepath: Path) -> None:
     """
-    Plot generation statistics from HDF5 file and add to Word document.
+    Close a Word document if it's currently open in Microsoft Word.
+    
+    Prompts the user with a "Save changes?" dialog if the document has been modified.
+    Silently closes without prompting if no changes were made.
+    Does nothing if Word is not running or the document is not open.
+    
+    Args:
+        filepath: Path to the Word document (.docx file)
+    """
+    try:
+        import win32com.client
+        
+        try:
+            # Get the running Word application
+            word_app = win32com.client.GetObject(class_name="Word.Application")
+            
+            # Search through all open documents
+            for doc in word_app.Documents:
+                # Compare full paths to ensure we match the right document
+                if str(filepath.resolve()) in doc.FullName or doc.FullName in str(filepath.resolve()):
+                    # Close with SaveChanges=2 (wdPrompt)
+                    # 0 = wdDoNotSaveChanges, 1 = wdSaveChanges, 2 = wdPrompt
+                    doc.Close(SaveChanges=2)
+                    return
+        except Exception as e:
+            # Word not running or document not found - that's fine
+            pass
+    except ImportError:
+        # pywin32 not installed - skip this step
+        pass
+
+
+def plot_ea_results(df_generation_stats, doc, figures_dir):
+    """
+    Plot generation statistics and add to Word document.
     
     Displays a plot with mean±std and median±IQR shading, plus min/max lines.
     Saves the figure to a PNG file and adds it to the report.
     
     Args:
-        hdf5_path: Path to HDF5 file with generation_stats dataset
+        df_generation_stats: DataFrame with generation statistics (columns: generation, mean, median, min, max, std, iqr)
         doc: python-docx Document object to add the figure to
         figures_dir: Path to directory where figure PNG files are saved
     """
-    # Load generation stats from HDF5
-    with h5py.File(hdf5_path, 'r') as f:
-        gen_stats_data = f["generation_stats"][:]
-    
-    # Extract columns
-    generations = gen_stats_data['generation']
-    mean_vals = gen_stats_data['mean']
-    median_vals = gen_stats_data['median']
-    min_vals = gen_stats_data['min']
-    max_vals = gen_stats_data['max']
-    std_vals = gen_stats_data['std']
-    iqr_vals = gen_stats_data['iqr']
+    # Extract columns from dataframe
+    generations = df_generation_stats['generation']
+    mean_vals = df_generation_stats['mean']
+    median_vals = df_generation_stats['median']
+    min_vals = df_generation_stats['min']
+    max_vals = df_generation_stats['max']
+    std_vals = df_generation_stats['std']
+    iqr_vals = df_generation_stats['iqr']
     
     # Create figure
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -356,6 +390,65 @@ def plot_ea_results(hdf5_path, doc, figures_dir):
     fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
     
     fig.tight_layout()
+    
+    # Add to report
+    doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # Close figure
+    plt.close(fig)
+
+
+def plot_fitness_distribution(df_lifespan_data, doc, figures_dir):
+    """
+    Plot distribution of elite lifespans across runs for experiment and benchmarks.
+    
+    Args:
+        df_lifespan_data: DataFrame with lifespan data (columns: experiment, elite_ID, run, lifespan)
+        doc: python-docx Document object to add the figure to
+        figures_dir: Path to directory where figure PNG files are saved
+    """
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Group by experiment and elite_ID, then plot histogram for each group
+    grouped = df_lifespan_data.groupby(['experiment', 'elite_ID'])
+    
+    # Track which experiments we've already added to legend
+    legend_experiments_done = set()
+    
+    for (experiment, elite_id), group_data in grouped:
+        lifespans = group_data['lifespan'].values
+        
+        # Compute histogram with 30 bins
+        counts, bin_edges = np.histogram(lifespans, bins=30)
+        # Convert bin edges to bin centers for plotting
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        
+        # Determine color for this experiment
+        color = experiment_colors[experiment]
+        
+        # Only add label to legend once per experiment
+        if experiment not in legend_experiments_done:
+            ax.plot(bin_centers, counts, '-', linewidth=2.5, color=color, label=experiment, alpha=0.8)
+            legend_experiments_done.add(experiment)
+        else:
+            ax.plot(bin_centers, counts, '-', linewidth=2.5, color=color, alpha=0.8)
+    
+    ax.set_xlabel('Lifespan [ticks]', fontsize=12)
+    ax.set_ylabel('Frequency', fontsize=12)
+    ax.set_title('Distribution of Fitness Across Individual Runs', fontsize=14)
+    ax.legend(fontsize=11, loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    fig.tight_layout()
+    
+    # Save to file
+    figures_dir.mkdir(exist_ok=True)
+    figure_path = figures_dir / 'ea_fitness_distributions.png'
+    figure_path_abs = figure_path.resolve()
+    fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
     
     # Add to report
     doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
@@ -573,7 +666,56 @@ if BENCHMARK_HDF5_FILES:
 else:
     print("No benchmarks specified.")
 
+
+# Collect all lifespan data into a single dataframe
+lifespan_data = []
+
+# Extract experiment elite lifespans
+exp_cols = [col for col in df_elite_lifespans_exp.columns if col != 'source']
+
+for elite_idx, row in df_elite_lifespans_exp.iterrows():
+    for run_idx, col in enumerate(exp_cols):
+        lifespan = row[col]
+        lifespan_data.append({
+            'experiment': EXPERIMENT_NAME,
+            'elite_ID': elite_idx,
+            'run': run_idx,
+            'lifespan': lifespan
+        })
+
+# Extract benchmark elite lifespans if available
+if df_benchmarks_elite_lifespans is not None:
+    benchmark_names_in_data = df_benchmarks_elite_lifespans['source'].unique() if 'source' in df_benchmarks_elite_lifespans.columns else []
+    
+    for bench_name in benchmark_names_in_data:
+        bench_data = df_benchmarks_elite_lifespans[df_benchmarks_elite_lifespans['source'] == bench_name]
+        bench_cols = [col for col in bench_data.columns if col not in ['source']]
+        
+        for elite_idx, row in bench_data.iterrows():
+            for run_idx, col in enumerate(bench_cols):
+                lifespan = row[col]
+                lifespan_data.append({
+                    'experiment': bench_name,
+                    'elite_ID': elite_idx,
+                    'run': run_idx,
+                    'lifespan': lifespan
+                })
+
+df_lifespan_data = pd.DataFrame(lifespan_data)
+
+
 print("\nAll HDF5 data loaded.")
+
+# Assign colors to experiments (used across all figures)
+experiments = sorted(df_lifespan_data['experiment'].unique())
+experiment_colors = {}
+for idx, exp in enumerate(experiments):
+    if idx < len(COLOR_PALETTE):
+        # Use predefined colors
+        experiment_colors[exp] = COLOR_PALETTE[idx]
+    else:
+        # Generate random color if more than palette size
+        experiment_colors[exp] = "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
 # Create figures directory
 figures_dir = Path(__file__).resolve().parent / 'figures'
@@ -587,15 +729,19 @@ doc = Document()
 doc.add_heading(f"EA Analysis Report: {EXPERIMENT_NAME}", level=0)
 
 # region Overview
-
+doc.add_heading(f"Summary experiment parameters", level=1)
 # Call parameter summary function
 summarize_parameter(doc, experiment_attrs, EXPERIMENT_HDF5, benchmark_attrs, BENCHMARK_HDF5_FILES)
 
 # endregion Overview
 # region EA Results / Fitness
+doc.add_heading(f"EA Results / Fitness", level=1)
 
 # Plot and add first figure
-plot_ea_results(experiment_hdf5_path, doc, figures_dir)
+plot_ea_results(df_generation_stats_exp, doc, figures_dir)
+
+# Plot fitness distribution histogram
+plot_fitness_distribution(df_lifespan_data, doc, figures_dir)
 
 # endregion EA Results / Fitness
 # region connectivity
@@ -610,13 +756,16 @@ plot_ea_results(experiment_hdf5_path, doc, figures_dir)
 
 
 # ==================================================================================================================================================
-# SAVE REPORT
+# SECTION E) SAVE REPORT
 # ==================================================================================================================================================
-
 
 
 output_dir = Path(__file__).resolve().parent
 output_path = output_dir / f'results_{EXPERIMENT_NAME}.docx'
+
+# Close any open Word document with the same name before saving
+# This prevents file-locked errors and prompts user to save changes if needed
+_close_word_document(output_path)
 
 doc.save(str(output_path))
 print(f"Report saved to: {output_path}")
