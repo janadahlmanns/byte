@@ -620,9 +620,87 @@ def summarize_parameter(doc, experiment_attrs, experiment_filename, benchmark_at
             doc.add_paragraph()
 
 
+def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
+    """
+    Compute network topology metrics from adjacency matrix.
+    
+    Handles both 2D (NxN) and 3D (NxNx2) weight matrices.
+    For 3D format: [:, :, 0] = connection weights, [:, :, 1] = reliability (ignored)
+    Assumes weights convention: positive = excitatory, negative = inhibitory
+    
+    Args:
+        adjacency_matrix: NxN or NxNx2 connection weight matrix
+    
+    Returns:
+        Dictionary with topology metrics
+    """
+    try:
+        W = np.asarray(adjacency_matrix, dtype=float)
+        
+        # Extract weight layer, skip reliability layer
+        if W.ndim == 3 and W.shape[2] == 2:
+            W = W[:, :, 0]  # Use only weight layer, ignore reliability
+        elif W.ndim == 3:
+            # Unexpected 3D shape, try reshaping
+            W = W.reshape(W.shape[0], -1)
+        
+        # Now W should be 2D
+        if W.ndim != 2:
+            raise ValueError(f"Expected 2D weight matrix after layer extraction, got {W.ndim}D")
+        
+        n = W.shape[0]
+        
+        # Separate excitatory (positive) and inhibitory (negative) weights
+        W_exc = np.clip(W, 0, None)      # Positive weights only
+        W_inh = np.abs(np.clip(W, None, 0))  # Absolute value of negative weights
+        
+        # Count non-zero connections for degree calculations
+        exc_connections_out = np.sum(W_exc > 0, axis=1)
+        exc_connections_in = np.sum(W_exc > 0, axis=0)
+        inh_connections_out = np.sum(W_inh > 0, axis=1)
+        inh_connections_in = np.sum(W_inh > 0, axis=0)
+        
+        # Self connections (diagonal)
+        diag_exc = W_exc.diagonal()
+        diag_inh = W_inh.diagonal()
+        self_exc = np.sum(diag_exc > 0)
+        self_inh = np.sum(diag_inh > 0)
+        
+        # Bidirectional connections
+        exc_bidirectional = np.sum((W_exc > 0) & (W_exc.T > 0)) / 2
+        inh_bidirectional = np.sum((W_inh > 0) & (W_inh.T > 0)) / 2
+        total_exc_connections = np.sum(W_exc > 0)
+        total_inh_connections = np.sum(W_inh > 0)
+        
+        metrics = {
+            'exc_out_degree': float(np.mean(exc_connections_out)),
+            'exc_in_degree': float(np.mean(exc_connections_in)),
+            'inh_out_degree': float(np.mean(inh_connections_out)),
+            'inh_in_degree': float(np.mean(inh_connections_in)),
+            'self_connection_ratio': float((self_exc + self_inh) / n),
+            'exc_bidirectional_ratio': float(exc_bidirectional / total_exc_connections) if total_exc_connections > 0 else 0.0,
+            'inh_bidirectional_ratio': float(inh_bidirectional / total_inh_connections) if total_inh_connections > 0 else 0.0,
+            'num_neurons': n,
+        }
+        return metrics
+    except Exception as e:
+        print(f"Error computing topology metrics: {e}")
+        return {
+            'exc_out_degree': 0.0,
+            'exc_in_degree': 0.0,
+            'inh_out_degree': 0.0,
+            'inh_in_degree': 0.0,
+            'self_connection_ratio': 0.0,
+            'exc_bidirectional_ratio': 0.0,
+            'inh_bidirectional_ratio': 0.0,
+            'num_neurons': 0,
+        }
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
+
 
 
 experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
@@ -722,6 +800,32 @@ else:
 # Collect all lifespan data into a unified dataframe
 df_lifespan_data = collect_lifespan_data(EXPERIMENT_NAME, df_elite_lifespans_exp, df_benchmarks_elite_lifespans)
 
+# Collect topology metrics from all connection weight data
+topology_data = []
+
+# Experiment topology
+for elite_id, weights in connection_weights_experiment.items():
+    metrics = compute_topology_metrics(weights)
+    metrics['source'] = EXPERIMENT_NAME
+    metrics['elite_id'] = elite_id
+    topology_data.append(metrics)
+
+# Benchmark topology
+for bench_name, bench_weights_dict in connection_weights_collection.items():
+    for elite_id, weights in bench_weights_dict.items():
+        metrics = compute_topology_metrics(weights)
+        # Map back to benchmark display name (remove prefix and convert underscores)
+        bench_display_name = bench_name.replace('connection_weights_', '').replace('_', ' ').title()
+        # Try to find the original benchmark name
+        for original_name in benchmark_attrs.keys():
+            if original_name.lower().replace(' ', '_').replace('-', '_') == bench_name.replace('connection_weights_', ''):
+                bench_display_name = original_name
+                break
+        metrics['source'] = bench_display_name
+        metrics['elite_id'] = elite_id
+        topology_data.append(metrics)
+
+df_topology = pd.DataFrame(topology_data)
 
 print("\nAll HDF5 data loaded.")
 
@@ -766,6 +870,40 @@ plot_fitness_distribution(df_lifespan_data, doc, figures_dir)
 # region connectivity
 
 doc.add_heading(f"Connectivity", level=1)
+
+# Summarize topology metrics across sources
+if not df_topology.empty:
+    doc.add_heading('Network Topology Summary', level=2)
+    
+    # Create summary table
+    topology_summary = df_topology.groupby('source')[[
+        'exc_out_degree', 'exc_in_degree', 'inh_out_degree', 'inh_in_degree',
+        'self_connection_ratio', 'exc_bidirectional_ratio', 'inh_bidirectional_ratio', 'num_neurons'
+    ]].mean()
+    
+    # Add table to document
+    topo_table = doc.add_table(rows=len(topology_summary) + 1, cols=9)
+    topo_table.style = 'Light Grid Accent 1'
+    
+    # Header row
+    headers = ['Source', 'Exc Out-Deg', 'Exc In-Deg', 'Inh Out-Deg', 'Inh In-Deg', 
+               'Self Conn', 'Exc Bidir', 'Inh Bidir', 'Neurons']
+    for col_idx, header in enumerate(headers):
+        topo_table.rows[0].cells[col_idx].text = header
+    
+    # Data rows
+    for row_idx, (source, row) in enumerate(topology_summary.iterrows(), 1):
+        topo_table.rows[row_idx].cells[0].text = str(source)
+        topo_table.rows[row_idx].cells[1].text = f"{row['exc_out_degree']:.2f}"
+        topo_table.rows[row_idx].cells[2].text = f"{row['exc_in_degree']:.2f}"
+        topo_table.rows[row_idx].cells[3].text = f"{row['inh_out_degree']:.2f}"
+        topo_table.rows[row_idx].cells[4].text = f"{row['inh_in_degree']:.2f}"
+        topo_table.rows[row_idx].cells[5].text = f"{row['self_connection_ratio']:.3f}"
+        topo_table.rows[row_idx].cells[6].text = f"{row['exc_bidirectional_ratio']:.3f}"
+        topo_table.rows[row_idx].cells[7].text = f"{row['inh_bidirectional_ratio']:.3f}"
+        topo_table.rows[row_idx].cells[8].text = f"{int(row['num_neurons'])}"
+    
+    doc.add_paragraph()
 
 # endregion connectivity
 # region plasticity
