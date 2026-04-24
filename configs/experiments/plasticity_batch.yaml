@@ -3,14 +3,14 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_ea/"
+  output_folder: "data/temp/"
   simulation_name: "slow_mutation"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
   n_runs: 300
-  evolutionary_algorithm_enabled: true
+  evolutionary_algorithm_enabled: false
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup"
@@ -39,9 +39,9 @@ experiment:
   viz_brain_fps: 4
   
   # Data tracking
-  enable_per_run_tracking: false
-  enable_per_tick_tracking: false
-  enable_heat_map_tracking: false
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
   
 
 # ============================================================
