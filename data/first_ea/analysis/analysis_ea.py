@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
 import random
+import time
 from docx import Document
 
 # Add workspace root to path for imports
@@ -303,6 +304,54 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
     return df
 
 
+def collect_lifespan_data(experiment_name: str, df_elite_lifespans_exp: pd.DataFrame, df_benchmarks_elite_lifespans: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    Collect all lifespan data from experiment and benchmarks into a unified dataframe.
+    
+    Args:
+        experiment_name: Name of the experiment
+        df_elite_lifespans_exp: DataFrame with experiment elite lifespan data
+        df_benchmarks_elite_lifespans: Optional DataFrame with benchmark elite lifespan data
+    
+    Returns:
+        DataFrame with columns: [experiment, elite_ID, run, lifespan]
+    """
+    lifespan_data = []
+    
+    # Extract experiment elite lifespans
+    exp_cols = [col for col in df_elite_lifespans_exp.columns if col != 'source']
+    
+    for elite_idx, row in df_elite_lifespans_exp.iterrows():
+        for run_idx, col in enumerate(exp_cols):
+            lifespan = row[col]
+            lifespan_data.append({
+                'experiment': experiment_name,
+                'elite_ID': elite_idx,
+                'run': run_idx,
+                'lifespan': lifespan
+            })
+    
+    # Extract benchmark elite lifespans if available
+    if df_benchmarks_elite_lifespans is not None:
+        benchmark_names_in_data = df_benchmarks_elite_lifespans['source'].unique() if 'source' in df_benchmarks_elite_lifespans.columns else []
+        
+        for bench_name in benchmark_names_in_data:
+            bench_data = df_benchmarks_elite_lifespans[df_benchmarks_elite_lifespans['source'] == bench_name]
+            bench_cols = [col for col in bench_data.columns if col not in ['source']]
+            
+            for elite_idx, row in bench_data.iterrows():
+                for run_idx, col in enumerate(bench_cols):
+                    lifespan = row[col]
+                    lifespan_data.append({
+                        'experiment': bench_name,
+                        'elite_ID': elite_idx,
+                        'run': run_idx,
+                        'lifespan': lifespan
+                    })
+    
+    return pd.DataFrame(lifespan_data)
+
+
 def _close_word_document(filepath: Path) -> None:
     """
     Close a Word document if it's currently open in Microsoft Word.
@@ -319,21 +368,24 @@ def _close_word_document(filepath: Path) -> None:
         
         try:
             # Get the running Word application
-            word_app = win32com.client.GetObject(class_name="Word.Application")
+            word_app = win32com.client.GetObject(Class="Word.Application")
             
             # Search through all open documents
             for doc in word_app.Documents:
                 # Compare full paths to ensure we match the right document
                 if str(filepath.resolve()) in doc.FullName or doc.FullName in str(filepath.resolve()):
-                    # Close with SaveChanges=2 (wdPrompt)
-                    # 0 = wdDoNotSaveChanges, 1 = wdSaveChanges, 2 = wdPrompt
-                    doc.Close(SaveChanges=2)
+                    print(f"Closing Word document: {doc.FullName}")
+                    # Close without saving (value 0 = wdDoNotSaveChanges)
+                    doc.Close(0)
+                    # Wait a moment for Word to release the file
+                    time.sleep(1.0)
+                    print("Document closed successfully")
                     return
         except Exception as e:
-            # Word not running or document not found - that's fine
+            print(f"Could not close Word document: {e}")
             pass
     except ImportError:
-        # pywin32 not installed - skip this step
+        print("pywin32 not installed - skipping Word close")
         pass
 
 
@@ -667,41 +719,8 @@ else:
     print("No benchmarks specified.")
 
 
-# Collect all lifespan data into a single dataframe
-lifespan_data = []
-
-# Extract experiment elite lifespans
-exp_cols = [col for col in df_elite_lifespans_exp.columns if col != 'source']
-
-for elite_idx, row in df_elite_lifespans_exp.iterrows():
-    for run_idx, col in enumerate(exp_cols):
-        lifespan = row[col]
-        lifespan_data.append({
-            'experiment': EXPERIMENT_NAME,
-            'elite_ID': elite_idx,
-            'run': run_idx,
-            'lifespan': lifespan
-        })
-
-# Extract benchmark elite lifespans if available
-if df_benchmarks_elite_lifespans is not None:
-    benchmark_names_in_data = df_benchmarks_elite_lifespans['source'].unique() if 'source' in df_benchmarks_elite_lifespans.columns else []
-    
-    for bench_name in benchmark_names_in_data:
-        bench_data = df_benchmarks_elite_lifespans[df_benchmarks_elite_lifespans['source'] == bench_name]
-        bench_cols = [col for col in bench_data.columns if col not in ['source']]
-        
-        for elite_idx, row in bench_data.iterrows():
-            for run_idx, col in enumerate(bench_cols):
-                lifespan = row[col]
-                lifespan_data.append({
-                    'experiment': bench_name,
-                    'elite_ID': elite_idx,
-                    'run': run_idx,
-                    'lifespan': lifespan
-                })
-
-df_lifespan_data = pd.DataFrame(lifespan_data)
+# Collect all lifespan data into a unified dataframe
+df_lifespan_data = collect_lifespan_data(EXPERIMENT_NAME, df_elite_lifespans_exp, df_benchmarks_elite_lifespans)
 
 
 print("\nAll HDF5 data loaded.")
@@ -745,6 +764,8 @@ plot_fitness_distribution(df_lifespan_data, doc, figures_dir)
 
 # endregion EA Results / Fitness
 # region connectivity
+
+doc.add_heading(f"Connectivity", level=1)
 
 # endregion connectivity
 # region plasticity
