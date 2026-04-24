@@ -632,7 +632,7 @@ def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
         adjacency_matrix: NxN or NxNx2 connection weight matrix
     
     Returns:
-        Dictionary with topology metrics
+        Dictionary with topology metrics (both binary and weighted)
     """
     try:
         W = np.asarray(adjacency_matrix, dtype=float)
@@ -649,16 +649,29 @@ def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
             raise ValueError(f"Expected 2D weight matrix after layer extraction, got {W.ndim}D")
         
         n = W.shape[0]
+        max_possible_connections = n * n
         
         # Separate excitatory (positive) and inhibitory (negative) weights
         W_exc = np.clip(W, 0, None)      # Positive weights only
         W_inh = np.abs(np.clip(W, None, 0))  # Absolute value of negative weights
         
-        # Count non-zero connections for degree calculations
-        exc_connections_out = np.sum(W_exc > 0, axis=1)
-        exc_connections_in = np.sum(W_exc > 0, axis=0)
-        inh_connections_out = np.sum(W_inh > 0, axis=1)
-        inh_connections_in = np.sum(W_inh > 0, axis=0)
+        # Binary metrics: Count non-zero connections
+        total_exc_connections = np.sum(W_exc > 0)
+        total_inh_connections = np.sum(W_inh > 0)
+        
+        # Connectivity degree: actual connections / possible connections (n*n)
+        exc_out_degree = total_exc_connections / max_possible_connections
+        inh_out_degree = total_inh_connections / max_possible_connections
+        
+        # Weighted metrics: Sum of connection strengths normalized by n²
+        exc_sum_weights = np.sum(W_exc)
+        inh_sum_weights = np.sum(W_inh)
+        exc_weighted_degree = exc_sum_weights / max_possible_connections
+        inh_weighted_degree = inh_sum_weights / max_possible_connections
+        
+        # Mean connection strength (only non-zero connections)
+        exc_mean_strength = np.mean(W_exc[W_exc > 0]) if total_exc_connections > 0 else 0.0
+        inh_mean_strength = np.mean(W_inh[W_inh > 0]) if total_inh_connections > 0 else 0.0
         
         # Self connections (diagonal)
         diag_exc = W_exc.diagonal()
@@ -669,14 +682,17 @@ def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
         # Bidirectional connections
         exc_bidirectional = np.sum((W_exc > 0) & (W_exc.T > 0)) / 2
         inh_bidirectional = np.sum((W_inh > 0) & (W_inh.T > 0)) / 2
-        total_exc_connections = np.sum(W_exc > 0)
-        total_inh_connections = np.sum(W_inh > 0)
         
         metrics = {
-            'exc_out_degree': float(np.mean(exc_connections_out)),
-            'exc_in_degree': float(np.mean(exc_connections_in)),
-            'inh_out_degree': float(np.mean(inh_connections_out)),
-            'inh_in_degree': float(np.mean(inh_connections_in)),
+            # Binary metrics
+            'exc_out_degree': float(exc_out_degree),
+            'inh_out_degree': float(inh_out_degree),
+            # Weighted metrics
+            'exc_weighted_degree': float(exc_weighted_degree),
+            'inh_weighted_degree': float(inh_weighted_degree),
+            'exc_mean_strength': float(exc_mean_strength),
+            'inh_mean_strength': float(inh_mean_strength),
+            # Other metrics
             'self_connection_ratio': float((self_exc + self_inh) / n),
             'exc_bidirectional_ratio': float(exc_bidirectional / total_exc_connections) if total_exc_connections > 0 else 0.0,
             'inh_bidirectional_ratio': float(inh_bidirectional / total_inh_connections) if total_inh_connections > 0 else 0.0,
@@ -690,11 +706,221 @@ def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
             'exc_in_degree': 0.0,
             'inh_out_degree': 0.0,
             'inh_in_degree': 0.0,
+            'exc_weighted_degree': 0.0,
+            'inh_weighted_degree': 0.0,
+            'exc_mean_strength': 0.0,
+            'inh_mean_strength': 0.0,
             'self_connection_ratio': 0.0,
             'exc_bidirectional_ratio': 0.0,
             'inh_bidirectional_ratio': 0.0,
             'num_neurons': 0,
         }
+
+
+def plot_topology_connectivity(df_topology, doc, figures_dir, experiment_colors):
+    """
+    Plot binary connectivity degree (excitatory and inhibitory) as grouped bar charts.
+    
+    Groups bars by source (experiment/benchmark), with pairs of bars per elite.
+    Shows actual number of connections (not normalized).
+    
+    Args:
+        df_topology: DataFrame with topology metrics
+        doc: python-docx Document object to add figure to
+        figures_dir: Path to directory for saving figure PNG
+        experiment_colors: Dict mapping source name to color
+    """
+    if df_topology.empty:
+        return
+    
+    # Sort by source and elite_id
+    df_sorted = df_topology.sort_values(['source', 'elite_id'])
+    
+    # Get the number of neurons (same for all networks)
+    n_neurons = int(df_sorted.iloc[0]['num_neurons'])
+    n_squared = n_neurons * n_neurons
+    
+    # Create x-axis labels and data
+    x_labels = []
+    exc_out_degrees = []
+    inh_out_degrees = []
+    colors = []
+    
+    for idx, row in df_sorted.iterrows():
+        source = row['source']
+        elite_id = row['elite_id']
+        x_labels.append(f"{source}\nelite_{int(elite_id)}")
+        # Un-normalize: convert from degree (connections/n²) back to actual connection count
+        exc_out_degrees.append(row['exc_out_degree'] * n_squared)
+        inh_out_degrees.append(row['inh_out_degree'] * n_squared)
+        colors.append(experiment_colors.get(source, '#808080'))
+    
+    x = np.arange(len(x_labels))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(16, 6))
+    
+    # Create bars
+    bars1 = ax.bar(x - width/2, exc_out_degrees, width, label='Excitatory Out-Degree', 
+                   alpha=0.8, color=colors)
+    bars2 = ax.bar(x + width/2, inh_out_degrees, width, label='Inhibitory Out-Degree', 
+                   alpha=0.6, color=colors)
+    
+    ax.set_xlabel('Source and Elite', fontsize=12)
+    ax.set_ylabel(f'Connectivity Degree [number of connections, {n_squared} possible]', fontsize=12)
+    ax.set_title('Binary Network Connectivity: Number of Connections', fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, fontsize=9)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    fig.tight_layout()
+    
+    # Save to file
+    figures_dir.mkdir(exist_ok=True)
+    figure_path = figures_dir / 'topology_connectivity_degrees.png'
+    figure_path_abs = figure_path.resolve()
+    fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
+    
+    # Add to report
+    doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    plt.close(fig)
+
+
+def plot_topology_weighted_connectivity(df_topology, doc, figures_dir, experiment_colors):
+    """
+    Plot weighted connectivity degree (excitatory and inhibitory) as grouped bar charts.
+    
+    Groups bars by source (experiment/benchmark), with pairs of bars per elite.
+    Shows total connection strength (weighted measure considering connection weights).
+    
+    Args:
+        df_topology: DataFrame with topology metrics
+        doc: python-docx Document object to add figure to
+        figures_dir: Path to directory for saving figure PNG
+        experiment_colors: Dict mapping source name to color
+    """
+    if df_topology.empty:
+        return
+    
+    # Sort by source and elite_id
+    df_sorted = df_topology.sort_values(['source', 'elite_id'])
+    
+    # Create x-axis labels and data
+    x_labels = []
+    exc_weighted_degrees = []
+    inh_weighted_degrees = []
+    colors = []
+    
+    for idx, row in df_sorted.iterrows():
+        source = row['source']
+        elite_id = row['elite_id']
+        x_labels.append(f"{source}\nelite_{int(elite_id)}")
+        exc_weighted_degrees.append(row['exc_weighted_degree'])
+        inh_weighted_degrees.append(row['inh_weighted_degree'])
+        colors.append(experiment_colors.get(source, '#808080'))
+    
+    x = np.arange(len(x_labels))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(16, 6))
+    
+    # Create bars
+    bars1 = ax.bar(x - width/2, exc_weighted_degrees, width, label='Excitatory Weighted', 
+                   alpha=0.8, color=colors)
+    bars2 = ax.bar(x + width/2, inh_weighted_degrees, width, label='Inhibitory Weighted', 
+                   alpha=0.6, color=colors)
+    
+    ax.set_xlabel('Source and Elite', fontsize=12)
+    ax.set_ylabel('Weighted Connectivity (sum of strengths / n²)', fontsize=12)
+    ax.set_title('Weighted Network Connectivity: Total Connection Strength', fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, fontsize=9)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    fig.tight_layout()
+    
+    # Save to file
+    figures_dir.mkdir(exist_ok=True)
+    figure_path = figures_dir / 'topology_weighted_connectivity.png'
+    figure_path_abs = figure_path.resolve()
+    fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
+    
+    # Add to report
+    doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    plt.close(fig)
+
+
+def plot_topology_mean_strength(df_topology, doc, figures_dir, experiment_colors):
+    """
+    Plot mean connection strength (excitatory and inhibitory) as grouped bar charts.
+    
+    Groups bars by source (experiment/benchmark), with pairs of bars per elite.
+    Shows average intensity of connections (only counting non-zero weights).
+    
+    Args:
+        df_topology: DataFrame with topology metrics
+        doc: python-docx Document object to add figure to
+        figures_dir: Path to directory for saving figure PNG
+        experiment_colors: Dict mapping source name to color
+    """
+    if df_topology.empty:
+        return
+    
+    # Sort by source and elite_id
+    df_sorted = df_topology.sort_values(['source', 'elite_id'])
+    
+    # Create x-axis labels and data
+    x_labels = []
+    exc_mean_strengths = []
+    inh_mean_strengths = []
+    colors = []
+    
+    for idx, row in df_sorted.iterrows():
+        source = row['source']
+        elite_id = row['elite_id']
+        x_labels.append(f"{source}\nelite_{int(elite_id)}")
+        exc_mean_strengths.append(row['exc_mean_strength'])
+        inh_mean_strengths.append(row['inh_mean_strength'])
+        colors.append(experiment_colors.get(source, '#808080'))
+    
+    x = np.arange(len(x_labels))
+    width = 0.15
+    
+    fig, ax = plt.subplots(figsize=(16, 6))
+    
+    # Create bars
+    bars1 = ax.bar(x - width/2, exc_mean_strengths, width, label='Excitatory Mean Strength', 
+                   alpha=0.8, color=colors)
+    bars2 = ax.bar(x + width/2, inh_mean_strengths, width, label='Inhibitory Mean Strength', 
+                   alpha=0.6, color=colors)
+    
+    ax.set_xlabel('Source and Elite', fontsize=12)
+    ax.set_ylabel('Mean Connection Strength', fontsize=12)
+    ax.set_title('Connection Intensity: Average Weight of Existing Connections', fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, fontsize=9)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    fig.tight_layout()
+    
+    # Save to file
+    figures_dir.mkdir(exist_ok=True)
+    figure_path = figures_dir / 'topology_mean_strength.png'
+    figure_path_abs = figure_path.resolve()
+    fig.savefig(str(figure_path_abs), dpi=150, bbox_inches='tight')
+    
+    # Add to report
+    doc.add_picture(str(figure_path_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    plt.close(fig)
 
 
 # ==================================================================================================================================================
@@ -871,39 +1097,11 @@ plot_fitness_distribution(df_lifespan_data, doc, figures_dir)
 
 doc.add_heading(f"Connectivity", level=1)
 
-# Summarize topology metrics across sources
-if not df_topology.empty:
-    doc.add_heading('Network Topology Summary', level=2)
-    
-    # Create summary table
-    topology_summary = df_topology.groupby('source')[[
-        'exc_out_degree', 'exc_in_degree', 'inh_out_degree', 'inh_in_degree',
-        'self_connection_ratio', 'exc_bidirectional_ratio', 'inh_bidirectional_ratio', 'num_neurons'
-    ]].mean()
-    
-    # Add table to document
-    topo_table = doc.add_table(rows=len(topology_summary) + 1, cols=9)
-    topo_table.style = 'Light Grid Accent 1'
-    
-    # Header row
-    headers = ['Source', 'Exc Out-Deg', 'Exc In-Deg', 'Inh Out-Deg', 'Inh In-Deg', 
-               'Self Conn', 'Exc Bidir', 'Inh Bidir', 'Neurons']
-    for col_idx, header in enumerate(headers):
-        topo_table.rows[0].cells[col_idx].text = header
-    
-    # Data rows
-    for row_idx, (source, row) in enumerate(topology_summary.iterrows(), 1):
-        topo_table.rows[row_idx].cells[0].text = str(source)
-        topo_table.rows[row_idx].cells[1].text = f"{row['exc_out_degree']:.2f}"
-        topo_table.rows[row_idx].cells[2].text = f"{row['exc_in_degree']:.2f}"
-        topo_table.rows[row_idx].cells[3].text = f"{row['inh_out_degree']:.2f}"
-        topo_table.rows[row_idx].cells[4].text = f"{row['inh_in_degree']:.2f}"
-        topo_table.rows[row_idx].cells[5].text = f"{row['self_connection_ratio']:.3f}"
-        topo_table.rows[row_idx].cells[6].text = f"{row['exc_bidirectional_ratio']:.3f}"
-        topo_table.rows[row_idx].cells[7].text = f"{row['inh_bidirectional_ratio']:.3f}"
-        topo_table.rows[row_idx].cells[8].text = f"{int(row['num_neurons'])}"
-    
-    doc.add_paragraph()
+plot_topology_connectivity(df_topology, doc, figures_dir, experiment_colors)
+
+plot_topology_weighted_connectivity(df_topology, doc, figures_dir, experiment_colors)
+
+plot_topology_mean_strength(df_topology, doc, figures_dir, experiment_colors)
 
 # endregion connectivity
 # region plasticity
