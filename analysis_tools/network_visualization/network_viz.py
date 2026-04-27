@@ -80,6 +80,86 @@ def load_network_viz_config(config_name: Union[str, int]) -> Tuple[Dict[int, Tup
     return neuron_positions, neuron_types
 
 
+# ===== Automatic Layout Computation =====
+
+def compute_layout(connections: Union[pd.DataFrame, List[Dict]],
+                   neuron_types: Optional[Dict[int, str]] = None,
+                   use_graphviz: bool = True,
+                   spring_k: float = 2.0,
+                   spring_iterations: int = 50) -> Dict[int, Tuple[float, float]]:
+    """
+    Compute neuron positions automatically from network structure.
+    
+    Uses graphviz's dot layout (if available) for hierarchical directed graphs,
+    or falls back to spring layout for a more general force-directed layout.
+    
+    Args:
+        connections: Regular connections as DataFrame or list of dicts with 'src' and 'tgt'
+        
+        neuron_types: Optional dict mapping neuron_id -> type for improved layout hints.
+                     Not currently used, but kept for future enhancements.
+        
+        use_graphviz: If True, try graphviz first; if False or unavailable, use spring layout
+        
+        spring_k: Repulsive force constant for spring layout (larger = more spread out)
+        
+        spring_iterations: Number of iterations for spring layout algorithm
+    
+    Returns:
+        Dict mapping neuron_id -> (x, y) with positions normalized to [0, 1] range
+    
+    Raises:
+        ValueError: If connections is empty
+    """
+    # Convert to DataFrame if needed
+    if isinstance(connections, list):
+        connections = pd.DataFrame(connections)
+    
+    if len(connections) == 0:
+        raise ValueError("connections cannot be empty")
+    
+    # Build directed graph
+    G = nx.DiGraph()
+    for _, row in connections.iterrows():
+        src = int(row['src'])
+        tgt = int(row['tgt'])
+        G.add_edge(src, tgt)
+    
+    # Try graphviz first if requested
+    if use_graphviz:
+        try:
+            pos = nx.drawing.nx_agraph.graphviz_layout(G, prog='dot')
+            print("Using graphviz (dot) layout")
+        except Exception as e:
+            print(f"Graphviz layout failed ({type(e).__name__}), falling back to spring layout")
+            pos = nx.spring_layout(G, k=spring_k, iterations=spring_iterations, seed=42)
+    else:
+        print(f"Using spring layout with k={spring_k}")
+        pos = nx.spring_layout(G, k=spring_k, iterations=spring_iterations, seed=42)
+    
+    # Normalize positions to [0, 1] range
+    if len(pos) == 0:
+        raise ValueError("Failed to compute layout - no nodes in graph")
+    
+    xs = np.array([p[0] for p in pos.values()])
+    ys = np.array([p[1] for p in pos.values()])
+    
+    x_min, x_max = xs.min(), xs.max()
+    y_min, y_max = ys.min(), ys.max()
+    
+    # Handle edge case where all nodes are at same position
+    x_range = x_max - x_min if x_max > x_min else 1.0
+    y_range = y_max - y_min if y_max > y_min else 1.0
+    
+    pos_normalized = {}
+    for nid, (x, y) in pos.items():
+        normalized_x = (x - x_min) / x_range if x_range > 0 else 0.5
+        normalized_y = (y - y_min) / y_range if y_range > 0 else 0.5
+        pos_normalized[nid] = (normalized_x, normalized_y)
+    
+    return pos_normalized
+
+
 # ===== Configuration Constants =====
 
 COLORS = {
@@ -257,33 +337,33 @@ def _get_curved_arrow_position(src_pos: Tuple[float, float],
 def _draw_self_connection(ax, pos: Tuple[float, float], weight: float, 
                          neuron_size: float = 0.03):
     """
-    Draw a self-connection as a circular loop above the neuron.
+    Draw a self-connection as a circular loop at the neuron position.
     
     Args:
         ax: Matplotlib axis
         pos: (x, y) position of neuron
         weight: Connection weight
-        neuron_size: Radius for the loop offset
+        neuron_size: Radius for the loop
     """
     color = COLORS['excitatory'] if weight >= 0 else COLORS['inhibitory']
     linewidth = 1 + 6 * abs(weight)  # Scale with weight magnitude
     
-    # Draw loop as a circle offset above the neuron
-    circle = Circle((pos[0], pos[1] + neuron_size * 2.5), 
-                   radius=neuron_size * 1.5,
+    # Draw loop as a circle centered at the neuron position
+    circle = Circle(pos, 
+                   radius=neuron_size * 1.8,
                    fill=False,
                    edgecolor=color,
                    linewidth=linewidth,
                    zorder=2)
     ax.add_patch(circle)
     
-    # Add small arrowhead
+    # Add small arrowhead at the top of the circle
     arrow_angle = np.pi / 2  # Top of circle
-    arrow_x = pos[0] + neuron_size * 1.5 * np.cos(arrow_angle + 0.3)
-    arrow_y = pos[1] + neuron_size * 2.5 + neuron_size * 1.5 * np.sin(arrow_angle + 0.3)
+    arrow_x = pos[0] + neuron_size * 1.6 * np.cos(arrow_angle + 0.3)
+    arrow_y = pos[1] + neuron_size * 1.6 * np.sin(arrow_angle + 0.3)
     
     ax.annotate('', xy=(arrow_x, arrow_y),
-               xytext=(pos[0], pos[1] + neuron_size * 2.5 + neuron_size * 1.5),
+               xytext=(pos[0], pos[1] + neuron_size * 1.6),
                arrowprops=dict(arrowstyle='->', color=color, lw=linewidth))
 
 
@@ -496,10 +576,11 @@ def draw_network(neurons: Dict[int, Dict],
         
         if is_bidirectional:
             # Draw curved to avoid overlap
-            # Determine curve direction based on edge direction
-            curve_dir = 1 if (src, tgt) in drawn_edges or src < tgt else -1
+            # Always curve right from the source perspective.
+            # When A→B curves right and B→A also curves right from B's perspective,
+            # they automatically curve away from each other (like traffic on the right side of the road)
             _draw_curved_arrow(ax, shortened_src, shortened_tgt, weight, 
-                             curve_direction=curve_dir, skip_shorten=True)
+                             curve_direction=1, skip_shorten=True)
         else:
             # Draw straight arrow
             _draw_straight_arrow(ax, shortened_src, shortened_tgt, weight, skip_shorten=True)
@@ -518,61 +599,6 @@ def draw_network(neurons: Dict[int, Dict],
                ha='center', va='center',
                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
                zorder=10)
-    
-    # ===== Draw Modulatory Connections =====
-    if modulatory is not None and len(modulatory) > 0:
-        for _, row in modulatory.iterrows():
-            target_src = int(row['target_src'])
-            target_tgt = int(row['target_tgt'])
-            modulator_src = int(row['modulator_src'])
-            mod_weight = float(row['modulation_weight'])
-            
-            # Get modulator neuron position
-            mod_pos = positions[modulator_src]
-            
-            # Get dummy node position for the target connection
-            dummy_id = _get_dummy_id(target_src, target_tgt)
-            if dummy_id not in dummy_positions:
-                print(f"Warning: No dummy node for connection {target_src}->{target_tgt}")
-                continue
-            
-            dummy_pos = dummy_positions[dummy_id]
-            
-            # Choose color based on modulation sign (potentiation vs depression)
-            mod_color = COLORS['modulatory_potentiation'] if mod_weight >= 0 else COLORS['modulatory_depression']
-            
-            # Shorten only the modulator neuron end (keep dummy node position exact)
-            shortened_mod_pos, _ = _shorten_edge_source_only(mod_pos, dummy_pos, offset=0.07)
-            
-            # Draw dashed arrow to dummy node (with only source shortened)
-            _draw_curved_arrow(ax, shortened_mod_pos, dummy_pos, mod_weight,
-                             curve_direction=1,
-                             style='--',
-                             color=mod_color,
-                             alpha=0.6,
-                             skip_shorten=True)
-            
-            # Add modulatory weight annotation at the actual midpoint of the curved arrow
-            # Not the straight line midpoint, but the point on the actual curve
-            curve_rad = 0.2  # Must match the rad in _draw_curved_arrow
-            text_pos = _get_curved_arrow_position(shortened_mod_pos, dummy_pos, 
-                                                  curve_direction=1, rad=curve_rad, t=0.5)
-            ax.text(text_pos[0], text_pos[1], f'{mod_weight:.2f}',
-                   fontsize=SIZES['weight_fontsize'],
-                   ha='center', va='center',
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
-                   zorder=10)
-    
-    # ===== Draw Dummy Nodes =====
-    for dummy_id, pos in dummy_positions.items():
-        ax.scatter(pos[0], pos[1], 
-                  s=SIZES['dummy'],
-                  c='white',
-                  marker=STYLES['dummy_marker'],
-                  edgecolors='gray',
-                  linewidths=1,
-                  zorder=3,
-                  alpha=0.8)
     
     # ===== Draw Neurons =====
     for neuron_id, info in neurons.items():
@@ -614,10 +640,6 @@ def draw_network(neurons: Dict[int, Dict],
                    linestyle='-', label='Excitatory Connection'),
         plt.Line2D([0], [0], color=COLORS['inhibitory'], linewidth=2,
                    linestyle='-', label='Inhibitory Connection'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_potentiation'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Potentiation)'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_depression'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Depression)'),
     ]
     
     ax.legend(handles=legend_elements, loc='upper left', 
@@ -789,10 +811,6 @@ def draw_network_over_time(wiring_csv: str,
                    linestyle='-', label='Excitatory Connection'),
         plt.Line2D([0], [0], color=COLORS['inhibitory'], linewidth=2,
                    linestyle='-', label='Inhibitory Connection'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_potentiation'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Potentiation)'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_depression'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Depression)'),
     ]
     
     # Add the shared legend outside the subplots
@@ -956,10 +974,6 @@ def draw_network_panels(wiring_csv: str,
                    linestyle='-', label='Excitatory Connection'),
         plt.Line2D([0], [0], color=COLORS['inhibitory'], linewidth=2,
                    linestyle='-', label='Inhibitory Connection'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_potentiation'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Potentiation)'),
-        plt.Line2D([0], [0], color=COLORS['modulatory_depression'], linewidth=2,
-                   linestyle='--', label='Modulatory Connection (Depression)'),
     ]
     
     # Add the shared legend below the subplots
@@ -1215,19 +1229,15 @@ def draw_and_combine_networks(wiring_csv: str,
     hidden_edge_rgb = hex_to_rgb(COLORS['hidden_edge'])
     excitatory_rgb = hex_to_rgb(COLORS['excitatory'])
     inhibitory_rgb = hex_to_rgb(COLORS['inhibitory'])
-    potentiation_rgb = hex_to_rgb(COLORS['modulatory_potentiation'])
-    depression_rgb = hex_to_rgb(COLORS['modulatory_depression'])
     
     # Legend items with their types: ('label', type, color1, color2)
-    # type can be 'neuron' (fill, edge), 'line' (color, style), 'dashed_line'
+    # type can be 'neuron' (fill, edge), 'line' (color, style)
     legend_items = [
         ("Input", 'neuron', neuron_fill_rgb, input_edge_rgb),
         ("Output", 'neuron', neuron_fill_rgb, output_edge_rgb),
         ("Hidden", 'neuron', neuron_fill_rgb, hidden_edge_rgb),
         ("Excitatory", 'line', excitatory_rgb, None),
         ("Inhibitory", 'line', inhibitory_rgb, None),
-        ("Potentiation", 'dashed_line', potentiation_rgb, None),
-        ("Depression", 'dashed_line', depression_rgb, None),
     ]
     
     swatch_size = 50
@@ -1300,19 +1310,35 @@ def load_network_from_csvs(wiring_csv: str,
                           modulation_csv: Optional[str] = None,
                           neuron_positions: Optional[Dict[int, Tuple[float, float]]] = None,
                           neuron_types: Optional[Dict[int, str]] = None,
-                          weight_column: str = 'weight_initial') -> Tuple[Dict, pd.DataFrame, Optional[pd.DataFrame]]:
+                          weight_column: str = 'weight_initial',
+                          auto_layout: bool = False,
+                          use_graphviz: bool = True,
+                          spring_k: float = 2.0) -> Tuple[Dict, pd.DataFrame, Optional[pd.DataFrame]]:
     """
     Load network data from CSV files.
     
     Args:
         wiring_csv: Path to wiring CSV (must have 'src', 'tgt', and weight columns)
         modulation_csv: Path to modulation CSV (optional)
-        neuron_positions: Manual positions for neurons. If None, auto-generates a circular layout
+        neuron_positions: Manual positions for neurons. If None and auto_layout=False, 
+                         auto-generates a circular layout
         neuron_types: Dict mapping neuron_id -> type. If None, infers from data
         weight_column: Which weight column to use from wiring CSV
+        auto_layout: If True, compute positions automatically from network structure
+                    using graphviz (dot) or spring layout as fallback
+        use_graphviz: If True (with auto_layout=True), try graphviz first
+        spring_k: Repulsive force for spring layout (larger = more spread)
     
     Returns:
         (neurons, connections, modulatory) tuple ready for draw_network()
+    
+    Example:
+        # Auto-compute layout from network structure (no YAML config needed)
+        neurons, connections, modulatory = load_network_from_csvs(
+            'path/to/wiring.csv',
+            auto_layout=True  # This does the magic!
+        )
+        draw_network(neurons, connections, modulatory)
     """
     # Load connections
     connections = pd.read_csv(wiring_csv)
@@ -1325,8 +1351,13 @@ def load_network_from_csvs(wiring_csv: str,
     # Get all unique neuron IDs
     all_neurons = set(connections['src'].unique()) | set(connections['tgt'].unique())
     
-    # Auto-generate positions if not provided
-    if neuron_positions is None:
+    # Compute or use provided positions
+    if auto_layout:
+        neuron_positions = compute_layout(connections, neuron_types=neuron_types, 
+                                         use_graphviz=use_graphviz, spring_k=spring_k)
+        print(f"Auto-computed positions for {len(neuron_positions)} neurons")
+    elif neuron_positions is None:
+        # Default: circular layout
         n = len(all_neurons)
         neuron_positions = {}
         for i, nid in enumerate(sorted(all_neurons)):

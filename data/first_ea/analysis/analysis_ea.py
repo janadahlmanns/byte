@@ -18,6 +18,7 @@ import sys
 import random
 import time
 from docx import Document
+from typing import Dict, List, Tuple, Optional
 
 # Add workspace root to path for imports
 _current_path = Path(__file__).resolve()
@@ -31,6 +32,14 @@ while _current_path.parent != _current_path:
 if _workspace_root:
     sys.path.insert(0, str(_workspace_root))
     # from analysis_tools.network_visualization import network_viz
+
+# Import network visualization module
+try:
+    from analysis_tools.network_visualization.network_viz import draw_network, compute_layout
+except ImportError:
+    print("Warning: network_viz module not available. Network visualizations will be skipped.")
+    draw_network = None
+    compute_layout = None
 
 # =====================================================================
 # User Configuration and Data Selection
@@ -302,6 +311,56 @@ def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
     df = df[['source', 'elite'] + mod_cols]
     
     return df
+
+
+def extract_neuron_types(hdf5_attrs: dict) -> Dict[int, str]:
+    """
+    Extract neuron types (input, output, hidden) from HDF5 attributes.
+    
+    Parses:
+    - brain_output_mapping_N attributes: N is the output neuron ID
+    - brain_sensory_mapping_* attributes: first element in JSON array is input neuron ID
+    
+    Args:
+        hdf5_attrs: Dictionary of HDF5 top-level attributes
+    
+    Returns:
+        Dict mapping neuron_id -> type ('input', 'output', or 'hidden')
+    """
+    import json
+    neuron_types = {}
+    
+    # Extract output neurons from brain_output_mapping_N attributes
+    for key, value in hdf5_attrs.items():
+        if key.startswith('brain_output_mapping_'):
+            # Extract the neuron ID from the key name
+            try:
+                neuron_id = int(key.replace('brain_output_mapping_', ''))
+                neuron_types[neuron_id] = 'output'
+            except ValueError:
+                continue
+    
+    # Extract input neurons from brain_sensory_mapping_* attributes
+    for key, value in hdf5_attrs.items():
+        if key.startswith('brain_sensory_mapping_'):
+            # Value is stored as a JSON string (e.g., "[2, 0.8, 0.9]")
+            try:
+                if isinstance(value, str):
+                    # Parse JSON string
+                    arr = json.loads(value)
+                    if isinstance(arr, (list, tuple)) and len(arr) > 0:
+                        neuron_id = int(arr[0])
+                        neuron_types[neuron_id] = 'input'
+                elif isinstance(value, (tuple, list)) and len(value) > 0:
+                    neuron_id = int(value[0])
+                    neuron_types[neuron_id] = 'input'
+                elif isinstance(value, (int, np.integer)):
+                    neuron_id = int(value)
+                    neuron_types[neuron_id] = 'input'
+            except (ValueError, TypeError, IndexError, json.JSONDecodeError):
+                continue
+    
+    return neuron_types
 
 
 def collect_lifespan_data(experiment_name: str, df_elite_lifespans_exp: pd.DataFrame, df_benchmarks_elite_lifespans: pd.DataFrame = None) -> pd.DataFrame:
@@ -620,6 +679,83 @@ def summarize_parameter(doc, experiment_attrs, experiment_filename, benchmark_at
             doc.add_paragraph()
 
 
+def convert_weights_to_network_format(weights_matrix: np.ndarray,
+                                      neuron_types: Optional[Dict[int, str]] = None) -> Tuple[Dict, List[Dict]]:
+    """
+    Convert connection weight matrix to format expected by draw_network.
+    
+    Handles both 2D (NxN) and 3D (NxNx2) weight matrices.
+    For 3D format: [:, :, 0] = connection weights, [:, :, 1] = reliability
+    Computes effective_weight = weight * reliability
+    
+    Args:
+        weights_matrix: NxN or NxNx2 connection weight matrix
+        neuron_types: Optional dict mapping neuron_id -> type (default: inferred as 'hidden')
+    
+    Returns:
+        (neurons, connections_list) tuple ready for draw_network()
+        - neurons: Dict mapping neuron_id -> {'pos': (x, y), 'type': ...}
+        - connections_list: List of dicts with 'src', 'tgt', 'weight' (effective weight)
+    """
+    # Extract weight and reliability matrices
+    if weights_matrix.ndim == 3:
+        W = weights_matrix[:, :, 0]  # Connection weights
+        R = weights_matrix[:, :, 1]  # Reliability
+    else:
+        W = weights_matrix
+        R = np.ones_like(W)  # Default reliability = 1.0 if not provided
+    
+    n = W.shape[0]
+    
+    if neuron_types is None:
+        neuron_types = {}
+    
+    # Extract all non-zero connections (based on raw weight)
+    connections_list = []
+    for i in range(n):
+        for j in range(n):
+            weight = W[i, j]
+            reliability = R[i, j]
+            
+            # Only include if raw weight is non-zero
+            if weight != 0:
+                # Calculate effective weight
+                effective_weight = weight * reliability
+                connections_list.append({
+                    'src': i,
+                    'tgt': j,
+                    'weight': float(effective_weight)
+                })
+    
+    # Auto-compute positions using network structure
+    positions = {}
+    if connections_list and compute_layout is not None:
+        try:
+            connections_df = pd.DataFrame(connections_list)
+            positions = compute_layout(connections_df, use_graphviz=False)
+        except Exception as e:
+            print(f"Warning: compute_layout failed: {e}. Using circular layout.")
+            # Fallback to circular layout
+            for i in range(n):
+                angle = 2 * np.pi * i / n
+                positions[i] = (np.cos(angle), np.sin(angle))
+    else:
+        # Fallback to circular if no connections or compute_layout not available
+        for i in range(n):
+            angle = 2 * np.pi * i / n
+            positions[i] = (np.cos(angle), np.sin(angle))
+    
+    # Build neurons dict
+    neurons = {}
+    for nid in range(n):
+        neurons[nid] = {
+            'pos': positions[nid],
+            'type': neuron_types.get(nid, 'hidden')
+        }
+    
+    return neurons, connections_list
+
+
 def compute_topology_metrics(adjacency_matrix: np.ndarray) -> dict:
     """
     Compute network topology metrics from adjacency matrix.
@@ -934,6 +1070,8 @@ experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
 # Load experiment attributes
 experiment_attrs = _load_ea_attributes(experiment_hdf5_path)
 
+# Extract neuron types from attributes (used for all networks, same for all files)
+neuron_types = extract_neuron_types(experiment_attrs)
 
 # Load experiment generation stats
 df_generation_stats_exp = _load_generation_stats(experiment_hdf5_path)
@@ -1102,6 +1240,108 @@ plot_topology_connectivity(df_topology, doc, figures_dir, experiment_colors)
 plot_topology_weighted_connectivity(df_topology, doc, figures_dir, experiment_colors)
 
 plot_topology_mean_strength(df_topology, doc, figures_dir, experiment_colors)
+
+# Plot network visualizations
+if draw_network is not None:
+    doc.add_heading('Network Visualizations', level=2)
+    
+    # Plot experiment elites
+    for elite_id in sorted(connection_weights_experiment.keys()):
+        try:
+            weights = connection_weights_experiment[elite_id]
+            neurons, connections_list = convert_weights_to_network_format(weights, neuron_types=neuron_types)
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Convert connections list to DataFrame, with fallback for empty networks
+            if connections_list:
+                connections_df = pd.DataFrame(connections_list)
+            else:
+                # Create minimal valid DataFrame for empty networks
+                connections_df = pd.DataFrame({'src': [0], 'tgt': [0], 'weight': [0.0]})
+            
+            # Draw network
+            draw_network(
+                neurons=neurons,
+                connections=connections_df,
+                ax=ax,
+                title=f'{EXPERIMENT_NAME} Elite {elite_id}',
+                show_weights=True,
+                weight_column='weight'
+            )
+            
+            # Save to file
+            figures_dir.mkdir(exist_ok=True)
+            figure_path = figures_dir / f'network_{EXPERIMENT_NAME}_elite_{elite_id}.png'
+            fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
+            
+            # Add to report
+            doc.add_picture(str(figure_path), width=6.5 * 914400)
+            doc.add_paragraph()
+            
+            plt.close(fig)
+        except Exception as e:
+            print(f"Error plotting network for experiment elite {elite_id}: {e}")
+            plt.close('all')
+            continue
+    
+    # Plot benchmark variants (up to 3 per benchmark)
+    for bench_key, bench_weights_dict in sorted(connection_weights_collection.items()):
+        # Get the display name from benchmark_attrs
+        bench_display_name = None
+        for original_name in benchmark_attrs.keys():
+            if original_name.lower().replace(' ', '_').replace('-', '_') == bench_key.replace('connection_weights_', ''):
+                bench_display_name = original_name
+                break
+        
+        if bench_display_name is None:
+            # Fallback name
+            bench_display_name = bench_key.replace('connection_weights_', '').replace('_', ' ').title()
+        
+        # Plot first 3 variants
+        for variant_idx, (elite_id, weights) in enumerate(sorted(bench_weights_dict.items())):
+            if variant_idx >= 3:  # Only plot first 3
+                break
+            
+            try:
+                neurons, connections_list = convert_weights_to_network_format(weights, neuron_types=neuron_types)
+                
+                # Create figure
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Convert connections list to DataFrame
+                if connections_list:
+                    connections_df = pd.DataFrame(connections_list)
+                else:
+                    connections_df = pd.DataFrame({'src': [0], 'tgt': [0], 'weight': [0.0]})
+                
+                # Draw network
+                draw_network(
+                    neurons=neurons,
+                    connections=connections_df,
+                    ax=ax,
+                    title=f'{bench_display_name} {elite_id}',
+                    show_weights=True,
+                    weight_column='weight'
+                )
+                
+                # Save to file
+                figures_dir.mkdir(exist_ok=True)
+                figure_path = figures_dir / f'network_{bench_key}_{elite_id}.png'
+                fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
+                
+                # Add to report
+                doc.add_picture(str(figure_path), width=6.5 * 914400)
+                doc.add_paragraph()
+                
+                plt.close(fig)
+            except Exception as e:
+                print(f"Error plotting network for benchmark {bench_display_name} variant {elite_id}: {e}")
+                plt.close('all')
+                continue
+else:
+    print("Skipping network visualizations (network_viz module not available)")
 
 # endregion connectivity
 # region plasticity
