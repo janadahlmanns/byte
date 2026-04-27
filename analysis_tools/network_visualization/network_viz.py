@@ -82,28 +82,95 @@ def load_network_viz_config(config_name: Union[str, int]) -> Tuple[Dict[int, Tup
 
 # ===== Automatic Layout Computation =====
 
+def _compute_layered_layout(all_neuron_ids: List[int],
+                           neuron_types: Dict[int, str]) -> Dict[int, Tuple[float, float]]:
+    """
+    Compute a layered (hierarchical) layout based on neuron types.
+    
+    Arranges neurons in horizontal layers:
+    - Top layer (y=1.0): Input neurons
+    - Middle layer(s) (y=0.5): Hidden neurons
+    - Bottom layer (y=0.0): Output neurons
+    
+    Neurons are spread out with large horizontal spacing. Hidden neurons are positioned
+    between input neurons to avoid vertical alignment.
+    
+    Args:
+        all_neuron_ids: List of all neuron IDs
+        neuron_types: Dict mapping neuron_id -> type ('input', 'output', 'hidden')
+    
+    Returns:
+        Dict mapping neuron_id -> (x, y) with positions in [0, 1] range
+    """
+    # Group neurons by type
+    inputs = sorted([nid for nid in all_neuron_ids if neuron_types.get(nid, 'hidden') == 'input'])
+    outputs = sorted([nid for nid in all_neuron_ids if neuron_types.get(nid, 'hidden') == 'output'])
+    hiddens = sorted([nid for nid in all_neuron_ids if neuron_types.get(nid, 'hidden') == 'hidden'])
+    
+    pos = {}
+    
+    # Spacing parameters
+    x_spacing = 0.35  # Horizontal spacing between neurons (increased)
+    
+    # Position inputs at top - straight horizontal line
+    if inputs:
+        start_x = 0.025
+        for i, nid in enumerate(inputs):
+            x = start_x + (i * x_spacing)
+            pos[nid] = (x, 1.0)
+    
+    # Position hidden neurons in middle - straight horizontal line
+    if hiddens:
+        if len(inputs) > 3:
+            # Place hidden neurons horizontally between inputs 2 and 3
+            x_neuron_2 = 0.025 + (2 * x_spacing)
+            x_neuron_3 = 0.025 + (3 * x_spacing)
+            x = (x_neuron_2 + x_neuron_3) / 2
+            for i, nid in enumerate(hiddens):
+                pos[nid] = (x, 0.5)
+        else:
+            # Fallback if not enough inputs
+            start_x = 0.025
+            for i, nid in enumerate(hiddens):
+                x = start_x + (i * x_spacing)
+                pos[nid] = (x, 0.5)
+    
+    # Position outputs at bottom - straight horizontal line
+    if outputs:
+        start_x = 0.025
+        for i, nid in enumerate(outputs):
+            x = start_x + (i * x_spacing)
+            pos[nid] = (x, 0.0)
+    
+    return pos
+
+
 def compute_layout(connections: Union[pd.DataFrame, List[Dict]],
                    neuron_types: Optional[Dict[int, str]] = None,
                    use_graphviz: bool = True,
                    spring_k: float = 2.0,
-                   spring_iterations: int = 50) -> Dict[int, Tuple[float, float]]:
+                   spring_iterations: int = 50,
+                   use_layered: bool = True) -> Dict[int, Tuple[float, float]]:
     """
     Compute neuron positions automatically from network structure.
     
-    Uses graphviz's dot layout (if available) for hierarchical directed graphs,
-    or falls back to spring layout for a more general force-directed layout.
+    If neuron_types are provided and use_layered=True, uses a hierarchical layered layout
+    with inputs at top, outputs at bottom, and hidden neurons in middle.
+    
+    Otherwise, uses graphviz's dot layout (if available) or falls back to spring layout.
     
     Args:
         connections: Regular connections as DataFrame or list of dicts with 'src' and 'tgt'
         
-        neuron_types: Optional dict mapping neuron_id -> type for improved layout hints.
-                     Not currently used, but kept for future enhancements.
+        neuron_types: Optional dict mapping neuron_id -> type ('input', 'output', 'hidden')
         
         use_graphviz: If True, try graphviz first; if False or unavailable, use spring layout
         
         spring_k: Repulsive force constant for spring layout (larger = more spread out)
         
         spring_iterations: Number of iterations for spring layout algorithm
+        
+        use_layered: If True and neuron_types provided, use layered hierarchical layout
     
     Returns:
         Dict mapping neuron_id -> (x, y) with positions normalized to [0, 1] range
@@ -120,10 +187,19 @@ def compute_layout(connections: Union[pd.DataFrame, List[Dict]],
     
     # Build directed graph
     G = nx.DiGraph()
+    all_neuron_ids = set()
     for _, row in connections.iterrows():
         src = int(row['src'])
         tgt = int(row['tgt'])
+        all_neuron_ids.add(src)
+        all_neuron_ids.add(tgt)
         G.add_edge(src, tgt)
+    
+    # Use layered layout if neuron_types provided and enabled
+    if use_layered and neuron_types is not None and len(neuron_types) > 0:
+        print("Using layered layout")
+        pos = _compute_layered_layout(sorted(all_neuron_ids), neuron_types)
+        return pos
     
     # Try graphviz first if requested
     if use_graphviz:
@@ -177,7 +253,7 @@ SIZES = {
     'neuron': 800,
     'dummy': 80,
     'label_fontsize': 14,
-    'weight_fontsize': 12,
+    'weight_fontsize': 6,
 }
 
 STYLES = {
@@ -342,11 +418,14 @@ def _draw_self_connection(ax, pos: Tuple[float, float], weight: float,
     Args:
         ax: Matplotlib axis
         pos: (x, y) position of neuron
-        weight: Connection weight
+        weight: Connection weight (affects linewidth and alpha)
         neuron_size: Radius for the loop
     """
     color = COLORS['excitatory'] if weight >= 0 else COLORS['inhibitory']
-    linewidth = 1 + 6 * abs(weight)  # Scale with weight magnitude
+    linewidth = 0.5 + 3.875 * abs(weight)  # Maps 0 -> 0.5, 1.0 -> 4.375 (double the original max)
+    # Scale alpha with weight: barely visible at weight≈0, opaque at weight=1.0
+    # Map: weight ≈ 0 → alpha = 0.001, weight = 1.0 → alpha = 0.95
+    alpha = 0.001 + 0.949 * abs(weight)
     
     # Draw loop as a circle centered at the neuron position
     circle = Circle(pos, 
@@ -354,6 +433,7 @@ def _draw_self_connection(ax, pos: Tuple[float, float], weight: float,
                    fill=False,
                    edgecolor=color,
                    linewidth=linewidth,
+                   alpha=alpha,
                    zorder=2)
     ax.add_patch(circle)
     
@@ -364,7 +444,19 @@ def _draw_self_connection(ax, pos: Tuple[float, float], weight: float,
     
     ax.annotate('', xy=(arrow_x, arrow_y),
                xytext=(pos[0], pos[1] + neuron_size * 1.6),
-               arrowprops=dict(arrowstyle='->', color=color, lw=linewidth))
+               arrowprops=dict(arrowstyle='->', color=color, lw=linewidth, alpha=alpha))
+    
+    # Add weight label only for stronger self-connections (abs > 0.5)
+    if abs(weight) > 0.5:
+        # Scale fontsize with weight: map 0.5 → 4pt, 1.0 → 10pt
+        label_fontsize = 4 + 12 * (abs(weight) - 0.5)
+        label_x = pos[0] + neuron_size * 2.1
+        label_y = pos[1] + neuron_size * 1.8
+        ax.text(label_x, label_y, f'{weight:.2f}',
+               fontsize=label_fontsize,
+               ha='center', va='center',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
+               zorder=10)
 
 
 def _draw_curved_arrow(ax, src_pos: Tuple[float, float], 
@@ -373,7 +465,6 @@ def _draw_curved_arrow(ax, src_pos: Tuple[float, float],
                       curve_direction: int = 1,
                       style: str = '-',
                       color: Optional[str] = None,
-                      alpha: float = 0.7,
                       skip_shorten: bool = False):
     """
     Draw a curved arrow between two positions.
@@ -382,11 +473,10 @@ def _draw_curved_arrow(ax, src_pos: Tuple[float, float],
         ax: Matplotlib axis
         src_pos: (x, y) source position
         tgt_pos: (x, y) target position
-        weight: Connection weight (affects thickness)
+        weight: Connection weight (affects thickness and alpha)
         curve_direction: 1 for right curve, -1 for left curve
         style: Line style ('-' for solid, '--' for dashed)
         color: Line color (auto-determined from weight if None)
-        alpha: Transparency
         skip_shorten: If True, don't shorten positions (already shortened)
     """
     if color is None:
@@ -396,7 +486,10 @@ def _draw_curved_arrow(ax, src_pos: Tuple[float, float],
     if not skip_shorten:
         src_pos, tgt_pos = _shorten_edge_positions(src_pos, tgt_pos, offset=0.07)
     
-    linewidth = 0.5 + 7.5 * abs(weight)
+    linewidth = 0.25 + 7.75 * abs(weight)
+    # Scale alpha with weight: barely visible at weight≈0, opaque at weight=1.0
+    # Map: weight ≈ 0 → alpha = 0.001, weight = 1.0 → alpha = 0.95
+    alpha = 0.001 + 0.949 * abs(weight)
     rad = 0.2 * curve_direction  # Curvature
     
     arrow = FancyArrowPatch(
@@ -418,7 +511,6 @@ def _draw_straight_arrow(ax, src_pos: Tuple[float, float],
                         weight: float,
                         style: str = '-',
                         color: Optional[str] = None,
-                        alpha: float = 0.7,
                         skip_shorten: bool = False):
     """Draw a straight arrow (used when no bidirectional conflict)."""
     if color is None:
@@ -428,7 +520,10 @@ def _draw_straight_arrow(ax, src_pos: Tuple[float, float],
     if not skip_shorten:
         src_pos, tgt_pos = _shorten_edge_positions(src_pos, tgt_pos, offset=0.07)
     
-    linewidth = 0.5 + 7.5 * abs(weight)
+    linewidth = 0.25 + 7.75 * abs(weight)
+    # Scale alpha with weight: barely visible at weight≈0, opaque at weight=1.0
+    # Map: weight ≈ 0 → alpha = 0.001, weight = 1.0 → alpha = 0.95
+    alpha = 0.001 + 0.949 * abs(weight)
     
     arrow = FancyArrowPatch(
         src_pos, tgt_pos,
@@ -571,47 +666,48 @@ def draw_network(neurons: Dict[int, Dict],
         edge_pair = frozenset([src, tgt])
         is_bidirectional = edge_pair in bidirectional_pairs
         
-        # Shorten positions once for both drawing and dummy node calculation
+        # Shorten positions once for drawing and dummy node calculation
         shortened_src, shortened_tgt = _shorten_edge_positions(src_pos, tgt_pos, offset=0.07)
         
-        if is_bidirectional:
-            # Draw curved to avoid overlap
-            # Always curve right from the source perspective.
-            # When A→B curves right and B→A also curves right from B's perspective,
-            # they automatically curve away from each other (like traffic on the right side of the road)
-            _draw_curved_arrow(ax, shortened_src, shortened_tgt, weight, 
-                             curve_direction=1, skip_shorten=True)
-        else:
-            # Draw straight arrow
-            _draw_straight_arrow(ax, shortened_src, shortened_tgt, weight, skip_shorten=True)
+        # Always draw curved arrows (bent right) for all connections
+        _draw_curved_arrow(ax, shortened_src, shortened_tgt, weight, 
+                         curve_direction=1, skip_shorten=True)
         
         drawn_edges.add((src, tgt))
         
-        # Compute and store dummy node position based on shortened positions
-        # (where the arrows actually are, not where the neurons are)
-        dummy_id = _get_dummy_id(src, tgt)
-        dummy_positions[dummy_id] = _compute_dummy_position(shortened_src, shortened_tgt)
-        
-        # Always show weight value for regular connections
-        mid_x, mid_y = dummy_positions[dummy_id]
-        ax.text(mid_x, mid_y, f'{weight:.2f}',
-               fontsize=SIZES['weight_fontsize'],
-               ha='center', va='center',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
-               zorder=10)
+        # Only show weight labels for stronger connections (abs > 0.5)
+        if abs(weight) > 0.5:
+            # Compute label position on the curved arrow
+            # Use the curved path calculation with rad=0.2 to match the arrow's curve
+            label_pos = _get_curved_arrow_position(shortened_src, shortened_tgt, 
+                                                  curve_direction=1, rad=0.2, t=0.5)
+            
+            # Scale fontsize with weight: map 0.5 → 4pt, 1.0 → 10pt
+            label_fontsize = 4 + 12 * (abs(weight) - 0.5)
+            ax.text(label_pos[0], label_pos[1], f'{weight:.2f}',
+                   fontsize=label_fontsize,
+                   ha='center', va='center',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
+                   zorder=10)
     
     # ===== Draw Neurons =====
     for neuron_id, info in neurons.items():
         pos = info['pos']
         fill_color, edge_color = _get_neuron_color(neuron_id, neuron_types)
         
+        # Scale size based on tonic activation (0.0 -> half size, 1.0 -> full size)
+        tonic_activation = info.get('tonic_activation', 1.0)
+        # Map tonic_activation [0, 1] to size multiplier [0.5, 1.0]
+        size_multiplier = 0.5 + 0.5 * tonic_activation
+        neuron_size = SIZES['neuron'] * size_multiplier
+        
         ax.scatter(pos[0], pos[1],
-                  s=SIZES['neuron'],
+                  s=neuron_size,
                   c=fill_color,
                   edgecolors=edge_color,
                   linewidths=2,
-                  zorder=4,
-                  alpha=0.9)
+                  zorder=6,
+                  alpha=1.0)  # Fully opaque
         
         # Label neuron
         ax.text(pos[0], pos[1], str(neuron_id),
@@ -619,7 +715,7 @@ def draw_network(neurons: Dict[int, Dict],
                ha='center', va='center',
                fontweight='bold',
                color='black',
-               zorder=5)
+               zorder=7)
     
     # ===== Finalize Plot =====
     ax.set_aspect('equal')
@@ -628,24 +724,28 @@ def draw_network(neurons: Dict[int, Dict],
     if title:
         ax.set_title(title, fontsize=18, fontweight='bold', pad=20)
     
-    # Create legend
+    # Create legend - horizontal at bottom
     legend_elements = [
         mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['input_edge'], 
-                      linewidth=2, label='Input Neuron'),
+                      linewidth=2, label='Input'),
         mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['output_edge'], 
-                      linewidth=2, label='Output Neuron'),
+                      linewidth=2, label='Output'),
         mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['hidden_edge'], 
-                      linewidth=2, label='Hidden Neuron'),
+                      linewidth=2, label='Hidden'),
         plt.Line2D([0], [0], color=COLORS['excitatory'], linewidth=2, 
-                   linestyle='-', label='Excitatory Connection'),
+                   linestyle='-', label='Excitatory'),
         plt.Line2D([0], [0], color=COLORS['inhibitory'], linewidth=2,
-                   linestyle='-', label='Inhibitory Connection'),
+                   linestyle='-', label='Inhibitory'),
     ]
     
-    ax.legend(handles=legend_elements, loc='upper left', 
-             bbox_to_anchor=(1.02, 1), fontsize=11)
+    ax.legend(handles=legend_elements, loc='lower center', 
+             bbox_to_anchor=(0.5, -0.12), ncol=5, fontsize=8, frameon=True)
     
-    # Adjust limits to fit all elements
+    # Adjust layout to make room for legend at bottom
+    if ax.figure is not None:
+        ax.figure.subplots_adjust(bottom=0.15)
+    
+    # Adjust limits to fit all elements with extra space at bottom for legend
     all_x = [pos[0] for pos in positions.values()]
     all_y = [pos[1] for pos in positions.values()]
     margin = 0.15
