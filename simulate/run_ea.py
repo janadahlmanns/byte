@@ -179,7 +179,7 @@ def check_ea_input_parameters(experiment_cfg):
         raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_method, mutation_seed.")
     
     # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_seed"]
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method"]
     for param in required_params:
         if param not in ea_cfg:
             raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
@@ -528,7 +528,6 @@ def main():
         ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
         MUTATION_RATE = ea_cfg["mutation_rate"]
         MUTATION_METHOD = ea_cfg["mutation_method"]
-        MUTATION_SEED = ea_cfg["mutation_seed"]
         mutation_function = load_mutation_method(MUTATION_METHOD)
         
         print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
@@ -541,6 +540,14 @@ def main():
         offspring_counts = [offspring_per_parent_base] * ELITE_SIZE
         if remainder > 0:
             offspring_counts[-1] += remainder  # Last parent gets remainder
+        if NUM_GENERATIONS == 1:
+            ELITE_SIZE = POPULATION_SIZE
+            print(f"[EA Config] Single generation: ELITE_SIZE will be set to POPULATION_SIZE to save all variants.")
+    else:
+        ELITE_SIZE = POPULATION_SIZE
+        NUM_GENERATIONS = 1
+        ELITE_SELECTION_METRIC = 'average'  # Not used when EA is disabled, but set to default for consistency  
+        print(f"[EA Config] EA Disbaled: First generation will be evaluated and saved directly.")
 
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
@@ -595,8 +602,7 @@ def main():
     # 2b. INITIALIZE HDF5 FILE & SAVE CONFIGURATION
     # ============================================================
     # Create HDF5 file early to catch file system errors before experiment runs
-    num_generations_param = NUM_GENERATIONS if EA_ENABLED else None
-    hdf5_path = initialize_hdf5_file(EXPERIMENT_FOLDER, SIMULATION_NAME, cfg, num_generations_param)
+    hdf5_path = initialize_hdf5_file(EXPERIMENT_FOLDER, SIMULATION_NAME, cfg, NUM_GENERATIONS)
     
     # ============================================================
     # 3. GENERATE RNG SEEDS FOR VARIANTS
@@ -625,7 +631,6 @@ def main():
                                     ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
                                     brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
 
-    total_lifespans = sum(len(v) for v in lifespans.values())
 
     # ============================================================
     # 6. SELECTION ON INITIAL POPULATION (GENERATION 0)
@@ -695,7 +700,7 @@ def main():
         # ============================================================
         save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespans)
         write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats)
-        print(f"[Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Median: {gen_stats[1]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
 
     # ============================================================
     # 15. PRINT AND PLOT RESULTS

@@ -4,17 +4,17 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "test_batch"
+  simulation_name: "test_ea"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
   n_runs: 3
-  evolutionary_algorithm_enabled: false
+  evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup"
-  population_size: 5
+  population_size: 120
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -22,6 +22,14 @@ experiment:
     connectivity_degree_inhibitory: 0.1
     modulation_degree_potentiation: 0.1
     modulation_degree_depression: 0.1
+
+  # evolutionary algorithm
+  evolutionary_algorithm:
+    num_generations: 3
+    elite_size: 3
+    elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
+    mutation_rate: 0.1  # Fraction of connections to mutate per individual
+    mutation_method: simple  # Options: 'simple'
 
   # Visualization
   viz_enabled: false

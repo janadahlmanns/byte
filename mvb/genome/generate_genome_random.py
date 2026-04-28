@@ -211,10 +211,7 @@ def generate_random_genome(yaml_config, rng_seed):
     # Generate random tonic activations
     tonic_activations = rng.uniform(0.0, 0.3, size=n_neurons).astype(np.float32)
     
-    # Set always-on neuron (last neuron) to constant high tonic activation
-    if n_neurons > 0:
-        tonic_activations[-1] = 1.0
-    
+   
     # Package into result structure
     result = GenomeRandomResult(
         params=params,
