@@ -231,21 +231,7 @@ def main():
     
     experiment_cfg = cfg["experiment"]
     brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
-    
-    # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
-    SIMULATION_SEED = experiment_cfg["simulation_seed"]
-    GENERATION_SEED = cfg["world"]["generation_seed"]
-    
-    # Build independent RNG streams for decision-making and neuron noise
-    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-    streams_sim = seed_seq_sim.spawn(2)
-    rng_decision = np.random.default_rng(streams_sim[0])
-    rng_neuron_noise = np.random.default_rng(streams_sim[1])
-    
-    # Build RNG stream for world (food distribution)
-    seed_seq_gen = np.random.SeedSequence(int(GENERATION_SEED))
-    rng_world = np.random.default_rng(seed_seq_gen.spawn(1)[0])
-    
+        
     # Extract experiment parameters from YAML (must all be present)
     EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
     SIMULATION_NAME = experiment_cfg["simulation_name"]
@@ -302,12 +288,18 @@ def main():
     brain_cfg = cfg["brain"]
     
     # ============================================================
-    # 3. SPLIT OFF CONTINUOIS RNG STREAMS FOR VARIANTS
+    # 3. SPLIT OFF CONTINUOIS RNG STREAMS 
     # ============================================================
     
-    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
-    variant_decision_seeds = rng_decision.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
-    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=N_VARIANTS, dtype=np.uint32)
+    # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
+    SIMULATION_SEED = experiment_cfg["simulation_seed"]
+    
+    # Spawn 3 independent RNG streams from simulation_seed
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(3)
+    rng_noise = np.random.default_rng(streams_sim[0])
+    rng_decision = np.random.default_rng(streams_sim[1])
+    rng_world = np.random.default_rng(streams_sim[2])
     
     # ============================================================
     # 4. GENERATE GENOMES
@@ -319,11 +311,11 @@ def main():
         genomes.append(genome)
 
 
-    all_lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+    all_lifespans, run_seeds_generated = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+                                    ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
 
-    total_lifespans = sum(len(v) for v in all_lifespans.values())
+    total_lifespans = sum(len(v['lifespan_vector']) for v in all_lifespans.values())
     print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
 
 

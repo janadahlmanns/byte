@@ -155,7 +155,7 @@ def eval_variant(
                     connections_to_track.append((src, tgt))
         summary_array = None
         dtype_summary = [('run_id', 'i2'), ('lifetime_ticks', 'i4'), ('foods', 'i4'),
-                         ('distance', 'i4'), ('final_energy', 'f4')]
+                         ('distance', 'i4'), ('final_energy', 'f4'), ('seed_noise', 'u4'), ('seed_decision', 'u4')]
         summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
         # Pre-allocate wiring array with columns for all run final weights
@@ -219,8 +219,8 @@ def eval_variant(
         # Set rngs for this run
         # ============================================================
         rng_world_run = np.random.default_rng(run_seeds[run_id])
-        rng_noise_run = np.random.default_rng(seeds_noise_variant[variant_id])
-        rng_decision_run = np.random.default_rng(seeds_decision_variant[variant_id])
+        rng_noise_run = np.random.default_rng(seeds_noise_variant[run_id])
+        rng_decision_run = np.random.default_rng(seeds_decision_variant[run_id])
 
         # ============================================================
         # Call brain_module.init_brain(genome, brain_cfg) for a clean reset
@@ -290,6 +290,8 @@ def eval_variant(
             summary_array[run_id]['foods'] = worm.eats
             summary_array[run_id]['distance'] = worm.distance
             summary_array[run_id]['final_energy'] = worm.energy
+            summary_array[run_id]['seed_noise'] = seeds_noise_variant[run_id]
+            summary_array[run_id]['seed_decision'] = seeds_decision_variant[run_id]
             if enable_per_tick_tracking:
                 per_tick_data = rec.per_tick_data[:rec.per_tick_count]
                 per_tick_all_runs[run_id] = per_tick_data
@@ -298,7 +300,11 @@ def eval_variant(
                 heatmaps_all_runs[run_id] = rec.staying_heatmap.copy()
     
     # Build tracking results dict
-    tracking_results = {'lifespan_vector': lifespan_vector}
+    tracking_results = {
+        'lifespan_vector': lifespan_vector,
+        'seed_noise': seeds_noise_variant[run_id],
+        'seed_decision': seeds_decision_variant[run_id]
+    }
     
     if enable_per_run_tracking:
         tracking_results['summary_array'] = summary_array
@@ -410,7 +416,11 @@ def run_variant_worker(
     # Batch write to HDF5
     # ============================================================
     # Extract tracking results
-    lifespan_vector = tracking_results['lifespan_vector']
+    lifespan_results = {
+        'lifespan_vector': tracking_results['lifespan_vector'],
+        'seed_noise': tracking_results['seed_noise'],
+        'seed_decision': tracking_results['seed_decision']
+    }
     
     # Batch write all variant data after all runs complete (only if per-run tracking enabled)
     if enable_per_run_tracking:
@@ -436,16 +446,8 @@ def run_variant_worker(
                     heatmaps_all_runs = tracking_results.get('heatmaps_all_runs', {})
                     for run_id, staying_heatmap in heatmaps_all_runs.items():
                         save_heatmaps_to_hdf5(hdf5_path, variant_id, run_id, staying_heatmap)
-                
-                # Write RNG seed information to HDF5 variant attributes (to existing variant group)
-                with h5py.File(hdf5_path, 'a') as f:
-                    variant_group_name = f'variant_{variant_id}'
-                    if variant_group_name in f:
-                        variant_group = f[variant_group_name]
-                        variant_group.attrs['rng_seed_decision'] = int(variant_decision_seed)
-                        variant_group.attrs['rng_seed_noise'] = int(variant_noise_seed)
-    
-    return (variant_id, lifespan_vector)
+                    
+    return (variant_id, lifespan_results)
 
 
 def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
@@ -484,7 +486,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         brain_cfg: Brain configuration dict
     
     Returns:
-        Dict mapping variant_id to lifespan_vector (1D array of lifetime ticks)
+        Tuple of (all_lifespans, run_seeds)
+        - all_lifespans: Dict mapping variant_id to lifespan_vector (1D array of lifetime ticks)
+        - run_seeds: Array of N_RUNS seeds drawn for world initialization this generation
     """
 
     # ============================================================
@@ -519,7 +523,11 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         save_genome_properties_to_hdf5(hdf5_path, genomes)
         # Save run_seeds for reproducibility
         with h5py.File(hdf5_path, 'a') as f:
-            f.create_dataset('run_seeds', data=run_seeds)
+            # If elite_genomes group exists, save run_seeds there; otherwise at root level
+            if 'elite_genomes' in f:
+                f['elite_genomes'].create_dataset('run_seeds', data=run_seeds)
+            else:
+                f.create_dataset('run_seeds', data=run_seeds)
 
     try:
         # Run simulation
@@ -562,9 +570,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                     kwargs['hdf5_path'] = hdf5_path
                     kwargs['hdf5_lock'] = hdf5_lock
                 
-                returned_variant_id, lifespan_vector = run_variant_worker(**kwargs)
+                returned_variant_id, lifespan_results = run_variant_worker(**kwargs)
 
-                all_lifespans[variant_id] = lifespan_vector
+                all_lifespans[variant_id] = lifespan_results
                 print(" done")
         
         else:
@@ -612,8 +620,8 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                 
                 for future in as_completed(futures):
                     completed += 1
-                    returned_variant_id, lifespan_vector = future.result()
-                    all_lifespans[returned_variant_id] = lifespan_vector
+                    returned_variant_id, lifespan_results = future.result()
+                    all_lifespans[returned_variant_id] = lifespan_results
                     print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
             
             print()
@@ -634,4 +642,4 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     
     # Sort lifespans by variant ID to ensure deterministic ordering regardless of parallel task completion
     all_lifespans = dict(sorted(all_lifespans.items()))
-    return all_lifespans
+    return all_lifespans, run_seeds
