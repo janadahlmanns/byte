@@ -78,6 +78,7 @@ def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise,
     
     return world, worm, rec, pause_mgr
 def eval_variant(
+    variant_id,
     brain_module_name,
     grid_width,
     grid_height,
@@ -91,21 +92,22 @@ def eval_variant(
     worm_metabolic_rate,
     worm_movement_cost,
     n_runs,
-    run_seeds,
     genome,
     brain_cfg,
     viz_enabled,
     viz_fps,
     viz_brain_enabled,
     viz_brain_fps,
-    rng_worker_decision,
-    rng_worker_neuron_noise,
+    run_seeds,
+    seeds_noise_variant,
+    seeds_decision_variant,
     max_ticks,
     sensor_cfg,
 ):
     """Execute all runs for a single variant and return tracking results.
     
     Args:
+        variant_id: Index of this variant (for indexing into seeds_*_variant arrays)
         brain_module_name: Name of brain module to import
         grid_width: World grid width
         grid_height: World grid height
@@ -119,15 +121,15 @@ def eval_variant(
         worm_metabolic_rate: Worm metabolic rate
         worm_movement_cost: Worm movement cost
         n_runs: Number of runs
-        run_seeds: Array of seeds for world initialization
         genome: Pre-generated genome dict
         brain_cfg: Brain configuration dict
         viz_enabled: Whether to enable world visualization
         viz_fps: World visualization FPS
         viz_brain_enabled: Whether to enable brain visualization
         viz_brain_fps: Brain visualization FPS
-        rng_worker_decision: RNG for decision-making
-        rng_worker_neuron_noise: RNG for neuron noise
+        run_seeds: Array of N_RUNS seeds for world initialization
+        seeds_noise_variant: Array of RNG seeds for neuron noise (one per variant)
+        seeds_decision_variant: Array of RNG seeds for decision-making (one per variant)
         max_ticks: Maximum simulation ticks
         sensor_cfg: Sensor configuration list
     
@@ -211,14 +213,14 @@ def eval_variant(
     # ============================================================
     # Simulate runs. For each run do:
     # ============================================================
-    
-
     for run_id in range(n_runs):
 
         # ============================================================
-        # Set world seed for this run
+        # Set rngs for this run
         # ============================================================
         rng_world_run = np.random.default_rng(run_seeds[run_id])
+        rng_noise_run = np.random.default_rng(seeds_noise_variant[variant_id])
+        rng_decision_run = np.random.default_rng(seeds_decision_variant[variant_id])
 
         # ============================================================
         # Call brain_module.init_brain(genome, brain_cfg) for a clean reset
@@ -273,7 +275,7 @@ def eval_variant(
         # ============================================================
         # Simulate
         # ============================================================
-        world, worm, rec, pause_mgr = simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise, max_ticks, pause_mgr)
+        world, worm, rec, pause_mgr = simulate_run(world, worm, rec, rng_decision_run, rng_noise_run, max_ticks, pause_mgr)
          
         # Always record lifespan
         lifespan_vector[run_id] = worm.ticks 
@@ -335,8 +337,8 @@ def run_variant_worker(
     sensor_cfg,
     feeding_cfg,
     brain_cfg,
-    variant_decision_seed,
-    variant_noise_seed,
+    seeds_noise_variant,
+    seeds_decision_variant,
     run_seeds,
     hdf5_path=None,
     hdf5_lock=None,
@@ -366,23 +368,18 @@ def run_variant_worker(
         sensor_cfg: Sensor configuration list
         feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_cfg: Dict with brain configuration (n_neurons, threshold, noise_level, sensory_mapping, output_mapping, max_decision_delay)
-        variant_decision_seed: RNG seed for decision-making in this variant
-        variant_noise_seed: RNG seed for neuron noise in this variant
-        run_seeds: Array of N_RUNS seeds for world initialization (same across all variants)
+        seeds_noise_variant: Array of RNG seeds for neuron noise (one per variant)
+        seeds_decision_variant: Array of RNG seeds for decision-making (one per variant)
+        run_seeds: Array of N_RUNS seeds for world initialization
         hdf5_path: Path to HDF5 file to write to
         hdf5_lock: multiprocessing.Lock() for synchronized writes
     """
     
     # ============================================================
-    # Build RNG streams for this variant (persistent across all runs)
-    # ============================================================
-    rng_worker_decision = np.random.default_rng(variant_decision_seed)
-    rng_worker_neuron_noise = np.random.default_rng(variant_noise_seed)
-    
-    # ============================================================
     # Prepare simulation arrays
     # ============================================================
     tracking_results = eval_variant(
+        variant_id,
         brain_module_name,
         grid_width,
         grid_height,
@@ -396,15 +393,15 @@ def run_variant_worker(
         worm_metabolic_rate,
         worm_movement_cost,
         n_runs,
-        run_seeds,
         genome,
         brain_cfg,
         viz_enabled,
         viz_fps,
         viz_brain_enabled,
         viz_brain_fps,
-        rng_worker_decision,
-        rng_worker_neuron_noise,
+        run_seeds,
+        seeds_noise_variant,
+        seeds_decision_variant,
         max_ticks,
         sensor_cfg,
     )
@@ -452,8 +449,8 @@ def run_variant_worker(
 
 
 def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds):
+                                ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
+                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg):
     """Execute all variants for a generation and return lifespan data.
     
     Args:
@@ -464,12 +461,14 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         ENABLE_PER_RUN_TRACKING: Whether to track per-run metrics
         ENABLE_PER_TICK_TRACKING: Whether to track per-tick data
         ENABLE_HEAT_MAP_TRACKING: Whether to track heatmaps
-        rng_world: RNG for world food initialization
         VIZ_ENABLED: Whether world visualization is enabled
         VIZ_BRAIN_ENABLED: Whether brain visualization is enabled
         VIZ_FPS: World visualization FPS
         VIZ_BRAIN_FPS: Brain visualization FPS
         N_VARIANTS: Number of variants
+        rng_noise: RNG for neuron noise
+        rng_decision: RNG for decision-making
+        rng_world: RNG for world food initialization
         brain_module_name: Name of brain module
         MAX_TICKS: Maximum simulation ticks
         N_RUNS: Number of runs per variant
@@ -483,8 +482,6 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         sensor_cfg: Sensor configuration list
         feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_cfg: Brain configuration dict
-        variant_decision_seeds: Array of decision RNG seeds per variant
-        variant_noise_seeds: Array of noise RNG seeds per variant
     
     Returns:
         Dict mapping variant_id to lifespan_vector (1D array of lifetime ticks)
@@ -514,7 +511,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     # PREPARE WORKERS and THEN EITHER PARALLEL OR SERIAL
     # ============================================================
 
-    # Draw RNG seeds for the N_RUNS to be handed to workers
+    # Draw RNG seeds to be handed to workers
     run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
     # Save per-generation data to HDF5 (only if per-run tracking is enabled)
     if ENABLE_PER_RUN_TRACKING:
@@ -531,7 +528,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
-                
+                seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+
                 kwargs = {
                     'variant_id': variant_id,
                     'brain_module_name': brain_module_name,
@@ -555,9 +554,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                     'sensor_cfg': sensor_cfg,
                     'feeding_cfg': feeding_cfg,
                     'brain_cfg': brain_cfg,
-                    'variant_decision_seed': variant_decision_seeds[variant_id],
-                    'variant_noise_seed': variant_noise_seeds[variant_id],
-                    'run_seeds': run_seeds.copy(),
+                    'seeds_noise_variant': seeds_noise_variant,
+                    'seeds_decision_variant': seeds_decision_variant,
+                    'run_seeds': run_seeds,
                 }
                 if ENABLE_PER_RUN_TRACKING:
                     kwargs['hdf5_path'] = hdf5_path
@@ -573,6 +572,10 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
             with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = set()
                 for variant_id in range(N_VARIANTS):
+
+                    seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                    seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+
                     kwargs = {
                         'variant_id': variant_id,
                         'brain_module_name': brain_module_name,
@@ -596,9 +599,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                         'sensor_cfg': sensor_cfg,
                         'feeding_cfg': feeding_cfg,
                         'brain_cfg': brain_cfg,
-                        'variant_decision_seed': variant_decision_seeds[variant_id],
-                        'variant_noise_seed': variant_noise_seeds[variant_id],
-                        'run_seeds': run_seeds.copy(),
+                        'seeds_noise_variant': seeds_noise_variant,
+                        'seeds_decision_variant': seeds_decision_variant,
+                        'run_seeds': run_seeds,
                     }
                     if ENABLE_PER_RUN_TRACKING:
                         kwargs['hdf5_path'] = hdf5_path

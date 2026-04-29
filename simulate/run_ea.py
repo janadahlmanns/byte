@@ -551,17 +551,20 @@ def main():
 
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
-    GENERATION_SEED = cfg["world"]["generation_seed"]
     
-    # Build independent RNG streams for decision-making, neuron noise, and mutations
+    # Spawn RNG streams from single simulation seed
+    # Always spawn: rng_noise, rng_decision, rng_world
+    # Additionally spawn rng_mutation if EA is enabled
     # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
+    num_streams = 4 if EA_ENABLED else 3
     seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-    streams_sim = seed_seq_sim.spawn(3)  # 3 streams: decision, neuron_noise, mutation
-    rng_decision = np.random.default_rng(streams_sim[0])
-    rng_neuron_noise = np.random.default_rng(streams_sim[1])
-    rng_mutation = np.random.default_rng(streams_sim[2])
-    # Build RNG stream for world (food distribution)
-    rng_world = np.random.default_rng(int(GENERATION_SEED))
+    streams_sim = seed_seq_sim.spawn(num_streams)
+    
+    rng_noise = np.random.default_rng(streams_sim[0])
+    rng_decision = np.random.default_rng(streams_sim[1])
+    rng_world = np.random.default_rng(streams_sim[2])
+    if EA_ENABLED:
+        rng_mutation = np.random.default_rng(streams_sim[3])
 
     # ============================================================
     # 2. VALIDATION & USER CHECKS
@@ -610,10 +613,7 @@ def main():
     
     # Calculate initial population size (Gen 0 includes room for elite to compete)
     gen0_population_size = POPULATION_SIZE + ELITE_SIZE if EA_ENABLED else POPULATION_SIZE
-    
-    variant_decision_seeds = rng_decision.integers(0, 2**32, size=gen0_population_size, dtype=np.uint32)
-    variant_noise_seeds = rng_neuron_noise.integers(0, 2**32, size=gen0_population_size, dtype=np.uint32)
-    
+        
     # ============================================================
     # 4. GENERATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
@@ -628,8 +628,8 @@ def main():
     # ============================================================
 
     lifespans = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
-                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+                                    ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
 
 
     # ============================================================
@@ -670,8 +670,8 @@ def main():
         # 10. EVAL NEW GENERATION
         # ============================================================
         lifespans_new = eval_generation(genomes_new, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, rng_world, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, variant_decision_seeds, variant_noise_seeds)                             
+                                    ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
 
         # ============================================================
         # 11. COMBINE NEW GENERATION AND PREVIOUS ELITE FOR SELECTION

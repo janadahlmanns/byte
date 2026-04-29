@@ -52,7 +52,6 @@ world:
   start_pos:
   - 26
   - 26
-  generation_seed: 1
 
 food:
   feeding_paradigm:
