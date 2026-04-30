@@ -452,7 +452,7 @@ def run_variant_worker(
 
 def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                 ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg):
+                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, pre_computed_seeds_dict=None, replay_info=None):
     """Execute all variants for a generation and return lifespan data.
     
     Args:
@@ -484,6 +484,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         sensor_cfg: Sensor configuration list
         feeding_cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell, regrow_time
         brain_cfg: Brain configuration dict
+        pre_computed_seeds_dict: Optional dict mapping variant_id to seed arrays (for replay mode).
+                                If provided, uses these seeds instead of generating new ones.
+                                Format: {variant_id: {'run_seeds': array, 'noise_seeds': array, 'decision_seeds': array}}
     
     Returns:
         Tuple of (all_lifespans, run_seeds)
@@ -515,12 +518,18 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     # PREPARE WORKERS and THEN EITHER PARALLEL OR SERIAL
     # ============================================================
 
-    # Draw RNG seeds to be handed to workers
-    run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+    # Determine run_seeds: use pre-computed if in replay mode, otherwise generate fresh
+    if pre_computed_seeds_dict is not None:
+        # In replay mode, use pre-computed seeds (all variants share same run_seeds)
+        run_seeds = pre_computed_seeds_dict[0]['run_seeds']
+    else:
+        # Normal mode: draw new RNG seeds from rng_world
+        run_seeds = rng_world.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+    
     # Save per-generation data to HDF5 (only if per-run tracking is enabled)
     if ENABLE_PER_RUN_TRACKING:
         # Save genome generation parameters to HDF5
-        save_genome_properties_to_hdf5(hdf5_path, genomes)
+        save_genome_properties_to_hdf5(hdf5_path, genomes, replay_info=replay_info)
         # Save run_seeds for reproducibility
         with h5py.File(hdf5_path, 'a') as f:
             # If elite_genomes group exists, save run_seeds there; otherwise at root level
@@ -533,11 +542,18 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         # Run simulation
         all_lifespans = {}
         num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
+        
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
-                seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
-                seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                
+                # Use pre-computed seeds if in replay mode; otherwise generate fresh seeds
+                if pre_computed_seeds_dict is not None:
+                    seeds_noise_variant = pre_computed_seeds_dict[variant_id]['noise_seeds']
+                    seeds_decision_variant = pre_computed_seeds_dict[variant_id]['decision_seeds']
+                else:
+                    seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                    seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
 
                 kwargs = {
                     'variant_id': variant_id,
@@ -581,8 +597,13 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                 futures = set()
                 for variant_id in range(N_VARIANTS):
 
-                    seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
-                    seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                    # Use pre-computed seeds if in replay mode; otherwise generate fresh seeds
+                    if pre_computed_seeds_dict is not None:
+                        seeds_noise_variant = pre_computed_seeds_dict[variant_id]['noise_seeds']
+                        seeds_decision_variant = pre_computed_seeds_dict[variant_id]['decision_seeds']
+                    else:
+                        seeds_noise_variant = rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
+                        seeds_decision_variant = rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32)
 
                     kwargs = {
                         'variant_id': variant_id,

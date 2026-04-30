@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "test_saving"
+  simulation_name: "test_batch"
   simulation_seed: 1
   
   # Simulation runtime
@@ -31,7 +31,7 @@ experiment:
   
   # Data tracking
   enable_per_run_tracking: true
-  enable_per_tick_tracking: true
+  enable_per_tick_tracking: false
   enable_heat_map_tracking: true
   
 
