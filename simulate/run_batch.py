@@ -262,14 +262,11 @@ def main():
         hdf5_source_path = str(Path(file_folder) / f"{filename}.h5")
         if not Path(hdf5_source_path).exists():
             raise FileNotFoundError(f"[ERROR] HDF5 source file not found: {hdf5_source_path}")
-        
-        print(f"[REPLAY] Source HDF5: {hdf5_source_path}")
-        print(f"[REPLAY] genome_ID: {genome_ID}, runs_to_load: {runs_to_load}")
+    
         
         # ============================================================
         # LOAD FULL CONFIG FROM HDF5 ATTRIBUTES (ONLY SOURCE)
         # ============================================================
-        print(f"[REPLAY] Reconstructing all config from HDF5 attributes...\n")
         
         # Read flattened config from HDF5
         with h5py.File(hdf5_source_path, 'r') as f:
@@ -392,12 +389,8 @@ def main():
         
         if missing_sections:
             print("[ERROR] Could not reconstruct all required config sections from HDF5!")
-            print(f"[ERROR] HDF5 file {hdf5_source_path} appears to be corrupted or incomplete.")
-            print(f"[ERROR] Missing sections: {missing_sections}")
             sys.exit(1)
-        
-        print("[REPLAY] Successfully reconstructed all config from HDF5 attributes\n")
-        
+                
         # Track whether "all" was specified for filename construction
         genome_id_is_all = (genome_ID == "all")
         runs_to_load_is_all = (runs_to_load == "all")
@@ -434,12 +427,10 @@ def main():
             if selected_elite_ids is None:
                 available_elites = [key for key in f['elite_genomes'].keys() if key.startswith('elite_')]
                 selected_elite_ids = [int(k.split('_')[1]) for k in sorted(available_elites)]
-                print(f"[REPLAY] Loading all {len(selected_elite_ids)} elite genomes: {selected_elite_ids}")
             
             # Determine runs_indices if "all" was specified
             if runs_indices is None:
                 runs_indices = list(range(n_runs_hdf5))
-                print(f"[REPLAY] Loading all {len(runs_indices)} runs: {runs_indices}")
             
             # ============================================================
             # 2d. LOAD FULL SEED ARRAYS FROM HDF5
@@ -455,15 +446,7 @@ def main():
                 
                 elite_seeds_noise_full[elite_id] = f[f'{elite_group_name}/seeds_noise'][:]
                 elite_seeds_decision_full[elite_id] = f[f'{elite_group_name}/seeds_decision'][:]
-        
-        # Print warning about parameter override
-        print("\n[REPLAY MODE] PARAMETER OVERRIDE:")
-        print(f"  MAX_TICKS: {max_ticks_hdf5} (from HDF5)")
-        print(f"  N_RUNS: {len(runs_indices)} (from runs_to_load)")
-        print(f"  N_VARIANTS: {len(selected_elite_ids)} (from genome_ID)")
-        print(f"  Viz flags: {experiment_cfg.get('viz_enabled')} (from YAML)")
-        print(f"  Tracking flags: {experiment_cfg.get('enable_per_run_tracking')} (from YAML)\n")
-        
+                
         # ============================================================
         # 2e. SLICE SEEDS FOR SELECTED RUNS & GENOMES
         # ============================================================
@@ -487,7 +470,6 @@ def main():
         for new_variant_id, elite_id in enumerate(selected_elite_ids):
             genome = genome_generator(cfg, elite_id=elite_id, hdf5_path=hdf5_source_path)
             genomes.append(genome)
-            print(f"[REPLAY] Loaded elite_{elite_id} as variant {new_variant_id}")
         
         # ============================================================
         # 2g. SET N_VARIANTS, N_RUNS, AND OTHER PARAMETERS
@@ -520,9 +502,7 @@ def main():
         replay_filename = f"{filename}_genomes_{genome_id_str}_runs_{runs_str}"
         EXPERIMENT_FOLDER = str(Path(file_folder) / "replays")
         SIMULATION_NAME = replay_filename
-        
-        print(f"[REPLAY] Output: {EXPERIMENT_FOLDER}/{replay_filename}.h5\n")
-        
+                
         # For from_file mode, WIRING_RANDOMIZATION_SEED and SIMULATION_SEED are unused
         WIRING_RANDOMIZATION_SEED = 0
         SIMULATION_SEED = 0
@@ -609,7 +589,6 @@ def main():
         rng_noise = np.random.default_rng(streams_sim[0])
         rng_decision = np.random.default_rng(streams_sim[1])
         rng_world = np.random.default_rng(streams_sim[2])
-        print("[REPLAY] Using pre-computed RNG seeds from HDF5; batch-level RNGs are unused\n")
     else:
         # Normal mode: spawn 3 independent RNG streams from simulation_seed
         seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
@@ -634,9 +613,6 @@ def main():
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, 
                                     pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info)                             
-
-    total_lifespans = sum(len(v['lifespan_vector']) for v in all_lifespans.values())
-    print(f"[results] {total_lifespans} lifespans and {N_VARIANTS} variant RNG seed sets collected")
 
 
 if __name__ == "__main__":
