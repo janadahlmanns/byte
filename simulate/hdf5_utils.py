@@ -98,28 +98,26 @@ def create_hdf5_file(hdf5_path: Path, yaml_config: dict):
                 f.attrs[str(attr_name)] = str(attr_value)
 
 
-def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list):
+def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list, replay_info: dict = None):
     """
     Save genome generation parameters to HDF5 as a vertical list dataset.
     
-    Extracts the params from the first genome (shared across all variants)
-    and saves as a structured array with name-value pairs (one row per parameter).
+    In normal mode: Extracts the params from the first genome (shared across all variants)
+    In replay mode: Saves replay metadata (source file, loaded genome IDs, loaded runs)
+    
+    Saves as a structured array with name-value pairs (one row per parameter).
     
     Args:
         hdf5_path: Path to HDF5 file
         genomes: List of genome objects (each has a .params attribute)
+        replay_info: Optional dict with replay metadata:
+            - 'source_path': path to source HDF5 file
+            - 'source_filename': filename without extension
+            - 'genome_ids': list of genome IDs or 'all'
+            - 'runs_to_load': list of run indices or 'all'
     """
-    if not genomes:
+    if not genomes and replay_info is None:
         return
-    
-    # Extract params from first genome (same generation params for all variants)
-    params = genomes[0].params
-    
-    # Convert dataclass to dict
-    params_dict = {f.name: getattr(params, f.name) for f in params.__dataclass_fields__.values()}
-    
-    # Flatten the params dict
-    flattened = _flatten_config(params_dict)
     
     # Create structured array with name-value pairs (both as byte strings)
     dtype = np.dtype([
@@ -127,10 +125,29 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list):
         ('value', 'S256'),  # byte string, up to 256 chars (for numeric or text values)
     ])
     
-    # Create array with one row per parameter
-    genome_props = np.zeros(len(flattened), dtype=dtype)
+    if replay_info is not None:
+        # REPLAY MODE: Save metadata about where genomes were loaded from
+        properties = {
+            'loaded_from_file': replay_info['source_path'],
+            'source_filename': replay_info['source_filename'],
+            'genome_ids': str(replay_info['genome_ids']),
+            'runs_to_load': str(replay_info['runs_to_load']),
+        }
+    else:
+        # NORMAL MODE: Extract params from first genome
+        params = genomes[0].params
+        
+        # Convert dataclass to dict
+        params_dict = {f.name: getattr(params, f.name) for f in params.__dataclass_fields__.values()}
+        
+        # Flatten the params dict
+        flattened = _flatten_config(params_dict)
+        properties = flattened
     
-    for i, (key, value) in enumerate(sorted(flattened.items())):
+    # Create array with one row per property
+    genome_props = np.zeros(len(properties), dtype=dtype)
+    
+    for i, (key, value) in enumerate(sorted(properties.items())):
         # Convert both key and value to bytes
         genome_props[i] = (key.encode('utf-8'), str(value).encode('utf-8'))
     

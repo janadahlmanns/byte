@@ -81,8 +81,9 @@ def generate_genome_mutate_simple(elite_genome, mutation_rate, rng_mutation):
         for idx in mutation_indices:
             src, tgt = non_zero_connections[idx]
             
-            # Choose mutation action: 0=gaussian_change, 1=sign_flip, 2=resample_source, 3=resample_target
-            action = rng_mutation.integers(0, 4)
+            # Choose mutation action: 0=gaussian_change_weight, 1=gaussian_change_reliability, 
+            # 2=sign_flip, 3=resample_source, 4=resample_target
+            action = rng_mutation.integers(0, 5)
             
             if action == 0:
                 # Gaussian change the weight
@@ -92,10 +93,17 @@ def generate_genome_mutate_simple(elite_genome, mutation_rate, rng_mutation):
                 connection_weights[src, tgt, 0] = np.clip(connection_weights[src, tgt, 0], -1.0, 1.0)
             
             elif action == 1:
+                # Gaussian change the reliability
+                reliability_noise = rng_mutation.normal(0, gaussian_std)
+                connection_weights[src, tgt, 1] += reliability_noise
+                # Clip to [0, 1] range
+                connection_weights[src, tgt, 1] = np.clip(connection_weights[src, tgt, 1], 0.0, 1.0)
+            
+            elif action == 2:
                 # Sign flip the weight
                 connection_weights[src, tgt, 0] = -connection_weights[src, tgt, 0]
             
-            elif action == 2:
+            elif action == 3:
                 # Resample source neuron
                 # Find an empty destination or skip if all are occupied
                 available_srcs = []

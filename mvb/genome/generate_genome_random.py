@@ -148,7 +148,7 @@ def generate_random_genome(yaml_config, rng_seed):
         src = pair_idx // n_neurons
         tgt = pair_idx % n_neurons
         weight = rng.uniform(0.1, 1.0)  # Positive weight for excitatory
-        reliability = rng.uniform(0.5, 1.0)
+        reliability = rng.uniform(0.0, 1.0)
         connection_weights[src, tgt] = [weight, reliability]
     
     # Generate inhibitory connections
@@ -163,7 +163,7 @@ def generate_random_genome(yaml_config, rng_seed):
         src = pair_idx // n_neurons
         tgt = pair_idx % n_neurons
         weight = rng.uniform(-1.0, -0.1)  # Negative weight for inhibitory
-        reliability = rng.uniform(0.5, 1.0)
+        reliability = rng.uniform(0.0, 1.0)
         connection_weights[src, tgt] = [weight, reliability]
     
     # Generate modulation specification
@@ -211,10 +211,7 @@ def generate_random_genome(yaml_config, rng_seed):
     # Generate random tonic activations
     tonic_activations = rng.uniform(0.0, 0.3, size=n_neurons).astype(np.float32)
     
-    # Set always-on neuron (last neuron) to constant high tonic activation
-    if n_neurons > 0:
-        tonic_activations[-1] = 1.0
-    
+   
     # Package into result structure
     result = GenomeRandomResult(
         params=params,
