@@ -1,0 +1,25 @@
+# ============================================================
+# EXPERIMENT CONFIGURATION
+# ============================================================
+experiment:
+  # Genome generation for first generation
+  genome_type: "from_file"  # Options: "random", "lookup"
+    # Genome type specific parameters - from file
+  from_file_genome:
+    file_folder: "data/temp/"
+    filename: "2026-04-30_10-50-27_test_ea"
+    genome_ID: 0  # "all" or a list of genome indices to load from the file (if multiple genomes are stored)
+    runs_to_load: "all"  # "all" or a list of run indices to load from the file
+
+  # Visualization
+  viz_enabled: true
+  viz_fps: 4
+  viz_brain_enabled: true 
+  viz_brain_fps: 4
+  
+  # Data tracking
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
+  
+

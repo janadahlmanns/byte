@@ -274,15 +274,15 @@ def save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_s
     """Save/update elite genomes, lifespans, and seed data to HDF5.
     
     Overwrites the existing elite_genomes group with fresh data from the current generation.
-    Position indices are used: the i-th genome corresponds to the i-th lifespan array and seed values.
-    Raw lifespan data and seed values are preserved for resuming evolution from checkpoints.
+    Position indices are used: the i-th genome corresponds to the i-th lifespan array and seed arrays.
+    Raw lifespan data and per-run seed values are preserved for resuming evolution from checkpoints.
     
     Args:
         hdf5_path: Path to HDF5 file
         elite_genomes: List of elite genome objects
         elite_lifespan_vectors: List of lifespan arrays (parallel to elite_genomes)
-        elite_seeds_noise: List of noise RNG seeds (one per elite, parallel to elite_genomes)
-        elite_seeds_decision: List of decision RNG seeds (one per elite, parallel to elite_genomes)
+        elite_seeds_noise: List of noise RNG seed arrays (one N_RUNS-length array per elite, parallel to elite_genomes)
+        elite_seeds_decision: List of decision RNG seed arrays (one N_RUNS-length array per elite, parallel to elite_genomes)
     """
     with h5py.File(hdf5_path, 'a') as f:
         # Remove old elite_genomes group and recreate
@@ -315,9 +315,12 @@ def save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_s
         # Save elite lifespans as single dataset
         elite_group.create_dataset("lifespans", data=elite_lifespan_vectors, dtype=np.float32)
         
-        # Save elite seed data
-        elite_group.create_dataset("seeds_noise", data=elite_seeds_noise, dtype=np.uint32)
-        elite_group.create_dataset("seeds_decision", data=elite_seeds_decision, dtype=np.uint32)
+        # Save elite seed data (N_RUNS seeds per elite, stored as list of arrays)
+        # elite_seeds_noise is a list of N_RUNS-length arrays, one per elite
+        for elite_pos, (noise_seeds, decision_seeds) in enumerate(zip(elite_seeds_noise, elite_seeds_decision)):
+            elite_subgroup = elite_group[f"elite_{elite_pos}"]
+            elite_subgroup.create_dataset("seeds_noise", data=noise_seeds, dtype=np.uint32)
+            elite_subgroup.create_dataset("seeds_decision", data=decision_seeds, dtype=np.uint32)
 
 
 def write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats, run_seeds):
@@ -671,8 +674,8 @@ def main():
     elite_genomes = [genomes[i] for i in elite_idx]
     elite_lifespans_results = [lifespans[i] for i in elite_idx]
     elite_lifespan_vectors = [lifespans[i]['lifespan_vector'] for i in elite_idx]
-    elite_seeds_noise = [lifespans[i]['seed_noise'] for i in elite_idx]
-    elite_seeds_decision = [lifespans[i]['seed_decision'] for i in elite_idx]
+    elite_seeds_noise = [lifespans[i]['seeds_noise_all_runs'] for i in elite_idx]
+    elite_seeds_decision = [lifespans[i]['seeds_decision_all_runs'] for i in elite_idx]
     save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_seeds_noise, elite_seeds_decision)
     write_generation_stats_to_hdf5(hdf5_path, 0, gen_stats, run_seeds_gen0)
 
@@ -720,8 +723,8 @@ def main():
         elite_genomes = [genomes_combined[i] for i in elite_idx]
         elite_lifespans_results = [lifespans_combined[i] for i in elite_idx]
         elite_lifespan_vectors = [lifespans_combined[i]['lifespan_vector'] for i in elite_idx]
-        elite_seeds_noise = [lifespans_combined[i]['seed_noise'] for i in elite_idx]
-        elite_seeds_decision = [lifespans_combined[i]['seed_decision'] for i in elite_idx]
+        elite_seeds_noise = [lifespans_combined[i]['seeds_noise_all_runs'] for i in elite_idx]
+        elite_seeds_decision = [lifespans_combined[i]['seeds_decision_all_runs'] for i in elite_idx]
         
         # ============================================================
         # 14. SAVE GENERATION RESULTS 

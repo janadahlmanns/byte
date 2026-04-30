@@ -302,8 +302,8 @@ def eval_variant(
     # Build tracking results dict
     tracking_results = {
         'lifespan_vector': lifespan_vector,
-        'seed_noise': seeds_noise_variant[run_id],
-        'seed_decision': seeds_decision_variant[run_id]
+        'seeds_noise_all_runs': seeds_noise_variant,
+        'seeds_decision_all_runs': seeds_decision_variant
     }
     
     if enable_per_run_tracking:
@@ -418,8 +418,8 @@ def run_variant_worker(
     # Extract tracking results
     lifespan_results = {
         'lifespan_vector': tracking_results['lifespan_vector'],
-        'seed_noise': tracking_results['seed_noise'],
-        'seed_decision': tracking_results['seed_decision']
+        'seeds_noise_all_runs': tracking_results['seeds_noise_all_runs'],
+        'seeds_decision_all_runs': tracking_results['seeds_decision_all_runs']
     }
     
     # Batch write all variant data after all runs complete (only if per-run tracking enabled)

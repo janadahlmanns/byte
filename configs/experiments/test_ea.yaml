@@ -9,12 +9,12 @@ experiment:
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 3
+  n_runs: 50
   evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup"
-  population_size: 12
+  population_size: 40
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -25,8 +25,8 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 5
-    elite_size: 4
+    num_generations: 15
+    elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual
     mutation_method: simple  # Options: 'simple'
