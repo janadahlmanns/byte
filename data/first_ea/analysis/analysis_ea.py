@@ -28,7 +28,7 @@ while _current_path.parent != _current_path:
 
 if _workspace_root:
     sys.path.insert(0, str(_workspace_root))
-    # from analysis_tools.network_visualization import network_viz
+    from analysis_tools.network_visualization.network_viz import plot_network_visualizations, load_network_viz_config
 
 # =====================================================================
 # User Configuration and Data Selection
@@ -39,6 +39,7 @@ EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 
 # HDF5 file containing EA variant data (omit .h5 extension)
 EXPERIMENT_HDF5 = "2026-04-30_14-32-28_first_ea"
+
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
@@ -235,6 +236,45 @@ def _load_connection_weights(hdf5_path: Path) -> dict:
                 continue
     
     return connection_weights
+
+
+def _load_tonic_activations(hdf5_path: Path) -> dict:
+    """
+    Load tonic activations for all elite genomes from HDF5 file.
+    
+    Returns a dictionary mapping elite_id -> tonic_activations array.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+    
+    Returns:
+        Dictionary {elite_id: tonic_activations_array, ...}
+    """
+    tonic_activations = {}
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            return tonic_activations  # Return empty dict if no elite_genomes
+        
+        elite_group = f['elite_genomes']
+        # Find all elite_N folders
+        elite_folders = sorted([key for key in elite_group.keys() if key.startswith('elite_')])
+        
+        for elite_folder in elite_folders:
+            try:
+                elite_id = int(elite_folder.split('_')[1])
+                folder = elite_group[elite_folder]
+                
+                # Load tonic_activations if available
+                if 'tonic_activations' not in folder:
+                    continue
+                
+                tonic_act = folder['tonic_activations'][:]
+                tonic_activations[elite_id] = tonic_act
+            except Exception as e:
+                continue
+    
+    return tonic_activations
 
 
 def _load_modulation_specs(hdf5_path: Path, source_label: str) -> pd.DataFrame:
@@ -500,6 +540,8 @@ df_elite_genomes_exp = _load_elite_genomes(experiment_hdf5_path)
 # Load experiment connection weights
 connection_weights_experiment = _load_connection_weights(experiment_hdf5_path)
 
+# Load experiment tonic activations
+tonic_activations_experiment = _load_tonic_activations(experiment_hdf5_path)
 
 # Load experiment modulation specs
 
@@ -515,6 +557,7 @@ df_benchmarks_elite_genomes = None
 df_benchmarks_modulation_specs = None
 benchmark_attrs = {}
 connection_weights_collection = {}  # Will collect all connection_weights structures
+tonic_activations_collection = {}  # Will collect all tonic_activations structures
 
 if BENCHMARK_HDF5_FILES:
     for bench_name, bench_hdf5 in BENCHMARK_HDF5_FILES:
@@ -559,6 +602,11 @@ if BENCHMARK_HDF5_FILES:
             connection_weights_data = _load_connection_weights(bench_path)
             connection_weights_collection[connection_weights_key] = connection_weights_data
             
+            # Load benchmark tonic activations
+            tonic_activations_key = f"tonic_activations_{bench_key}"
+            tonic_activations_data = _load_tonic_activations(bench_path)
+            tonic_activations_collection[tonic_activations_key] = tonic_activations_data
+            
             # Load benchmark modulation specs
             df_mod_specs = _load_modulation_specs(bench_path, bench_name)
             if df_benchmarks_modulation_specs is None:
@@ -577,6 +625,13 @@ print("\nAll HDF5 data loaded.")
 
 # Create figures directory
 figures_dir = Path(__file__).resolve().parent / 'figures'
+
+# Load network visualization configuration for 11-neuron network
+try:
+    _, neuron_types = load_network_viz_config(11)
+except Exception as e:
+    print(f"Warning: Could not load network visualization config: {e}")
+    neuron_types = {}
 
 
 # ==================================================================================================================================================
@@ -599,6 +654,28 @@ plot_ea_results(experiment_hdf5_path, doc, figures_dir)
 
 # endregion EA Results / Fitness
 # region connectivity
+
+# Build source_names dictionary for display in plots
+source_names = {'experiment': EXPERIMENT_NAME}
+for bench_name in benchmark_attrs.keys():
+    # Use the benchmark name directly as stored in benchmark_attrs
+    source_names[bench_name] = bench_name
+
+# Plot network visualizations for experiment and benchmarks
+if connection_weights_experiment and tonic_activations_experiment:
+    doc.add_heading('Network Visualizations', level=2)
+    plot_network_visualizations(
+        connection_weights_experiment, 
+        tonic_activations_experiment,
+        connection_weights_collection, 
+        tonic_activations_collection,
+        neuron_types, 
+        source_names, 
+        doc, 
+        figures_dir
+    )
+else:
+    print("Skipping network visualizations (weights or activations not available)")
 
 # endregion connectivity
 # region plasticity

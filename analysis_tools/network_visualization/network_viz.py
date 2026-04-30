@@ -52,6 +52,10 @@ def load_network_viz_config(config_name: Union[str, int]) -> Tuple[Dict[int, Tup
     
     config_path = workspace_root / "configs" / f"network_viz_{config_name}.yaml"
     
+    # If not found in main configs folder, try the viz subfolder
+    if not config_path.exists():
+        config_path = workspace_root / "configs" / "viz" / f"network_viz_{config_name}.yaml"
+    
     if not config_path.exists():
         raise FileNotFoundError(f"Network visualization config not found: {config_path}")
     
@@ -1495,3 +1499,171 @@ def load_network_from_csvs(wiring_csv: str,
         connections = connections.rename(columns={weight_column: 'weight'})
     
     return neurons, connections, modulatory
+
+
+def convert_weights_to_network_format(weights_matrix, neuron_types=None, tonic_activations=None):
+    """
+    Convert connection weight matrix to network format compatible with draw_network().
+    
+    Args:
+        weights_matrix: NxNx2 matrix where [:, :, 0] is weight and [:, :, 1] is reliability
+                       Or NxN matrix where values are weights directly
+        neuron_types: Dict mapping neuron_id -> type ('input'|'output'|'hidden')
+                     If None, infers all as 'hidden'
+        tonic_activations: Array of tonic activation values for neurons [N], or None
+    
+    Returns:
+        (neurons, connections_list) tuple where:
+        - neurons: Dict mapping neuron_id -> {'pos': (x, y), 'type': type, 'tonic_activation': value}
+        - connections_list: List of dicts with 'src', 'tgt', 'weight' keys
+    """
+    import numpy as np
+    
+    # Handle 3D matrix (weight + reliability)
+    if len(weights_matrix.shape) == 3 and weights_matrix.shape[2] == 2:
+        # weights[:, :, 0] is the weight, [:, :, 1] is reliability
+        weights = weights_matrix[:, :, 0]
+        reliability = weights_matrix[:, :, 1]
+        # Calculate effective weight = weight * reliability
+        effective_weights = weights * reliability
+    else:
+        # Assume 2D matrix with just weights
+        effective_weights = weights_matrix
+    
+    # Get number of neurons
+    n_neurons = effective_weights.shape[0]
+    
+    # Initialize neuron_types if not provided
+    if neuron_types is None:
+        neuron_types = {i: 'hidden' for i in range(n_neurons)}
+    
+    # Initialize tonic_activations if not provided
+    if tonic_activations is None:
+        tonic_activations = np.ones(n_neurons)
+    elif isinstance(tonic_activations, np.ndarray):
+        tonic_activations = tonic_activations
+    else:
+        tonic_activations = np.array(tonic_activations)
+    
+    # Auto-compute positions using layered layout
+    all_neuron_ids = list(range(n_neurons))
+    positions = _compute_layered_layout(all_neuron_ids, neuron_types)
+    
+    # Build neurons dict
+    neurons = {}
+    for neuron_id in range(n_neurons):
+        neurons[neuron_id] = {
+            'pos': positions[neuron_id],
+            'type': neuron_types.get(neuron_id, 'hidden'),
+            'tonic_activation': float(tonic_activations[neuron_id]) if neuron_id < len(tonic_activations) else 1.0
+        }
+    
+    # Extract connections (only non-zero weights)
+    connections_list = []
+    for src in range(n_neurons):
+        for tgt in range(n_neurons):
+            weight = float(effective_weights[src, tgt])
+            if weight != 0.0:  # Only include non-zero connections
+                connections_list.append({
+                    'src': src,
+                    'tgt': tgt,
+                    'weight': weight
+                })
+    
+    return neurons, connections_list
+
+
+def plot_network_visualizations(connection_weights_experiment, tonic_activations_experiment,
+                               connection_weights_collection, tonic_activations_collection,
+                               neuron_types, source_names, doc, figures_dir):
+    """
+    Plot and embed network visualizations for experiment and benchmark elites.
+    
+    Args:
+        connection_weights_experiment: Dict mapping elite_id to weight matrices for experiment
+        tonic_activations_experiment: Dict mapping elite_id to tonic activation arrays for experiment
+        connection_weights_collection: Dict mapping benchmark key to dict of elite weights
+        tonic_activations_collection: Dict mapping benchmark key to dict of elite tonic activations
+        neuron_types: Dict mapping neuron_id to type ('input'|'output'|'hidden')
+        source_names: Dict mapping source_key to display name {'experiment': 'Experiment Name', 'connection_weights_benchmark_1': 'Benchmark Name', ...}
+        doc: python-docx Document object to add figures to
+        figures_dir: Path to directory for saving figure PNGs
+    """
+    import pandas as pd
+    from pathlib import Path
+    
+    # Plot experiment elites (first 3)
+    experiment_name = source_names['experiment']
+    for elite_id in sorted(connection_weights_experiment.keys())[:3]:
+        try:
+            weights = connection_weights_experiment[elite_id]
+            tonic_act = tonic_activations_experiment.get(elite_id, None)
+            neurons, connections_list = convert_weights_to_network_format(weights, neuron_types=neuron_types, tonic_activations=tonic_act)
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            if connections_list:
+                connections_df = pd.DataFrame(connections_list)
+            else:
+                connections_df = pd.DataFrame({'src': [0], 'tgt': [0], 'weight': [0.0]})
+            
+            draw_network(
+                neurons=neurons,
+                connections=connections_df,
+                ax=ax,
+                title=f'{experiment_name} Elite {elite_id}',
+                show_weights=True,
+                weight_column='weight'
+            )
+            
+            figures_dir.mkdir(exist_ok=True)
+            figure_path = figures_dir / f'network_{experiment_name.replace(" ", "_")}_elite_{elite_id}.png'
+            fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
+            
+            doc.add_picture(str(figure_path), width=6.5 * 914400)
+            doc.add_paragraph()
+            plt.close(fig)
+        except Exception as e:
+            print(f"Error plotting network for experiment elite {elite_id}: {e}")
+            plt.close('all')
+            continue
+    
+    # Plot benchmark variants (up to 3 per benchmark) - using same method as experiment
+    for bench_key, bench_weights_dict in sorted(connection_weights_collection.items()):
+        bench_display_name = source_names.get(bench_key, bench_key.replace('connection_weights_', '').replace('_', ' ').title())
+        
+        tonic_act_key = bench_key.replace('connection_weights_', 'tonic_activations_')
+        bench_tonic_dict = tonic_activations_collection.get(tonic_act_key, {})
+        
+        for variant_idx, (elite_id, weights) in enumerate(sorted(bench_weights_dict.items())[:3]):
+            try:
+                tonic_act = bench_tonic_dict.get(elite_id, None)
+                neurons, connections_list = convert_weights_to_network_format(weights, neuron_types=neuron_types, tonic_activations=tonic_act)
+                
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                if connections_list:
+                    connections_df = pd.DataFrame(connections_list)
+                else:
+                    connections_df = pd.DataFrame({'src': [0], 'tgt': [0], 'weight': [0.0]})
+                
+                draw_network(
+                    neurons=neurons,
+                    connections=connections_df,
+                    ax=ax,
+                    title=f'{bench_display_name} {elite_id}',
+                    show_weights=True,
+                    weight_column='weight'
+                )
+                
+                figures_dir.mkdir(exist_ok=True)
+                figure_path = figures_dir / f'network_{bench_key}_{elite_id}.png'
+                fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
+                
+                doc.add_picture(str(figure_path), width=6.5 * 914400)
+                doc.add_paragraph()
+                plt.close(fig)
+            except Exception as e:
+                print(f"Error plotting network for benchmark {bench_display_name} variant {elite_id}: {e}")
+                plt.close('all')
+                continue
