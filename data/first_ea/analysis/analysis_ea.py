@@ -35,16 +35,16 @@ if _workspace_root:
 # =====================================================================
 
 # Experiment name
-EXPERIMENT_NAME = "slow_mutation"  # Used for file naming and report titles
+EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 
 # HDF5 file containing EA variant data (omit .h5 extension)
-EXPERIMENT_HDF5 = "2026-04-22_20-57-56_slow_mutation"
+EXPERIMENT_HDF5 = "2026-04-30_14-32-28_first_ea"
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
 BENCHMARK_HDF5_FILES = [
-    ("Hard-wired Lookup", "2026-04-22_20-24-58_lookup"),
-    ("Random networks", "2026-04-22_20-38-37_random"),
+    ("Hard-wired Lookup", "2026-04-30_17-56-06_first_ea_lookup"),
+    ("Random networks", "2026-04-30_17-53-29_first_ea_random"),
 ]
 
 
