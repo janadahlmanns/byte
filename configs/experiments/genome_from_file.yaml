@@ -6,8 +6,8 @@ experiment:
   genome_type: "from_file" # Options: "random", "lookup"m "from_file"
    # Genome type specific parameters - from_file
   from_file_genome:
-    file_folder: "data/first_ea/"
-    filename: "2026-04-30_14-32-28_first_ea"
+    file_folder: "data/first_ea/after_fix/"
+    filename: "2026-05-05_13-44-09_ea_from_random"
     genome_ID: [0]  # "all" or a list of genome indices to load from the file
     runs_to_load: [0]  # "all" or a list of run indices to load from the file
 

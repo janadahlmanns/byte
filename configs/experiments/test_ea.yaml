@@ -3,18 +3,18 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_ea/"
-  simulation_name: "lookup_hard"
+  output_folder: "data/first_ea/after_fix"
+  simulation_name: "ea_from_random"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
   n_runs: 300
-  evolutionary_algorithm_enabled: false
+  evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 1
+  population_size: 100
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -25,8 +25,8 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 1
-    elite_size: 1
+    num_generations: 15
+    elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual
     mutation_method: simple  # Options: 'simple'
