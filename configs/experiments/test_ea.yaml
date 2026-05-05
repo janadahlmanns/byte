@@ -3,18 +3,18 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/temp/"
-  simulation_name: "test_ea"
+  output_folder: "data/first_ea/after_fix"
+  simulation_name: "ea_from_random"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 50
+  n_runs: 300
   evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
-  genome_type: "random"  # Options: "random", "lookup"
-  population_size: 40
+  genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 100
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -57,7 +57,7 @@ food:
   feeding_paradigm:
     initial: true
     regrow: false
-  initial_fraction_per_cell: 0.25
+  initial_fraction_per_cell: 0.1
   regrow_time: 3000
 
 worm:

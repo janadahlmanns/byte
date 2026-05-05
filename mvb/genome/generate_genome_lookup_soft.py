@@ -51,7 +51,7 @@ class GenomeLookuResult:
             raise KeyError(f"GenomeLookuResult has no key '{key}'")
 
 
-def generate_lookup_genome(yaml_config, rng_seed):
+def generate_lookup_soft_genome(yaml_config, rng_seed):
     """
     Generate a deterministic lookup table genome with hard-crafted wiring.
     

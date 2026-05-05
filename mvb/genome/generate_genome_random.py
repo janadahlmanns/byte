@@ -23,8 +23,6 @@ CONNECTIVITY_DEGREE_EXCITATORY = 0.2       # Fraction of excitatory connections
 CONNECTIVITY_DEGREE_INHIBITORY = 0.4       # Fraction of inhibitory connections
 MODULATION_DEGREE_POTENTIATION = 0.5       # Fraction for potentiation modulation
 MODULATION_DEGREE_DEPRESSION = 0.5         # Fraction for depression modulation
-ETA_PLASTICITY = 0.01                      # Global plasticity factor
-
 
 # ============================================================
 # RESULT STRUCTURES
@@ -122,13 +120,16 @@ def generate_random_genome(yaml_config, rng_seed):
     brain_cfg = yaml_config.get("brain", {})
     n_neurons = brain_cfg.get("n_neurons", 10)
     
+    # Generate random eta (plasticity factor)
+    eta_random = rng.uniform(0.0, 1.0)
+    
     # Capture input parameters
     params = GenomeRandomParams(
         connectivity_degree_excitatory=CONNECTIVITY_DEGREE_EXCITATORY,
         connectivity_degree_inhibitory=CONNECTIVITY_DEGREE_INHIBITORY,
         modulation_degree_potentiation=MODULATION_DEGREE_POTENTIATION,
         modulation_degree_depression=MODULATION_DEGREE_DEPRESSION,
-        eta_plasticity=ETA_PLASTICITY,
+        eta_plasticity=eta_random,
         n_neurons=n_neurons,
         rng_seed=rng_seed,
     )
@@ -218,7 +219,7 @@ def generate_random_genome(yaml_config, rng_seed):
         connection_weights=connection_weights,
         modulation_spec=modulation_spec,
         tonic_activations=tonic_activations,
-        eta=ETA_PLASTICITY,
+        eta=eta_random,
     )
     
     return result

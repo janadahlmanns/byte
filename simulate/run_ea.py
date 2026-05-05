@@ -98,12 +98,12 @@ def load_genome_generator(genome_type: str):
     Parameters
     ----------
     genome_type : str
-        Name of the genome generator (e.g., "random", "lookup")
+        Name of the genome generator (e.g., "random", "lookup_soft", "lookup_hard")
     
     Returns
     -------
     callable
-        The genome generator function (generate_random_genome, generate_lookup_genome, etc.)
+        The genome generator function (generate_random_genome, generate_lookup_soft_genome, generate_lookup_hard_genome, etc.)
     """
     if not genome_type or genome_type.lower() == "none":
         raise ValueError(f"Invalid genome type: '{genome_type}'")
@@ -111,7 +111,8 @@ def load_genome_generator(genome_type: str):
     # Map genome type names to actual function names
     function_map = {
         "random": "generate_random_genome",
-        "lookup": "generate_lookup_genome",
+        "lookup_soft": "generate_lookup_soft_genome",
+        "lookup_hard": "generate_lookup_hard_genome",
     }
     
     function_name = function_map.get(genome_type.lower())
@@ -559,9 +560,14 @@ def main():
         print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
         print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
         
-        # Calculate offspring distribution vector (e.g., [4, 4, 4, 5])
-        offspring_per_parent_base = POPULATION_SIZE // ELITE_SIZE
-        remainder = POPULATION_SIZE % ELITE_SIZE
+        # Each generation produces POPULATION_SIZE - ELITE_SIZE offspring.
+        # The elite is re-evaluated alongside the offspring so all individuals
+        # are compared on the same run_seeds (fair fitness comparison).
+        n_offspring = POPULATION_SIZE - ELITE_SIZE
+        if n_offspring <= 0:
+            raise ValueError(f"[ERROR] POPULATION_SIZE ({POPULATION_SIZE}) must be greater than ELITE_SIZE ({ELITE_SIZE}).")
+        offspring_per_parent_base = n_offspring // ELITE_SIZE
+        remainder = n_offspring % ELITE_SIZE
         offspring_counts = [offspring_per_parent_base] * ELITE_SIZE
         if remainder > 0:
             offspring_counts[-1] += remainder  # Last parent gets remainder
@@ -577,20 +583,6 @@ def main():
     # BUILD RNG STREAMS AT BATCH LEVEL (very first thing)
     SIMULATION_SEED = experiment_cfg["simulation_seed"]
     
-    # Spawn RNG streams from single simulation seed
-    # Always spawn: rng_noise, rng_decision, rng_world
-    # Additionally spawn rng_mutation if EA is enabled
-    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
-    num_streams = 4 if EA_ENABLED else 3
-    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-    streams_sim = seed_seq_sim.spawn(num_streams)
-    
-    rng_noise = np.random.default_rng(streams_sim[0])
-    rng_decision = np.random.default_rng(streams_sim[1])
-    rng_world = np.random.default_rng(streams_sim[2])
-    if EA_ENABLED:
-        rng_mutation = np.random.default_rng(streams_sim[3])
-
     # ============================================================
     # 2. VALIDATION & USER CHECKS
     # ============================================================
@@ -626,25 +618,36 @@ def main():
     feeding_cfg = cfg["food"]
     brain_cfg = cfg["brain"]
     
-    # ============================================================
-    # 2b. INITIALIZE HDF5 FILE & SAVE CONFIGURATION
-    # ============================================================
     # Create HDF5 file early to catch file system errors before experiment runs
     hdf5_path = initialize_hdf5_file(EXPERIMENT_FOLDER, SIMULATION_NAME, cfg, NUM_GENERATIONS)
     
     # ============================================================
     # 3. GENERATE RNG SEEDS FOR VARIANTS
     # ============================================================
+
+    # Spawn RNG streams from single simulation seed
+    # Always spawn: rng_noise, rng_decision, rng_world
+    # Additionally spawn rng_mutation if EA is enabled
+    # DO THIS ONLY ONCE IN THE BEGINNING OF RUNNING ANYTHING, NOT FOR EVERY GENERATION!!!!!
+    num_streams = 4 if EA_ENABLED else 3
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(num_streams)
     
-    # Calculate initial population size (Gen 0 includes room for elite to compete)
-    gen0_population_size = POPULATION_SIZE + ELITE_SIZE if EA_ENABLED else POPULATION_SIZE
-        
+    rng_noise = np.random.default_rng(streams_sim[0])
+    rng_decision = np.random.default_rng(streams_sim[1])
+    rng_world = np.random.default_rng(streams_sim[2])
+    if EA_ENABLED:
+        rng_mutation = np.random.default_rng(streams_sim[3])    
+
     # ============================================================
     # 4. GENERATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
+    # Gen 0: evaluate a fresh population of POPULATION_SIZE genomes and select elite from it.
+    # From gen 1 onward the elite is re-evaluated together with the offspring.
+
     stats = []  # Collect generation statistics as tuples for direct array creation
     genomes = []
-    for variant_id in range(gen0_population_size):
+    for variant_id in range(POPULATION_SIZE):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
     
@@ -653,7 +656,7 @@ def main():
     # ============================================================
 
     lifespans, run_seeds_gen0 = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
-                                    ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, gen0_population_size,
+                                    ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
 
 
@@ -672,7 +675,6 @@ def main():
     # ============================================================
     
     elite_genomes = [genomes[i] for i in elite_idx]
-    elite_lifespans_results = [lifespans[i] for i in elite_idx]
     elite_lifespan_vectors = [lifespans[i]['lifespan_vector'] for i in elite_idx]
     elite_seeds_noise = [lifespans[i]['seeds_noise_all_runs'] for i in elite_idx]
     elite_seeds_decision = [lifespans[i]['seeds_decision_all_runs'] for i in elite_idx]
@@ -686,7 +688,7 @@ def main():
     for generation in range(1, NUM_GENERATIONS):
 
         # ============================================================
-        # 9. GENERATE NEW POPULATION VIA MUTATION
+        # 9. GENERATE OFFSPRING VIA MUTATION (POPULATION_SIZE - ELITE_SIZE offspring)
         # ============================================================
         genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
@@ -695,20 +697,18 @@ def main():
                 genomes_new.append(mutated_genome)
 
         # ============================================================
-        # 10. EVAL NEW GENERATION
+        # 10. COMBINE ELITE + OFFSPRING, THEN EVALUATE TOGETHER
+        # Elite is re-evaluated with the same run_seeds as the offspring so
+        # the fitness comparison is on equal footing every generation.
         # ============================================================
-        lifespans_new, run_seeds_gen = eval_generation(genomes_new, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+        genomes_combined = elite_genomes + genomes_new  # ELITE_SIZE + n_offspring = POPULATION_SIZE
+
+        lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)
 
         # ============================================================
-        # 11. COMBINE NEW GENERATION AND PREVIOUS ELITE FOR SELECTION
-        # ============================================================
-        genomes_combined = elite_genomes + genomes_new
-        lifespans_combined = {i: v for i, v in enumerate(elite_lifespans_results + list(lifespans_new.values()))} 
-
-        # ============================================================
-        # 12. PICK ELITE FROM COMBINED SET OF PREVIOUS ELITE AND NEW GENERATION
+        # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)
         # ============================================================
 
         elite_idx, gen_stats = pick_elite_deterministic(lifespans_combined, ELITE_SELECTION_METRIC, ELITE_SIZE)
@@ -717,17 +717,16 @@ def main():
         stats.append((generation,) + gen_stats)
         
         # ============================================================
-        # 13. APPLY SELECTION
+        # 12. APPLY SELECTION
         # ============================================================
 
         elite_genomes = [genomes_combined[i] for i in elite_idx]
-        elite_lifespans_results = [lifespans_combined[i] for i in elite_idx]
         elite_lifespan_vectors = [lifespans_combined[i]['lifespan_vector'] for i in elite_idx]
         elite_seeds_noise = [lifespans_combined[i]['seeds_noise_all_runs'] for i in elite_idx]
         elite_seeds_decision = [lifespans_combined[i]['seeds_decision_all_runs'] for i in elite_idx]
         
         # ============================================================
-        # 14. SAVE GENERATION RESULTS 
+        # 13. SAVE GENERATION RESULTS 
         # ============================================================
         save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_seeds_noise, elite_seeds_decision)
         write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats, run_seeds_gen)
@@ -735,7 +734,7 @@ def main():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Median: {gen_stats[1]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
 
     # ============================================================
-    # 15. PRINT AND PLOT RESULTS
+    # 14. PRINT AND PLOT RESULTS
     # ============================================================
 
     print_results(hdf5_path, NUM_GENERATIONS, ELITE_SIZE)
