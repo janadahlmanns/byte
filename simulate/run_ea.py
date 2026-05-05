@@ -98,12 +98,12 @@ def load_genome_generator(genome_type: str):
     Parameters
     ----------
     genome_type : str
-        Name of the genome generator (e.g., "random", "lookup")
+        Name of the genome generator (e.g., "random", "lookup_soft", "lookup_hard")
     
     Returns
     -------
     callable
-        The genome generator function (generate_random_genome, generate_lookup_genome, etc.)
+        The genome generator function (generate_random_genome, generate_lookup_soft_genome, generate_lookup_hard_genome, etc.)
     """
     if not genome_type or genome_type.lower() == "none":
         raise ValueError(f"Invalid genome type: '{genome_type}'")
@@ -111,7 +111,8 @@ def load_genome_generator(genome_type: str):
     # Map genome type names to actual function names
     function_map = {
         "random": "generate_random_genome",
-        "lookup": "generate_lookup_genome",
+        "lookup_soft": "generate_lookup_soft_genome",
+        "lookup_hard": "generate_lookup_hard_genome",
     }
     
     function_name = function_map.get(genome_type.lower())
@@ -559,9 +560,14 @@ def main():
         print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
         print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
         
-        # Calculate offspring distribution vector (e.g., [4, 4, 4, 5])
-        offspring_per_parent_base = POPULATION_SIZE // ELITE_SIZE
-        remainder = POPULATION_SIZE % ELITE_SIZE
+        # Each generation produces POPULATION_SIZE - ELITE_SIZE offspring.
+        # The elite is re-evaluated alongside the offspring so all individuals
+        # are compared on the same run_seeds (fair fitness comparison).
+        n_offspring = POPULATION_SIZE - ELITE_SIZE
+        if n_offspring <= 0:
+            raise ValueError(f"[ERROR] POPULATION_SIZE ({POPULATION_SIZE}) must be greater than ELITE_SIZE ({ELITE_SIZE}).")
+        offspring_per_parent_base = n_offspring // ELITE_SIZE
+        remainder = n_offspring % ELITE_SIZE
         offspring_counts = [offspring_per_parent_base] * ELITE_SIZE
         if remainder > 0:
             offspring_counts[-1] += remainder  # Last parent gets remainder
@@ -636,8 +642,9 @@ def main():
     # 3. GENERATE RNG SEEDS FOR VARIANTS
     # ============================================================
     
-    # Calculate initial population size (Gen 0 includes room for elite to compete)
-    gen0_population_size = POPULATION_SIZE + ELITE_SIZE if EA_ENABLED else POPULATION_SIZE
+    # Gen 0: evaluate a fresh population of POPULATION_SIZE genomes and select elite from it.
+    # From gen 1 onward the elite is re-evaluated together with the offspring.
+    gen0_population_size = POPULATION_SIZE
         
     # ============================================================
     # 4. GENERATE INITIAL POPULATION (GENERATION 0)
@@ -672,7 +679,6 @@ def main():
     # ============================================================
     
     elite_genomes = [genomes[i] for i in elite_idx]
-    elite_lifespans_results = [lifespans[i] for i in elite_idx]
     elite_lifespan_vectors = [lifespans[i]['lifespan_vector'] for i in elite_idx]
     elite_seeds_noise = [lifespans[i]['seeds_noise_all_runs'] for i in elite_idx]
     elite_seeds_decision = [lifespans[i]['seeds_decision_all_runs'] for i in elite_idx]
@@ -686,7 +692,7 @@ def main():
     for generation in range(1, NUM_GENERATIONS):
 
         # ============================================================
-        # 9. GENERATE NEW POPULATION VIA MUTATION
+        # 9. GENERATE OFFSPRING VIA MUTATION (POPULATION_SIZE - ELITE_SIZE offspring)
         # ============================================================
         genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
@@ -695,20 +701,18 @@ def main():
                 genomes_new.append(mutated_genome)
 
         # ============================================================
-        # 10. EVAL NEW GENERATION
+        # 10. COMBINE ELITE + OFFSPRING, THEN EVALUATE TOGETHER
+        # Elite is re-evaluated with the same run_seeds as the offspring so
+        # the fitness comparison is on equal footing every generation.
         # ============================================================
-        lifespans_new, run_seeds_gen = eval_generation(genomes_new, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+        genomes_combined = elite_genomes + genomes_new  # ELITE_SIZE + n_offspring = POPULATION_SIZE
+
+        lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)
 
         # ============================================================
-        # 11. COMBINE NEW GENERATION AND PREVIOUS ELITE FOR SELECTION
-        # ============================================================
-        genomes_combined = elite_genomes + genomes_new
-        lifespans_combined = {i: v for i, v in enumerate(elite_lifespans_results + list(lifespans_new.values()))} 
-
-        # ============================================================
-        # 12. PICK ELITE FROM COMBINED SET OF PREVIOUS ELITE AND NEW GENERATION
+        # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)
         # ============================================================
 
         elite_idx, gen_stats = pick_elite_deterministic(lifespans_combined, ELITE_SELECTION_METRIC, ELITE_SIZE)
@@ -717,11 +721,10 @@ def main():
         stats.append((generation,) + gen_stats)
         
         # ============================================================
-        # 13. APPLY SELECTION
+        # 12. APPLY SELECTION
         # ============================================================
 
         elite_genomes = [genomes_combined[i] for i in elite_idx]
-        elite_lifespans_results = [lifespans_combined[i] for i in elite_idx]
         elite_lifespan_vectors = [lifespans_combined[i]['lifespan_vector'] for i in elite_idx]
         elite_seeds_noise = [lifespans_combined[i]['seeds_noise_all_runs'] for i in elite_idx]
         elite_seeds_decision = [lifespans_combined[i]['seeds_decision_all_runs'] for i in elite_idx]

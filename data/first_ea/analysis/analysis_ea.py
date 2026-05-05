@@ -35,10 +35,10 @@ if _workspace_root:
 # =====================================================================
 
 # Experiment name
-EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
+EXPERIMENT_NAME = "first_ea_from_lookup"  # Used for file naming and report titles
 
 # HDF5 file containing EA variant data (omit .h5 extension)
-EXPERIMENT_HDF5 = "2026-04-30_14-32-28_first_ea"
+EXPERIMENT_HDF5 = "2026-05-03_09-39-19_ea_from_lookup"
 
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)

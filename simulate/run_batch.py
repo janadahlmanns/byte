@@ -96,12 +96,12 @@ def load_genome_generator(genome_type: str):
     Parameters
     ----------
     genome_type : str
-        Name of the genome generator (e.g., "random", "lookup", "from_file")
+        Name of the genome generator (e.g., "random", "lookup_soft", "lookup_hard", "from_file")
     
     Returns
     -------
     callable
-        The genome generator function (generate_random_genome, generate_lookup_genome, generate_genome_from_file, etc.)
+        The genome generator function (generate_random_genome, generate_lookup_soft_genome, generate_lookup_hard_genome, generate_genome_from_file, etc.)
     """
     if not genome_type or genome_type.lower() == "none":
         raise ValueError(f"Invalid genome type: '{genome_type}'")
@@ -109,7 +109,8 @@ def load_genome_generator(genome_type: str):
     # Map genome type names to actual function names
     function_map = {
         "random": "generate_random_genome",
-        "lookup": "generate_lookup_genome",
+        "lookup_soft": "generate_lookup_soft_genome",
+        "lookup_hard": "generate_lookup_hard_genome",
         "from_file": "generate_genome_from_file",
     }
     
