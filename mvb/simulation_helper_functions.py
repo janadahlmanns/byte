@@ -116,12 +116,13 @@ def get_num_workers(viz_enabled, viz_brain_enabled):
         return None
 
 
-def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
+def make_experiment_dir(experiment_folder: str, simulation_name: str, skip_timestamp: bool = False) -> Path:
     """Create HDF5 file path for experiment.
     
     Args:
         experiment_folder: Base folder for experiment output
         simulation_name: Name of the simulation
+        skip_timestamp: If True, don't prepend a timestamp (used for replay mode)
     
     Returns:
         Path to HDF5 file for saving all results.
@@ -129,8 +130,11 @@ def make_experiment_dir(experiment_folder: str, simulation_name: str) -> Path:
     base = Path(experiment_folder)
     base.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    hdf5_path = base / f"{ts}_{simulation_name}.h5"
+    if skip_timestamp:
+        hdf5_path = base / f"{simulation_name}.h5"
+    else:
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        hdf5_path = base / f"{ts}_{simulation_name}.h5"
     
     return hdf5_path
 

@@ -740,7 +740,7 @@ def main():
     print_results(hdf5_path, NUM_GENERATIONS, ELITE_SIZE)
     
     # Generate and save results plot
-    plot_save_path = str(Path(hdf5_path).with_name(Path(hdf5_path).stem + "_results.png"))
+    plot_save_path = str(Path(hdf5_path).with_name(Path(hdf5_path).stem + ".png"))
     plot_results(hdf5_path, save_path=plot_save_path, show=False)
     
     # Ask user if they want to view it interactively
