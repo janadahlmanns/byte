@@ -7,9 +7,9 @@ experiment:
    # Genome type specific parameters - from_file
   from_file_genome:
     file_folder: "data/first_ea/"
-    filename: "2026-05-05_17-42-25_ea_from_random"
-    genome_ID: [0]  # "all" or a list of genome indices to load from the file
-    runs_to_load: [0]  # "all" or a list of run indices to load from the file
+    filename: "2026-05-06_11-31-03_ea_from_lookup_hard"
+    genome_ID: 'all'  # "all" or a list of genome indices to load from the file
+    runs_to_load: 'all'  # "all" or a list of run indices to load from the file
 
   # Visualization
   viz_enabled: false
