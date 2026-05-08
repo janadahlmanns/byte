@@ -42,15 +42,24 @@ if _workspace_root:
 # =====================================================================
 
 # Experiment name
-EXPERIMENT_NAME = "random_vs_lookup"  # Used for file naming and report titles
+EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 
-# HDF5 file containing variant data (omit .h5 extension)
-EXPERIMENT_HDF5 = "2026-04-09_15-30-03_random"
+# Experiment data: list of tuples (display_name, hdf5_filename_without_extension)
+# The FIRST entry is the primary experiment (used for group selection: successful/unsuccessful).
+# Additional entries are compared as whole groups (not subdivided), similar to benchmarks.
+# Leave all but the first commented out if running a single-experiment analysis.
+EXPERIMENT_HDF5_FILES = [
+    ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all"),
+    ("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all"),
+    ("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
+]
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
 BENCHMARK_HDF5_FILES = [
-    ("Hard-wired Lookup", "2026-04-09_16-03-50_lookup"),
+    ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
+    ("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
+    ("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
 ]
 
 # Network visualization configuration (e.g., '11' for network_viz_11.yaml)
@@ -58,9 +67,18 @@ NETWORK_VIZ_CONFIG = "11"
 RUNS_TO_SHOW_IN_DETAIL = [1,2,3]
 
 # Color scheme for visualizations
-PRIMARY_COLOR = "#0B3D2E"      # Dark green for successful variants
-SECONDARY_COLOR = "#8B3A3A"    # Wine red for unsuccessful variants
-TERTIARY_COLOR = "#4A7C8C"     # Grayish ice blue for benchmarks
+# Experiment colors (green family): index 0 = 1st experiment / successful group, 1 = 2nd experiment, 2 = 3rd experiment
+EXPERIMENT_COLORS = [
+    "#0B3D2E",   # 1st experiment / successful group: dark forest green
+    "#1A6B4A",   # 2nd experiment: mid green
+    "#2D9E6B",   # 3rd experiment: lighter green
+]
+# Benchmark colors (red/pink family): index 0 = 1st benchmark / unsuccessful group, 1 = 2nd benchmark, 2 = 3rd benchmark
+BENCHMARK_COLORS = [
+    "#8B3A3A",   # 1st benchmark / unsuccessful group: wine red
+    "#F0E2E7",   # 2nd benchmark: light blush pink
+    "#C47070",   # 3rd benchmark: muted rose
+]
 
 
 # ==================================================================================================================================================
@@ -83,8 +101,8 @@ def _find_hdf5_file(hdf5_name: str, search_dir: Path = None) -> Path:
         FileNotFoundError: If file not found
     """
     if search_dir is None:
-        # Script is in data/temp/analysis/, search in data/temp/
-        search_dir = Path(__file__).resolve().parent.parent
+        # Default: search in the script's own directory
+        search_dir = Path(__file__).resolve().parent
     
     # Try with .h5 extension
     hdf5_path = search_dir / f"{hdf5_name}.h5"
@@ -231,10 +249,11 @@ def _get_variant_numbers(variant_list: list) -> str:
     return ", ".join(numbers)
 
 
-def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str) -> None:
+def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Box plot with jitter overlay per group, summary stats table, and comparative stats table.
-    Groups: unsuccessful, successful, plus each benchmark source as its own group.
+    Groups: unsuccessful, successful, plus each benchmark/additional-experiment source as its own group.
+    group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
     # Helper function to classify effect sizes
     def classify_effect_size(effect_size_value: float, effect_size_type: str) -> str:
@@ -304,19 +323,20 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
             group_order.append(display_name)
     
     # --- Plot: box plot with jitter ---
-    color_map = {
-        'Unsuccessful': SECONDARY_COLOR,
-        'Successful': PRIMARY_COLOR,
-    }
-    default_bench_color = TERTIARY_COLOR
-    
+    _gcm = group_color_map or {}
+    _reverse_display = {v: k for k, v in display_name_map.items()}
+
+    def _color_for(display_name: str) -> str:
+        """Resolve a color for a display-name group using the provided color map."""
+        original = _reverse_display.get(display_name, display_name)
+        return _gcm.get(original, _gcm.get(display_name, '#808080'))
     fig, ax = plt.subplots(figsize=(10, 7))
     positions = list(range(len(group_order)))
     
     # Jitter overlay (draw first so it appears behind boxplots)
     for i, g in enumerate(group_order):
         values = group_data[g]
-        color = color_map.get(g, default_bench_color)
+        color = _color_for(g)
         jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
         ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=1)
     
@@ -329,7 +349,7 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         showfliers=False,
     )
     for i, g in enumerate(group_order):
-        color = color_map.get(g, default_bench_color)
+        color = _color_for(g)
         bp['boxes'][i].set_facecolor(color)
         bp['boxes'][i].set_alpha(0.3)
         bp['medians'][i].set_color('black')
@@ -577,7 +597,7 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         doc.add_paragraph()
 
 
-def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: str, filename_str: str) -> None:
+def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Analyze a metric stratified by direction within groups.
     Creates box plots and statistics for each group × direction combination.
@@ -587,6 +607,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
         metric_base: Base name for metric columns (e.g., 'food_sensed' to match 'food_sensed_north', 'food_sensed_east', etc.)
         y_label: Label for y-axis (e.g., 'Food Sensed per Tick')
         filename_str: Base name for output files
+        group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
     
     directions = ['north', 'east', 'south', 'west', 'stay']
@@ -622,13 +643,13 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
         return
     
     # --- Plot: box plot with directions stratified within groups ---
-    color_map = {
-        'Unsuccessful': SECONDARY_COLOR,
-        'Successful': PRIMARY_COLOR,
-        'Other': '#808080',
-    }
-    default_bench_color = TERTIARY_COLOR
-    
+    _gcm_dir = group_color_map or {}
+    _reverse_display_dir = {v: k for k, v in display_name_map.items()}
+
+    def _color_for_dir(display_name: str) -> str:
+        original = _reverse_display_dir.get(display_name, display_name)
+        return _gcm_dir.get(original, _gcm_dir.get(display_name, '#808080'))
+
     fig, ax = plt.subplots(figsize=(14, 7))
     
     # First pass: determine which directions actually have data
@@ -675,7 +696,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
             key = (group, direction)
             if key in group_direction_data:
                 values = group_direction_data[key]
-                color = color_map.get(group, default_bench_color)
+                color = _color_for_dir(group)
                 jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
                 ax.scatter(np.full(len(values), all_positions[box_idx]) + jitter, values, color=color, alpha=0.4, s=8, zorder=1)
                 box_idx += 1
@@ -692,7 +713,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     # Color boxes by group
     box_idx = 0
     for group_idx, group in enumerate(group_order):
-        color = color_map.get(group, default_bench_color)
+        color = _color_for_dir(group)
         for direction in direction_order:
             key = (group, direction)
             if key in group_direction_data:
@@ -861,16 +882,8 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     direction_labels = [direction_abbr_map.get(d, d) for d in direction_order]
     x_positions = np.arange(len(direction_order))
     
-    # Color mapping by group
-    group_color_map = {}
-    for group in group_order:
-        if group == 'Successful':
-            group_color_map[group] = PRIMARY_COLOR
-        elif group == 'Unsuccessful':
-            group_color_map[group] = SECONDARY_COLOR
-        else:
-            # Benchmark groups
-            group_color_map[group] = TERTIARY_COLOR
+    # Color mapping by group (build from passed-in color map)
+    _facet_color_map = {g: _color_for_dir(g) for g in group_order}
     
     # Plot each group in its own facet
     for group_idx, group in enumerate(group_order):
@@ -896,7 +909,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                     ci_uppers.append(np.nan)
             
             # Use group color for the variant line
-            color = group_color_map.get(group, TERTIARY_COLOR)
+            color = _facet_color_map.get(group, '#808080')
             
             # Plot confidence band
             ax.fill_between(x_positions, ci_lowers, ci_uppers, color=color, alpha=0.15, zorder=1)
@@ -1058,10 +1071,11 @@ def analyze_heatmaps(heatmap_data: dict, df_groups: pd.DataFrame) -> None:
     doc.add_paragraph()
 
 
-def analyze_survival_race(df_data: pd.DataFrame) -> None:
+def analyze_survival_race(df_data: pd.DataFrame, group_color_map: dict = None) -> None:
     """
     Plot cumulative survival for each variant.
     Each line shows how many runs are still alive at each tick.
+    group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
     fig, ax = plt.subplots(figsize=(12, 8))
     
@@ -1073,14 +1087,13 @@ def analyze_survival_race(df_data: pd.DataFrame) -> None:
     experiment_groups = [g for g in all_groups if g in ['successful', 'unsuccessful', 'other']]
     benchmark_groups = [g for g in all_groups if g not in ['successful', 'unsuccessful', 'other', 'unknown']]
     
-    # Color mapping by group - dynamic based on actual groups
-    color_map = {
-        'successful': PRIMARY_COLOR,
-        'unsuccessful': SECONDARY_COLOR,
-        'other': '#808080',
-    }
-    for benchmark_group in benchmark_groups:
-        color_map[benchmark_group] = TERTIARY_COLOR
+    # Color mapping by group - built from provided group_color_map or fallback defaults
+    _gcm_sr = group_color_map or {}
+
+    def _color_for_sr(group_name: str) -> str:
+        return _gcm_sr.get(group_name, '#808080')
+
+    color_map = {g: _color_for_sr(g) for g in set(list(all_groups) + ['successful', 'unsuccessful', 'other'])}
     
     # Z-order mapping: higher for more important groups (benchmarks are always top)
     zorder_map = {
@@ -1115,15 +1128,15 @@ def analyze_survival_race(df_data: pd.DataFrame) -> None:
     
     # Add experiment groups in order
     if 'successful' in color_map:
-        legend_elements.append(Line2D([0], [0], color=PRIMARY_COLOR, linewidth=2, label='Successful'))
+        legend_elements.append(Line2D([0], [0], color=_color_for_sr('successful'), linewidth=2, label='Successful'))
     if 'unsuccessful' in color_map:
-        legend_elements.append(Line2D([0], [0], color=SECONDARY_COLOR, linewidth=2, label='Unsuccessful'))
+        legend_elements.append(Line2D([0], [0], color=_color_for_sr('unsuccessful'), linewidth=2, label='Unsuccessful'))
     if 'other' in color_map:
         legend_elements.append(Line2D([0], [0], color='#808080', linewidth=2, label='Other'))
     
-    # Add benchmark groups
+    # Add benchmark / additional-experiment groups
     for benchmark_group in sorted(benchmark_groups):
-        legend_elements.append(Line2D([0], [0], color=TERTIARY_COLOR, linewidth=2, label=benchmark_group))
+        legend_elements.append(Line2D([0], [0], color=_color_for_sr(benchmark_group), linewidth=2, label=benchmark_group))
     
     ax.legend(handles=legend_elements, loc='upper right')
     
@@ -1496,7 +1509,7 @@ def load_heatmap_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_fil
     return heatmap_data
 
 
-def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str) -> bool:  
+def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str, group_color_map: dict = None) -> bool:  
     """
     Analyze per-tick metrics (e.g., energy per tick) for different groups.
     
@@ -1567,16 +1580,13 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
         'other': 'Other',
     }
     
-    # Create color map dynamically for all groups
-    color_map = {
-        'unsuccessful': SECONDARY_COLOR,
-        'successful': PRIMARY_COLOR,
-        'other': '#808080',
-    }
-    default_bench_color = TERTIARY_COLOR
-    for group in all_groups:
-        if group not in color_map:
-            color_map[group] = default_bench_color
+    # Create color map dynamically for all groups - built from provided group_color_map
+    _gcm_pt = group_color_map or {}
+
+    def _color_for_pt(group_name: str) -> str:
+        return _gcm_pt.get(group_name, '#808080')
+
+    color_map = {g: _color_for_pt(g) for g in all_groups}
     
     # Create figures directory for output
     figures_dir = Path(__file__).resolve().parent / 'figures'
@@ -1684,7 +1694,7 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     # Filter out 'other' group before statistical analysis
     df_auc_for_stats = df_auc[df_auc['group'] != 'other']
     if len(df_auc_for_stats) > 0:
-        analyze_per_run(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str)
+        analyze_per_run(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str, group_color_map=group_color_map)
     
     return True
 
@@ -1694,13 +1704,29 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
 # ==================================================================================================================================================
 
 print("\n=== SECTION C: DATA LOADING ===")
-print("Loading experiment data...")
-print(f"Loading experiment data from: {EXPERIMENT_HDF5}")
-experiment_hdf5_path = _find_hdf5_file(EXPERIMENT_HDF5)
+
+# Load primary experiment (first entry in EXPERIMENT_HDF5_FILES)
+primary_exp_name, primary_exp_hdf5 = EXPERIMENT_HDF5_FILES[0]
+print(f"Loading primary experiment '{primary_exp_name}' from: {primary_exp_hdf5}")
+experiment_hdf5_path = _find_hdf5_file(primary_exp_hdf5)
 df_experiment = _load_hdf5_variants_to_dataframe(experiment_hdf5_path, source_label="experiment")
 print(f"  Loaded {len(df_experiment)} runs across {df_experiment['variant'].nunique()} variants")
+
+# Load additional experiments (all entries after the first)
+additional_experiment_dfs = []
+additional_experiment_paths = {}  # {exp_name: Path}
+for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
+    print(f"Loading additional experiment '{exp_name}' from: {exp_hdf5}")
+    exp_path = _find_hdf5_file(exp_hdf5)
+    df_exp = _load_hdf5_variants_to_dataframe(exp_path, source_label=exp_name)
+    print(f"  Loaded {len(df_exp)} runs across {df_exp['variant'].nunique()} variants")
+    additional_experiment_dfs.append(df_exp)
+    additional_experiment_paths[exp_name] = exp_path
+
 df_all = df_experiment.copy()
-  
+if additional_experiment_dfs:
+    df_all = pd.concat([df_all] + additional_experiment_dfs, ignore_index=True)
+
 print("Experiment data loaded.")
 print("Loading benchmark data...")
 
@@ -1716,12 +1742,11 @@ if BENCHMARK_HDF5_FILES:
         benchmark_dfs.append(df_bench)
     
     df_benchmarks = pd.concat(benchmark_dfs, ignore_index=True)
-    df_all = pd.concat([df_experiment, df_benchmarks], ignore_index=True)
+    df_all = pd.concat([df_all, df_benchmarks], ignore_index=True)
     print(f"Combined dataset: {len(df_all)} total runs")
     print("Benchmark data loaded.")
 else:
-    df_all = df_experiment.copy()
-    print(f"Dataset (experiment only): {len(df_all)} total runs")
+    print(f"Dataset (experiments only): {len(df_all)} total runs")
     print("No benchmark data.")
 
 # Wiring data: {source: {variant: {run: data}}}
@@ -1739,6 +1764,24 @@ with h5py.File(experiment_hdf5_path, 'r') as f:
             modulation_data_experiment[variant_name] = variant_group['modulation'][:]
 
 print("Experiment wiring data loaded.")
+print("Loading additional experiment wiring data...")
+
+# Wiring data for additional experiments
+wiring_data_additional = {}    # {exp_name: {variant: array}}
+modulation_data_additional = {}  # {exp_name: {variant: array}}
+for exp_name, exp_path in additional_experiment_paths.items():
+    wiring_data_additional[exp_name] = {}
+    modulation_data_additional[exp_name] = {}
+    with h5py.File(exp_path, 'r') as f:
+        variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
+        for variant_name in variant_names:
+            variant_group = f[variant_name]
+            if 'wiring' in variant_group:
+                wiring_data_additional[exp_name][variant_name] = variant_group['wiring'][:]
+            if 'modulation' in variant_group:
+                modulation_data_additional[exp_name][variant_name] = variant_group['modulation'][:]
+
+print("Additional experiment wiring data loaded.")
 print("Loading benchmark wiring data...")
 
 # Wiring data for benchmarks
@@ -1766,10 +1809,56 @@ print("=== END SECTION C ===")
 
 # HDF5 files dictionary for per-tick analyses
 hdf5_files_dict = {'experiment': experiment_hdf5_path}
+for exp_name, exp_path in additional_experiment_paths.items():
+    hdf5_files_dict[exp_name] = exp_path
 if BENCHMARK_HDF5_FILES:
     for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
         benchmark_path = _find_hdf5_file(benchmark_hdf5)
         hdf5_files_dict[benchmark_name] = benchmark_path
+
+# ==================================================================================================================================================
+# Build COLOR_MAP: maps every group name (lowercase) to a hex color string.
+# The 'successful' and 'unsuccessful' groups always use fixed colors.
+# Additional experiments (index 1, 2, ...) use EXPERIMENT_COLORS[1], [2], ...
+# Benchmarks use BENCHMARK_COLORS[0], [1], [2], ...
+# Beyond 3 entries of either type, colors are auto-generated in the same hue family.
+# ==================================================================================================================================================
+import colorsys as _colorsys
+
+COLOR_MAP: dict = {
+    'successful': EXPERIMENT_COLORS[0],
+    'unsuccessful': BENCHMARK_COLORS[0],
+    'other': '#808080',
+}
+
+# Additional experiments (EXPERIMENT_HDF5_FILES[1:])
+_additional_exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES[1:]]
+for _i, _exp_name in enumerate(_additional_exp_names):
+    _color_idx = _i + 1  # index into EXPERIMENT_COLORS (0 is used for successful)
+    if _color_idx < len(EXPERIMENT_COLORS):
+        COLOR_MAP[_exp_name] = EXPERIMENT_COLORS[_color_idx]
+    else:
+        # Auto-generate a greenish color (hue ~120° / 0.33)
+        _h = 0.33
+        _l = max(0.25, 0.45 - (_i - len(EXPERIMENT_COLORS) + 2) * 0.05)
+        _s = 0.6
+        _r, _g, _b = _colorsys.hls_to_rgb(_h, _l, _s)
+        COLOR_MAP[_exp_name] = f'#{int(_r*255):02x}{int(_g*255):02x}{int(_b*255):02x}'
+
+# Benchmarks (BENCHMARK_HDF5_FILES)
+_benchmark_names = [name for name, _ in BENCHMARK_HDF5_FILES]
+for _i, _bench_name in enumerate(_benchmark_names):
+    if _i < len(BENCHMARK_COLORS):
+        COLOR_MAP[_bench_name] = BENCHMARK_COLORS[_i]
+    else:
+        # Auto-generate a reddish color (hue ~0° / 0.0)
+        _h = 0.0
+        _l = max(0.30, 0.50 - (_i - len(BENCHMARK_COLORS)) * 0.05)
+        _s = 0.55
+        _r, _g, _b = _colorsys.hls_to_rgb(_h, _l, _s)
+        COLOR_MAP[_bench_name] = f'#{int(_r*255):02x}{int(_g*255):02x}{int(_b*255):02x}'
+
+print(f"COLOR_MAP built: {COLOR_MAP}")
 
 
 # ==================================================================================================================================================
@@ -1790,15 +1879,27 @@ print("Document created.")
 print("Analyzing experiment information...")
 doc.add_heading("1. Experiment Information", level=1)
 
-# Experiment overview
-doc.add_paragraph("Experiment:", style="Heading 3")
+# Experiment overview — primary experiment
+doc.add_paragraph(f"{primary_exp_name} (Primary Experiment):", style="Heading 3")
 experiment_n_variants = df_experiment['variant'].nunique()
 experiment_total_runs = len(df_experiment)
 experiment_runs_per_variant = experiment_total_runs // experiment_n_variants if experiment_n_variants > 0 else 0
-doc.add_paragraph(f"Dataset: {EXPERIMENT_HDF5}.h5")
+doc.add_paragraph(f"Dataset: {primary_exp_hdf5}.h5")
 doc.add_paragraph(f"Number of variants: {experiment_n_variants}")
 doc.add_paragraph(f"Runs per variant: {experiment_runs_per_variant}")
 doc.add_paragraph(f"Total data points: {experiment_total_runs}")
+
+# Additional experiments
+for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
+    doc.add_paragraph(f"{exp_name}:", style="Heading 3")
+    df_exp_info = df_all[df_all['source'] == exp_name]
+    exp_n_variants = df_exp_info['variant'].nunique()
+    exp_total_runs = len(df_exp_info)
+    exp_runs_per_variant = exp_total_runs // exp_n_variants if exp_n_variants > 0 else 0
+    doc.add_paragraph(f"Dataset: {exp_hdf5}.h5")
+    doc.add_paragraph(f"Number of variants: {exp_n_variants}")
+    doc.add_paragraph(f"Runs per variant: {exp_runs_per_variant}")
+    doc.add_paragraph(f"Total data points: {exp_total_runs}")
 
 
 
@@ -1980,6 +2081,25 @@ for row_idx, (label, stat_key, unit) in enumerate(stats_labels_and_units, 1):
 
 #table with statistics calculated per variant goes here
 
+# Overview statistics for additional experiments
+for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
+    doc.add_paragraph(f"{exp_name}:", style="Heading 3")
+    df_exp_data_add = df_all[df_all['source'] == exp_name]
+    if len(df_exp_data_add) > 0:
+        stats_add = _calculate_overview_statistics(df_exp_data_add['lifetime_ticks'])
+        add_stats_labels = [
+            ("Mean", stats_add['mean'], " ticks"), ("Median", stats_add['median'], " ticks"),
+            ("Std Dev", stats_add['std'], " ticks"), ("Min", stats_add['min'], " ticks"),
+            ("Max", stats_add['max'], " ticks"), ("Coefficient of Variation", stats_add['cv'], "%"),
+        ]
+        tbl_add = doc.add_table(rows=len(add_stats_labels) + 1, cols=2)
+        tbl_add.style = "Light Grid Accent 1"
+        tbl_add.rows[0].cells[0].text = "Statistic"
+        tbl_add.rows[0].cells[1].text = "Value"
+        for _ri, (_lbl, _val, _unit) in enumerate(add_stats_labels, 1):
+            tbl_add.rows[_ri].cells[0].text = _lbl
+            tbl_add.rows[_ri].cells[1].text = f"{_val:.2f}{_unit}" if _unit != "%" else f"{_val:.2f} %"
+
 #endregion # closes 1.1
 
 #region 1.2 Overview Benchmarks
@@ -2043,6 +2163,12 @@ if df_benchmarks is not None and len(df_benchmarks) > 0:
         if benchmark_name in wiring_data_benchmarks:
             modulation_dict = modulation_data_benchmarks.get(benchmark_name, {})
             analyze_wiring(wiring_data_benchmarks[benchmark_name], modulation_dict, RUNS_TO_SHOW_IN_DETAIL, benchmark_name)
+
+    # Analyze wiring for each additional experiment
+    for exp_name in additional_experiment_paths:
+        if exp_name in wiring_data_additional and wiring_data_additional[exp_name]:
+            modulation_dict = modulation_data_additional.get(exp_name, {})
+            analyze_wiring(wiring_data_additional[exp_name], modulation_dict, RUNS_TO_SHOW_IN_DETAIL, exp_name)
                     
 else:
     doc.add_paragraph("No benchmark data loaded.")
@@ -2128,7 +2254,7 @@ row[1].text = str(len(unsuccessful_variants))
 row[2].text = _get_variant_numbers(unsuccessful_variants)
 
 doc.add_paragraph()
-analyze_survival_race(df_all)
+analyze_survival_race(df_all, group_color_map=COLOR_MAP)
 doc.add_paragraph()
 
 #add a call to the analyze_wiring function for the first variant in the successful and unsuccessful groups
@@ -2212,7 +2338,7 @@ doc.add_heading("3. Comparison Successful vs. Unsuccessful (vs. Benchmarks)", le
 print("  Analyzing survival times...")
 doc.add_heading("3.1. Survival", level=2)
 
-analyze_per_run(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times')
+analyze_per_run(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times', group_color_map=COLOR_MAP)
 print("  Survival analysis done.")
 doc.add_paragraph('Description of survival time differences between groups, statistical test results, and interpretation goes here.', style='Normal')
 doc.add_paragraph()
@@ -2220,7 +2346,7 @@ doc.add_paragraph()
 # Per-tick energy analysis
 if per_tick_included:
     print("  Analyzing per-tick energy...")
-    analyze_per_tick_metric(df_all_per_tick, 'energy', 'Energy [units]', 'energy')
+    analyze_per_tick_metric(df_all_per_tick, 'energy', 'Energy [units]', 'energy', group_color_map=COLOR_MAP)
     print("  Per-tick energy analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2231,7 +2357,7 @@ doc.add_paragraph("TBD")
 print("  Analyzing food consumption...")
 doc.add_heading("3.2. Food Consumption", level=2)
 
-analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods')
+analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods', group_color_map=COLOR_MAP)
 print("  Food consumption analysis done.")
 
 
@@ -2242,7 +2368,7 @@ df_all['foods_norm'] = df_all['foods'] / df_all['lifetime_ticks']
 df_all.flags.writeable = False
 
 # Analyze normalized food consumption
-analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm')
+analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm', group_color_map=COLOR_MAP)
 
 doc.add_paragraph('Description of food consumption differences between groups, statistical test results, and interpretation goes here.', style='Normal')
 
@@ -2257,7 +2383,7 @@ df_all.flags.writeable = False
 
 # Analyze food sensing per direction
 print("  Analyzing food sensing by direction...")
-analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed')
+analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
 print("  Food sensing analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2277,21 +2403,25 @@ doc.add_heading("3.3.1. Movements Made", level=3)
 # Calculate total movements (sum across all directions)
 print("    Calculating total movements...")
 df_all.flags.writeable = True
-df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
+if 'moves_north' in df_all.columns:
+    df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
 df_all.flags.writeable = False
 
 # Analyze total movements
-analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total')
+if 'moves_total' in df_all.columns:
+    analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total', group_color_map=COLOR_MAP)
 print("    Total movements analysis done.")
 
 # Calculate normalized movements (movements per tick)
 print("    Calculating normalized movements...")
 df_all.flags.writeable = True
-df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
+if 'moves_total' in df_all.columns:
+    df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
 df_all.flags.writeable = False
 
 # Analyze normalized movements
-analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm')
+if 'moves_norm' in df_all.columns:
+    analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm', group_color_map=COLOR_MAP)
 print("    Normalized movements analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2306,7 +2436,7 @@ df_all.flags.writeable = False
 
 # Analyze movements per direction
 print("    Analyzing movements by direction...")
-analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves')
+analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
 print("    Movements by direction analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2319,7 +2449,7 @@ doc.add_heading("3.3.2. Ground Covered", level=3)
 # Per-tick manhattan distance analysis
 if per_tick_included:
     print("    Analyzing per-tick distance...")
-    analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance')
+    analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', group_color_map=COLOR_MAP)
     print("    Per-tick distance analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2345,17 +2475,20 @@ doc.add_heading("3.4.1. Decisions Made", level=3)
 
 # Analyze total decisions
 print("    Analyzing total decisions...")
-analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions')
+if 'decisions' in df_all.columns:
+    analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions', group_color_map=COLOR_MAP)
 print("    Total decisions analysis done.")
 
 # Calculate normalized decisions (decisions per tick)
 print("    Calculating normalized decisions...")
 df_all.flags.writeable = True
-df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
+if 'decisions' in df_all.columns:
+    df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
 df_all.flags.writeable = False
 
 # Analyze normalized decisions
-analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm')
+if 'decisions_norm' in df_all.columns:
+    analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm', group_color_map=COLOR_MAP)
 print("    Normalized decisions analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2367,17 +2500,20 @@ doc.add_heading("3.4.2. Correct Decisions", level=3)
 
 # Analyze total correct decisions
 print("    Analyzing correct decisions...")
-analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions')
+if 'correct_decisions' in df_all.columns:
+    analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions', group_color_map=COLOR_MAP)
 print("    Correct decisions analysis done.")
 
 # Calculate normalized correct decisions (correct decisions per tick)
 print("    Calculating normalized correct decisions...")
 df_all.flags.writeable = True
-df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
+if 'correct_decisions' in df_all.columns:
+    df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
 df_all.flags.writeable = False
 
 # Analyze normalized correct decisions
-analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm')
+if 'correct_decisions_norm' in df_all.columns:
+    analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm', group_color_map=COLOR_MAP)
 print("    Normalized correct decisions analysis done.")
 doc.add_paragraph("TBD")
 
@@ -2385,7 +2521,7 @@ doc.add_paragraph("TBD")
 if per_tick_included:
     print("    Analyzing decision precision by direction...")
     df_all = track_decision_precision(df_all_per_tick, df_all)
-    analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision')
+    analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision', group_color_map=COLOR_MAP)
     print("    Decision precision analysis done.")
     doc.add_paragraph("TBD")
 
