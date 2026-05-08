@@ -406,6 +406,165 @@ def _compute_effective_connection_weights(hdf5_path: Path) -> pd.DataFrame:
     return df
 
 
+def _compute_raw_connection_weights(hdf5_path: Path) -> pd.DataFrame:
+    """
+    Extract raw connection weights (without reliability) from elite genomes.
+    
+    For each elite, loads connectivity data with shape (11, 11, 2) where:
+    - Layer 0: connection weights
+    - Layer 1: reliability/confidence values (ignored here)
+    
+    Args:
+        hdf5_path: Path to HDF5 file with elite_genomes dataset
+    
+    Returns:
+        DataFrame with one row per elite and columns for each weight value
+    """
+    all_elites_data = []
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            return pd.DataFrame()
+        
+        elite_genomes = f['elite_genomes']
+        
+        # Process each elite (skip non-group items like datasets)
+        for elite_key in sorted(elite_genomes.keys()):
+            elite_group = elite_genomes[elite_key]
+            
+            # Skip if not a group (could be datasets like 'lifespans', 'run_seeds')
+            if not isinstance(elite_group, h5py.Group):
+                continue
+            
+            if 'connection_weights' not in list(elite_group.keys()):
+                continue
+            
+            # Load connection weights: shape (11, 11, 2)
+            # Layer 0: weights, Layer 1: reliability
+            conn_weights_data = elite_group['connection_weights'][()]
+            
+            # Extract weights layer only
+            weights = conn_weights_data[:, :, 0]  # Shape (11, 11)
+            
+            # Flatten and store as individual columns
+            flat_weights = weights.flatten()
+            row_data = {f'weight_{i}': w for i, w in enumerate(flat_weights)}
+            all_elites_data.append(row_data)
+    
+    if not all_elites_data:
+        return pd.DataFrame()
+    
+    # Convert to DataFrame with proper column alignment
+    df = pd.DataFrame(all_elites_data)
+    
+    return df
+
+
+def _compute_raw_reliability_values(hdf5_path: Path) -> pd.DataFrame:
+    """
+    Extract raw reliability values (confidence/connection strength) from elite genomes.
+    
+    For each elite, loads connectivity data with shape (11, 11, 2) where:
+    - Layer 0: connection weights (ignored here)
+    - Layer 1: reliability/confidence values
+    
+    Args:
+        hdf5_path: Path to HDF5 file with elite_genomes dataset
+    
+    Returns:
+        DataFrame with one row per elite and columns for each reliability value
+    """
+    all_elites_data = []
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            return pd.DataFrame()
+        
+        elite_genomes = f['elite_genomes']
+        
+        # Process each elite (skip non-group items like datasets)
+        for elite_key in sorted(elite_genomes.keys()):
+            elite_group = elite_genomes[elite_key]
+            
+            # Skip if not a group (could be datasets like 'lifespans', 'run_seeds')
+            if not isinstance(elite_group, h5py.Group):
+                continue
+            
+            if 'connection_weights' not in list(elite_group.keys()):
+                continue
+            
+            # Load connection weights: shape (11, 11, 2)
+            # Layer 0: weights, Layer 1: reliability
+            conn_weights_data = elite_group['connection_weights'][()]
+            
+            # Extract reliability layer only
+            reliability = conn_weights_data[:, :, 1]  # Shape (11, 11)
+            
+            # Flatten and store as individual columns
+            flat_reliability = reliability.flatten()
+            row_data = {f'reliability_{i}': r for i, r in enumerate(flat_reliability)}
+            all_elites_data.append(row_data)
+    
+    if not all_elites_data:
+        return pd.DataFrame()
+    
+    # Convert to DataFrame with proper column alignment
+    df = pd.DataFrame(all_elites_data)
+    
+    return df
+
+
+def _compute_modulation_weights(hdf5_path: Path) -> pd.DataFrame:
+    """
+    Extract modulation weights from elite genomes' modulation specifications.
+    
+    For each elite, loads modulation_spec dataset and extracts the modulation_weight column.
+    
+    Args:
+        hdf5_path: Path to HDF5 file with elite_genomes dataset
+    
+    Returns:
+        DataFrame with one row per elite and columns for each modulation weight value
+    """
+    all_elites_data = []
+    
+    with h5py.File(hdf5_path, 'r') as f:
+        if 'elite_genomes' not in f:
+            return pd.DataFrame()
+        
+        elite_genomes = f['elite_genomes']
+        
+        # Process each elite (skip non-group items like datasets)
+        for elite_key in sorted(elite_genomes.keys()):
+            elite_group = elite_genomes[elite_key]
+            
+            # Skip if not a group (could be datasets like 'lifespans', 'run_seeds')
+            if not isinstance(elite_group, h5py.Group):
+                continue
+            
+            if 'modulation_spec' not in list(elite_group.keys()):
+                continue
+            
+            # Load modulation_spec dataset
+            modulation_spec = elite_group['modulation_spec'][()]
+            
+            # Extract modulation_weight column if it exists
+            # modulation_spec is typically a structured array with named fields
+            if 'modulation_weight' in modulation_spec.dtype.names:
+                mod_weights = modulation_spec['modulation_weight']
+                # Flatten and store as individual columns
+                row_data = {f'modulation_weight_{i}': w for i, w in enumerate(mod_weights)}
+                all_elites_data.append(row_data)
+    
+    if not all_elites_data:
+        return pd.DataFrame()
+    
+    # Convert to DataFrame with proper column alignment
+    df = pd.DataFrame(all_elites_data)
+    
+    return df
+
+
 def plot_ea_results(hdf5_path, doc, figures_dir):
     """
     Plot generation statistics from HDF5 file and add to Word document.
@@ -646,12 +805,13 @@ def plot_weight_distribution(df_data, metric_name, doc, figures_dir, filename_ba
     Plot weight distribution as normalized histograms with lines and uncertainty shading.
     
     Specialized version of plot_distribution() for connection weight data with additional
-    features specific to weight analysis. Handles both single sources and multiple sources 
-    (via 'source' column).
+    features specific to weight analysis. Generates two plots: one excluding zeros and one including them.
+    Handles both single sources and multiple sources (via 'source' column).
     
     Special handling for weights:
-    - Zero values are included in frequency calculations but not plotted
+    - Zero values are included in frequency calculations
     - Bin range includes negative weights (from min to max)
+    - Generates two visualizations: (1) zeros filtered out, (2) zeros included
     
     Args:
         df_data: DataFrame with data to plot. Expected columns:
@@ -669,8 +829,6 @@ def plot_weight_distribution(df_data, metric_name, doc, figures_dir, filename_ba
     
     if source_names is None:
         source_names = {}
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
     
     # Get columns for data (all numeric columns, exclude 'source' if present)
     data_cols = [col for col in df_data.columns if col != 'source']
@@ -693,83 +851,14 @@ def plot_weight_distribution(df_data, metric_name, doc, figures_dir, filename_ba
     # Check if 'source' column exists
     has_source = 'source' in df_data.columns
     
-    if not has_source:
-        # Single source: compute histogram and plot
-        hist_counts_per_row = []
-        for idx, row in df_data.iterrows():
-            data_values = row[data_cols].values
-            data_values = np.asarray(pd.to_numeric(data_values, errors='coerce'))
-            data_values = data_values[~np.isnan(data_values)]
-            if len(data_values) < 2:
-                continue
-            
-            # Keep original length for normalization (includes zeros)
-            orig_len = len(data_values)
-            # Remove zeros from histogram computation
-            data_values_nonzero = data_values[np.abs(data_values) > 1e-10]
-            
-            # Histogram from non-zero values only
-            counts, _ = np.histogram(data_values_nonzero, bins=bins_global, density=False)
-            # Normalize by original length (which includes zeros) for proper frequency
-            counts = counts / orig_len
-            hist_counts_per_row.append(counts)
+    # Generate two plots: one without zeros, one with zeros
+    for include_zeros in [False, True]:
+        fig, ax = plt.subplots(figsize=(12, 6))
         
-        if hist_counts_per_row:
-            hist_counts_per_row = np.array(hist_counts_per_row)
-            mean_counts = hist_counts_per_row.mean(axis=0)
-            std_counts = hist_counts_per_row.std(axis=0)
-            
-            # Apply subtle smoothing
-            mean_counts_smooth = gaussian_filter1d(mean_counts, sigma=1.0)
-            std_counts_smooth = gaussian_filter1d(std_counts, sigma=1.0)
-            
-            # Filter out zero values (abs < 1e-10) for plotting, but keep them in frequency calc
-            non_zero_mask = np.abs(bin_centers_global) > 1e-10
-            bin_centers_plot = bin_centers_global[non_zero_mask]
-            mean_counts_plot = mean_counts_smooth[non_zero_mask]
-            std_counts_plot = std_counts_smooth[non_zero_mask]
-            
-            ax.plot(bin_centers_plot, mean_counts_plot, label='Result', color=PRIMARY_COLOR, linewidth=2)
-            ax.fill_between(bin_centers_plot, mean_counts_plot - std_counts_plot, mean_counts_plot + std_counts_plot, 
-                           alpha=0.2, color=PRIMARY_COLOR)
-    else:
-        # Multiple sources: plot experiment first with primary color, then benchmarks
-        benchmark_colors = [SECONDARY_COLOR, TERTIARY_COLOR, HIGHLIGHT_COLOR]
-        unique_sources = sorted(df_data['source'].unique())
-        
-        # Separate experiment from benchmarks and plot experiment first
-        if 'experiment' in unique_sources:
-            sources_to_plot = ['experiment'] + [s for s in unique_sources if s != 'experiment']
-        else:
-            sources_to_plot = unique_sources
-        
-        for plot_idx, source_name in enumerate(sources_to_plot):
-            # Determine color: primary for experiment, benchmarks get the other colors
-            if source_name == 'experiment':
-                color = PRIMARY_COLOR
-            else:
-                bench_idx = plot_idx - 1 if 'experiment' in unique_sources else plot_idx
-                color = benchmark_colors[bench_idx % len(benchmark_colors)]
-            
-            source_data = df_data[df_data['source'] == source_name]
-            
-            # Collect data for this source
-            all_source_data = source_data[data_cols].values.flatten()
-            all_source_data = np.asarray(pd.to_numeric(all_source_data, errors='coerce'))
-            all_source_data = all_source_data[~np.isnan(all_source_data)]
-            
-            if len(all_source_data) == 0:
-                continue
-            
-            # Create bins specific to this source (from min to max to include negatives)
-            source_min = np.min(all_source_data)
-            source_max = np.max(all_source_data)
-            bins_source = np.linspace(source_min, source_max, bin_count)
-            bin_centers_source = (bins_source[:-1] + bins_source[1:]) / 2
-            
-            # Compute histograms
+        if not has_source:
+            # Single source: compute histogram and plot
             hist_counts_per_row = []
-            for row_id, row in source_data.iterrows():
+            for idx, row in df_data.iterrows():
                 data_values = row[data_cols].values
                 data_values = np.asarray(pd.to_numeric(data_values, errors='coerce'))
                 data_values = data_values[~np.isnan(data_values)]
@@ -778,11 +867,16 @@ def plot_weight_distribution(df_data, metric_name, doc, figures_dir, filename_ba
                 
                 # Keep original length for normalization (includes zeros)
                 orig_len = len(data_values)
-                # Remove zeros from histogram computation
-                data_values_nonzero = data_values[np.abs(data_values) > 1e-10]
                 
-                # Histogram from non-zero values only
-                counts, _ = np.histogram(data_values_nonzero, bins=bins_source, density=False)
+                if not include_zeros:
+                    # Remove zeros from histogram computation
+                    data_values_plot = data_values[data_values != 0]
+                else:
+                    # Keep all values including zeros
+                    data_values_plot = data_values
+                
+                # Histogram from filtered or unfiltered values
+                counts, _ = np.histogram(data_values_plot, bins=bins_global, density=False)
                 # Normalize by original length (which includes zeros) for proper frequency
                 counts = counts / orig_len
                 hist_counts_per_row.append(counts)
@@ -796,39 +890,133 @@ def plot_weight_distribution(df_data, metric_name, doc, figures_dir, filename_ba
                 mean_counts_smooth = gaussian_filter1d(mean_counts, sigma=1.0)
                 std_counts_smooth = gaussian_filter1d(std_counts, sigma=1.0)
                 
-                # Filter out zero values (abs < 1e-10) for plotting, but keep them in frequency calc
-                non_zero_mask = np.abs(bin_centers_source) > 1e-10
-                bin_centers_plot = bin_centers_source[non_zero_mask]
-                mean_counts_plot = mean_counts_smooth[non_zero_mask]
-                std_counts_plot = std_counts_smooth[non_zero_mask]
+                if not include_zeros:
+                    # Filter out zero bin centers for plotting
+                    non_zero_mask = bin_centers_global != 0
+                    bin_centers_plot = bin_centers_global[non_zero_mask]
+                    mean_counts_plot = mean_counts_smooth[non_zero_mask]
+                    std_counts_plot = std_counts_smooth[non_zero_mask]
+                else:
+                    # Use all bins including zero
+                    bin_centers_plot = bin_centers_global
+                    mean_counts_plot = mean_counts_smooth
+                    std_counts_plot = std_counts_smooth
                 
-                ax.plot(bin_centers_plot, mean_counts_plot, label=source_names.get(source_name, source_name), 
-                       color=color, linewidth=2)
+                ax.plot(bin_centers_plot, mean_counts_plot, label='Result', color=PRIMARY_COLOR, linewidth=2)
                 ax.fill_between(bin_centers_plot, mean_counts_plot - std_counts_plot, mean_counts_plot + std_counts_plot, 
-                               alpha=0.2, color=color)
-    
-    ax.set_xlabel(metric_name, fontsize=12)
-    ax.set_ylabel('Frequency', fontsize=12)
-    ax.set_title(f'{metric_name} Distribution', fontsize=14)
-    ax.legend(fontsize=11, loc='best')
-    ax.grid(True, alpha=0.3)
-    
-    # Set x-axis limits to span from min to max (symmetric if needed)
-    ax.set_xlim(data_min, data_max)
-    
-    fig.tight_layout()
-    
-    # Save to file
-    figures_dir.mkdir(exist_ok=True)
-    figure_path = figures_dir / f'{filename_base}_distribution.png'
-    fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
-    
-    # Add to report
-    doc.add_picture(str(figure_path), width=6.5 * 914400)
-    doc.add_paragraph()
-    
-    # Close figure
-    plt.close(fig)
+                               alpha=0.2, color=PRIMARY_COLOR)
+        else:
+            # Multiple sources: plot experiment first with primary color, then benchmarks
+            benchmark_colors = [SECONDARY_COLOR, TERTIARY_COLOR, HIGHLIGHT_COLOR]
+            unique_sources = sorted(df_data['source'].unique())
+            
+            # Separate experiment from benchmarks and plot experiment first
+            if 'experiment' in unique_sources:
+                sources_to_plot = ['experiment'] + [s for s in unique_sources if s != 'experiment']
+            else:
+                sources_to_plot = unique_sources
+            
+            for plot_idx, source_name in enumerate(sources_to_plot):
+                # Determine color: primary for experiment, benchmarks get the other colors
+                if source_name == 'experiment':
+                    color = PRIMARY_COLOR
+                else:
+                    bench_idx = plot_idx - 1 if 'experiment' in unique_sources else plot_idx
+                    color = benchmark_colors[bench_idx % len(benchmark_colors)]
+                
+                source_data = df_data[df_data['source'] == source_name]
+                
+                # Collect data for this source
+                all_source_data = source_data[data_cols].values.flatten()
+                all_source_data = np.asarray(pd.to_numeric(all_source_data, errors='coerce'))
+                all_source_data = all_source_data[~np.isnan(all_source_data)]
+                
+                if len(all_source_data) == 0:
+                    continue
+                
+                # Create bins specific to this source (from min to max to include negatives)
+                source_min = np.min(all_source_data)
+                source_max = np.max(all_source_data)
+                bins_source = np.linspace(source_min, source_max, bin_count)
+                bin_centers_source = (bins_source[:-1] + bins_source[1:]) / 2
+                
+                # Compute histograms
+                hist_counts_per_row = []
+                for row_id, row in source_data.iterrows():
+                    data_values = row[data_cols].values
+                    data_values = np.asarray(pd.to_numeric(data_values, errors='coerce'))
+                    data_values = data_values[~np.isnan(data_values)]
+                    if len(data_values) < 2:
+                        continue
+                    
+                    # Keep original length for normalization (includes zeros)
+                    orig_len = len(data_values)
+                    
+                    if not include_zeros:
+                        # Remove zeros from histogram computation
+                        data_values_plot = data_values[data_values != 0]
+                    else:
+                        # Keep all values including zeros
+                        data_values_plot = data_values
+                    
+                    # Histogram from filtered or unfiltered values
+                    counts, _ = np.histogram(data_values_plot, bins=bins_source, density=False)
+                    # Normalize by original length (which includes zeros) for proper frequency
+                    counts = counts / orig_len
+                    hist_counts_per_row.append(counts)
+                
+                if hist_counts_per_row:
+                    hist_counts_per_row = np.array(hist_counts_per_row)
+                    mean_counts = hist_counts_per_row.mean(axis=0)
+                    std_counts = hist_counts_per_row.std(axis=0)
+                    
+                    # Apply subtle smoothing
+                    mean_counts_smooth = gaussian_filter1d(mean_counts, sigma=1.0)
+                    std_counts_smooth = gaussian_filter1d(std_counts, sigma=1.0)
+                    
+                    if not include_zeros:
+                        # Filter out zero bin centers for plotting
+                        non_zero_mask = bin_centers_source != 0
+                        bin_centers_plot = bin_centers_source[non_zero_mask]
+                        mean_counts_plot = mean_counts_smooth[non_zero_mask]
+                        std_counts_plot = std_counts_smooth[non_zero_mask]
+                    else:
+                        # Use all bins including zero
+                        bin_centers_plot = bin_centers_source
+                        mean_counts_plot = mean_counts_smooth
+                        std_counts_plot = std_counts_smooth
+                    
+                    ax.plot(bin_centers_plot, mean_counts_plot, label=source_names.get(source_name, source_name), 
+                           color=color, linewidth=2)
+                    ax.fill_between(bin_centers_plot, mean_counts_plot - std_counts_plot, mean_counts_plot + std_counts_plot, 
+                                   alpha=0.2, color=color)
+        
+        ax.set_xlabel(metric_name, fontsize=12)
+        ax.set_ylabel('Frequency', fontsize=12)
+        
+        # Adjust title based on whether zeros are included
+        zeros_label = "with Zeros" if include_zeros else "Excluding Zeros"
+        ax.set_title(f'{metric_name} Distribution ({zeros_label})', fontsize=14)
+        ax.legend(fontsize=11, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Set x-axis limits to span from min to max
+        ax.set_xlim(data_min, data_max)
+        
+        fig.tight_layout()
+        
+        # Save to file with appropriate suffix
+        figures_dir.mkdir(exist_ok=True)
+        suffix = "with_zeros" if include_zeros else "without_zeros"
+        figure_path = figures_dir / f'{filename_base}_{suffix}_distribution.png'
+        fig.savefig(str(figure_path), dpi=150, bbox_inches='tight')
+        
+        # Add to report
+        doc.add_picture(str(figure_path), width=6.5 * 914400)
+        doc.add_paragraph()
+        
+        # Close figure
+        plt.close(fig)
 
 
 def plot_lifespan_distributions(df_elite_lifespans_exp, df_benchmarks_elite_lifespans, doc, figures_dir):
@@ -1124,6 +1312,15 @@ tonic_activations_experiment = _load_tonic_activations(experiment_hdf5_path)
 # Compute effective connection weights for experiment
 df_effective_cw_exp = _compute_effective_connection_weights(experiment_hdf5_path)
 
+# Compute raw connection weights for experiment
+df_raw_weights_exp = _compute_raw_connection_weights(experiment_hdf5_path)
+
+# Compute raw reliability values for experiment
+df_raw_reliability_exp = _compute_raw_reliability_values(experiment_hdf5_path)
+
+# Compute modulation weights for experiment
+df_modulation_weights_exp = _compute_modulation_weights(experiment_hdf5_path)
+
 print("\nExperiment data loaded.")
 
 # Load benchmark data if specified
@@ -1132,6 +1329,9 @@ df_benchmarks_elite_lifespans = None
 df_benchmarks_elite_genomes = None
 df_benchmarks_modulation_specs = None
 df_benchmarks_effective_cw = None
+df_benchmarks_raw_weights = None
+df_benchmarks_raw_reliability = None
+df_benchmarks_modulation_weights = None
 benchmark_attrs = {}
 connection_weights_collection = {}  # Will collect all connection_weights structures
 tonic_activations_collection = {}  # Will collect all tonic_activations structures
@@ -1191,6 +1391,30 @@ if BENCHMARK_HDF5_FILES:
                 df_benchmarks_effective_cw = df_eff_cw
             else:
                 df_benchmarks_effective_cw = pd.concat([df_benchmarks_effective_cw, df_eff_cw], ignore_index=True)
+            
+            # Compute raw connection weights for this benchmark
+            df_raw_w = _compute_raw_connection_weights(bench_path)
+            df_raw_w['source'] = bench_name
+            if df_benchmarks_raw_weights is None:
+                df_benchmarks_raw_weights = df_raw_w
+            else:
+                df_benchmarks_raw_weights = pd.concat([df_benchmarks_raw_weights, df_raw_w], ignore_index=True)
+            
+            # Compute raw reliability values for this benchmark
+            df_raw_r = _compute_raw_reliability_values(bench_path)
+            df_raw_r['source'] = bench_name
+            if df_benchmarks_raw_reliability is None:
+                df_benchmarks_raw_reliability = df_raw_r
+            else:
+                df_benchmarks_raw_reliability = pd.concat([df_benchmarks_raw_reliability, df_raw_r], ignore_index=True)
+            
+            # Compute modulation weights for this benchmark
+            df_mod_w = _compute_modulation_weights(bench_path)
+            df_mod_w['source'] = bench_name
+            if df_benchmarks_modulation_weights is None:
+                df_benchmarks_modulation_weights = df_mod_w
+            else:
+                df_benchmarks_modulation_weights = pd.concat([df_benchmarks_modulation_weights, df_mod_w], ignore_index=True)
             
         except FileNotFoundError as e:
             pass
@@ -1265,9 +1489,45 @@ if df_effective_cw_exp is not None and not df_effective_cw_exp.empty:
     plot_weight_distribution(df_plot_data, 'Effective Connection Weights', doc, figures_dir, 
                             filename_base='effective_connection_weights', source_names=source_names, bin_count = 40)
 
+# add histogram of raw connection weights
+if df_raw_weights_exp is not None and not df_raw_weights_exp.empty:
+    # Combine experiment and benchmark raw weights for plotting
+    df_plot_data = df_raw_weights_exp.copy()
+    df_plot_data['source'] = 'experiment'
+    
+    if df_benchmarks_raw_weights is not None and not df_benchmarks_raw_weights.empty:
+        df_plot_data = pd.concat([df_plot_data, df_benchmarks_raw_weights], ignore_index=True)
+    
+    plot_weight_distribution(df_plot_data, 'Raw Connection Weights', doc, figures_dir, 
+                            filename_base='raw_connection_weights', source_names=source_names, bin_count = 40)
+
+# add histogram of raw reliability values
+if df_raw_reliability_exp is not None and not df_raw_reliability_exp.empty:
+    # Combine experiment and benchmark raw reliability for plotting
+    df_plot_data = df_raw_reliability_exp.copy()
+    df_plot_data['source'] = 'experiment'
+    
+    if df_benchmarks_raw_reliability is not None and not df_benchmarks_raw_reliability.empty:
+        df_plot_data = pd.concat([df_plot_data, df_benchmarks_raw_reliability], ignore_index=True)
+    
+    plot_weight_distribution(df_plot_data, 'Connection Reliability', doc, figures_dir, 
+                            filename_base='connection_reliability', source_names=source_names, bin_count = 40)
+
 
 # endregion connectivity
 # region plasticity
+
+# add histogram of modulation weights
+if df_modulation_weights_exp is not None and not df_modulation_weights_exp.empty:
+    # Combine experiment and benchmark modulation weights for plotting
+    df_plot_data = df_modulation_weights_exp.copy()
+    df_plot_data['source'] = 'experiment'
+    
+    if df_benchmarks_modulation_weights is not None and not df_benchmarks_modulation_weights.empty:
+        df_plot_data = pd.concat([df_plot_data, df_benchmarks_modulation_weights], ignore_index=True)
+    
+    plot_distribution(df_plot_data, 'Modulation Weights', doc, figures_dir, 
+                     filename_base='modulation_weights', source_names=source_names, bin_count = 40)
 
 # endregion plasticity
 
