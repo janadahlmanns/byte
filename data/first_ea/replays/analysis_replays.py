@@ -45,8 +45,8 @@ if _workspace_root:
 EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 
 # Experiment data: list of tuples (display_name, hdf5_filename_without_extension)
-# The FIRST entry is the primary experiment (used for group selection: successful/unsuccessful).
-# Additional entries are compared as whole groups (not subdivided), similar to benchmarks.
+# The FIRST entry is the primary experiment. All experiments are compared as whole groups.
+# Additional entries are treated the same way — each is its own group.
 # Leave all but the first commented out if running a single-experiment analysis.
 EXPERIMENT_HDF5_FILES = [
     ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all"),
@@ -67,17 +67,17 @@ NETWORK_VIZ_CONFIG = "11"
 RUNS_TO_SHOW_IN_DETAIL = [1,2,3]
 
 # Color scheme for visualizations
-# Experiment colors (green family): index 0 = 1st experiment / successful group, 1 = 2nd experiment, 2 = 3rd experiment
+# Experiment colors (green family): index 0 = 1st experiment, 1 = 2nd experiment, 2 = 3rd experiment
 EXPERIMENT_COLORS = [
-    "#0B3D2E",   # 1st experiment / successful group: dark forest green
+    "#0B3D2E",   # 1st experiment: dark forest green
     "#1A6B4A",   # 2nd experiment: mid green
     "#2D9E6B",   # 3rd experiment: lighter green
 ]
-# Benchmark colors (red/pink family): index 0 = 1st benchmark / unsuccessful group, 1 = 2nd benchmark, 2 = 3rd benchmark
+# Benchmark colors (red/pink family): index 0 = 1st benchmark, 1 = 2nd benchmark, 2 = 3rd benchmark
 BENCHMARK_COLORS = [
-    "#8B3A3A",   # 1st benchmark / unsuccessful group: wine red
-    "#F0E2E7",   # 2nd benchmark: light blush pink
-    "#C47070",   # 3rd benchmark: muted rose
+    "#8B3A3A",   # 1st benchmark: wine red
+    "#C47070",   # 2nd benchmark: muted rose
+    "#F0E2E7",   # 3rd benchmark: light blush pink
 ]
 
 
@@ -301,15 +301,8 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         else:
             return "unknown"
     
-    # Dynamically discover and extract all groups from the data, excluding 'other'
-    all_unique_groups = [g for g in sorted(df_data['group'].unique()) if g != 'other']
-    
-    # Mapping for display names - capitalize experiment groups, keep benchmark names as-is
-    display_name_map = {
-        'unsuccessful': 'Unsuccessful',
-        'successful': 'Successful',
-        'other': 'Other',
-    }
+    # Dynamically discover and extract all groups from the data
+    all_unique_groups = sorted(df_data['group'].unique())
     
     group_data = {}
     group_order = []
@@ -317,19 +310,15 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     for group_name in all_unique_groups:
         df_group = df_data[df_data['group'] == group_name]
         if len(df_group) > 0:
-            # Use display name if available, otherwise use group name as-is (for benchmarks)
-            display_name = display_name_map.get(group_name, group_name)
-            group_data[display_name] = df_group[metric_col].values
-            group_order.append(display_name)
+            group_data[group_name] = df_group[metric_col].values
+            group_order.append(group_name)
     
     # --- Plot: box plot with jitter ---
     _gcm = group_color_map or {}
-    _reverse_display = {v: k for k, v in display_name_map.items()}
 
-    def _color_for(display_name: str) -> str:
-        """Resolve a color for a display-name group using the provided color map."""
-        original = _reverse_display.get(display_name, display_name)
-        return _gcm.get(original, _gcm.get(display_name, '#808080'))
+    def _color_for(group_name: str) -> str:
+        """Resolve a color for a group using the provided color map."""
+        return _gcm.get(group_name, '#808080')
     fig, ax = plt.subplots(figsize=(10, 7))
     positions = list(range(len(group_order)))
     
@@ -612,31 +601,23 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     
     directions = ['north', 'east', 'south', 'west', 'stay']
     
-    # Dynamically discover and extract all groups from the data, excluding 'other'
-    all_unique_groups = [g for g in sorted(df_data['group'].unique()) if g != 'other']
-    
-    # Mapping for display names - capitalize experiment groups, keep benchmark names as-is
-    display_name_map = {
-        'unsuccessful': 'Unsuccessful',
-        'successful': 'Successful',
-        'other': 'Other',
-    }
+    # Dynamically discover and extract all groups from the data
+    all_unique_groups = sorted(df_data['group'].unique())
     
     # Prepare data: for each group and direction, collect normalized values
-    group_direction_data = {}  # {(display_name, direction): [values]}
+    group_direction_data = {}  # {(group_name, direction): [values]}
     group_order = []
     
     for group_name in all_unique_groups:
-        display_name = display_name_map.get(group_name, group_name)
-        if display_name not in group_order:
-            group_order.append(display_name)
+        if group_name not in group_order:
+            group_order.append(group_name)
         
         df_group = df_data[df_data['group'] == group_name]
         
         for direction in directions:
             col_name = f"{metric_base}_{direction}"
             if col_name in df_data.columns:
-                group_direction_data[(display_name, direction)] = df_group[col_name].values
+                group_direction_data[(group_name, direction)] = df_group[col_name].values
     
     if not group_direction_data:
         doc.add_paragraph(f"No direction data found for {metric_base}.")
@@ -644,11 +625,9 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     
     # --- Plot: box plot with directions stratified within groups ---
     _gcm_dir = group_color_map or {}
-    _reverse_display_dir = {v: k for k, v in display_name_map.items()}
 
-    def _color_for_dir(display_name: str) -> str:
-        original = _reverse_display_dir.get(display_name, display_name)
-        return _gcm_dir.get(original, _gcm_dir.get(display_name, '#808080'))
+    def _color_for_dir(group_name: str) -> str:
+        return _gcm_dir.get(group_name, '#808080')
 
     fig, ax = plt.subplots(figsize=(14, 7))
     
@@ -827,14 +806,13 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     
     # Build the mapping from original data
     for group_name in all_unique_groups:
-        display_name = display_name_map.get(group_name, group_name)
         df_group = df_data[df_data['group'] == group_name]
         
         variants_in_group = sorted(df_group['variant'].unique())
-        variants_per_group[display_name] = variants_in_group
+        variants_per_group[group_name] = variants_in_group
         
         for variant in variants_in_group:
-            variant_to_group[variant] = display_name
+            variant_to_group[variant] = group_name
             df_variant = df_group[df_group['variant'] == variant]
             
             for direction in direction_order:
@@ -844,7 +822,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                     values_clean = values[~np.isnan(values)]
                     
                     # Store raw values
-                    variant_direction_values[(display_name, variant, direction)] = values_clean
+                    variant_direction_values[(group_name, variant, direction)] = values_clean
                     
                     # Calculate mean and 95% CI
                     mean_val = np.mean(values_clean) if len(values_clean) > 0 else np.nan
@@ -856,7 +834,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
                     else:
                         ci_lower = ci_upper = mean_val
                     
-                    variant_direction_stats[(display_name, variant, direction)] = (mean_val, ci_lower, ci_upper)
+                    variant_direction_stats[(group_name, variant, direction)] = (mean_val, ci_lower, ci_upper)
     
     if not variant_direction_stats:
         doc.add_paragraph(f"No variant-level direction data found for {metric_base}.")
@@ -958,24 +936,16 @@ def analyze_heatmaps(heatmap_data: dict, df_groups: pd.DataFrame) -> None:
     if not heatmap_data:
         return
     
-    # Build group -> (source, variants) mapping, excluding 'other' group
+    # Build group -> (source, variants) mapping
     group_variants = {}  # {group_name: [(source, variant_name), ...]}
     for source in sorted(heatmap_data.keys()):
         for variant_name in sorted(heatmap_data[source].keys()):
-            # Find group for this source/variant
-            if source == 'experiment':
-                mask = (df_groups['source'] == source) & (df_groups['variant'] == variant_name)
-                if mask.any():
-                    group = df_groups.loc[mask, 'group'].iloc[0]
-                else:
-                    continue
+            # Find group for this source/variant from the dataframe
+            mask = (df_groups['source'] == source) & (df_groups['variant'] == variant_name)
+            if mask.any():
+                group = df_groups.loc[mask, 'group'].iloc[0]
             else:
-                # For benchmarks, the group is the source name
                 group = source
-            
-            # Skip 'other' group entirely
-            if group == 'other':
-                continue
             
             if group not in group_variants:
                 group_variants[group] = []
@@ -1082,10 +1052,8 @@ def analyze_survival_race(df_data: pd.DataFrame, group_color_map: dict = None) -
     # Create unique identifier combining source and variant
     df_data['unique_variant'] = df_data['source'] + '_' + df_data['variant']
     
-    # Get all unique groups and separate into experiment groups and benchmarks
+    # Get all unique groups
     all_groups = sorted(df_data['group'].unique())
-    experiment_groups = [g for g in all_groups if g in ['successful', 'unsuccessful', 'other']]
-    benchmark_groups = [g for g in all_groups if g not in ['successful', 'unsuccessful', 'other', 'unknown']]
     
     # Color mapping by group - built from provided group_color_map or fallback defaults
     _gcm_sr = group_color_map or {}
@@ -1093,16 +1061,17 @@ def analyze_survival_race(df_data: pd.DataFrame, group_color_map: dict = None) -
     def _color_for_sr(group_name: str) -> str:
         return _gcm_sr.get(group_name, '#808080')
 
-    color_map = {g: _color_for_sr(g) for g in set(list(all_groups) + ['successful', 'unsuccessful', 'other'])}
+    color_map = {g: _color_for_sr(g) for g in all_groups}
     
-    # Z-order mapping: higher for more important groups (benchmarks are always top)
-    zorder_map = {
-        'other': 1,
-        'unsuccessful': 2,
-        'successful': 3,
-    }
-    for idx, benchmark_group in enumerate(sorted(benchmark_groups)):
-        zorder_map[benchmark_group] = 4 + idx
+    # Z-order mapping: experiments on top of benchmarks
+    _exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
+    _bench_names_sr = [name for name, _ in BENCHMARK_HDF5_FILES]
+    zorder_map = {}
+    for idx, g in enumerate(sorted(all_groups)):
+        if g in _exp_names:
+            zorder_map[g] = 3 + _exp_names.index(g)
+        else:
+            zorder_map[g] = 1 + idx
     
     # Plot one line per unique variant
     for unique_var in sorted(df_data['unique_variant'].unique()):
@@ -1122,21 +1091,11 @@ def analyze_survival_race(df_data: pd.DataFrame, group_color_map: dict = None) -
         # Plot this variant's survival curve with z-order
         ax.plot(ticks, alive_counts, color=color, zorder=zorder)
     
-    # Create custom legend dynamically based on actual groups
+    # Create custom legend for all groups
     from matplotlib.lines import Line2D
     legend_elements = []
-    
-    # Add experiment groups in order
-    if 'successful' in color_map:
-        legend_elements.append(Line2D([0], [0], color=_color_for_sr('successful'), linewidth=2, label='Successful'))
-    if 'unsuccessful' in color_map:
-        legend_elements.append(Line2D([0], [0], color=_color_for_sr('unsuccessful'), linewidth=2, label='Unsuccessful'))
-    if 'other' in color_map:
-        legend_elements.append(Line2D([0], [0], color='#808080', linewidth=2, label='Other'))
-    
-    # Add benchmark / additional-experiment groups
-    for benchmark_group in sorted(benchmark_groups):
-        legend_elements.append(Line2D([0], [0], color=_color_for_sr(benchmark_group), linewidth=2, label=benchmark_group))
+    for g in all_groups:
+        legend_elements.append(Line2D([0], [0], color=_color_for_sr(g), linewidth=2, label=g))
     
     ax.legend(handles=legend_elements, loc='upper right')
     
@@ -1341,75 +1300,40 @@ def load_per_tick_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_fi
     """
     all_per_tick_data = []
     
-    # Define which groups to include
-    groups_to_include = {'successful', 'unsuccessful'}
-    
-    # Load per_tick data from experiment
-    try:
-        with h5py.File(experiment_hdf5_path, 'r') as f:
-            variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
-            for variant_name in variant_names:
-                # Check if this variant is in one of the groups we want
-                variant_group_assignment = variant_groups.get(variant_name)
-                if variant_group_assignment not in groups_to_include:
-                    continue  # Skip 'other' variants
-                
-                variant_group = f[variant_name]
-                run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
-                
-                for run_name in run_names:
-                    if 'per_tick' not in variant_group[run_name]:
-                        continue
-                    
-                    run_group = variant_group[run_name]
-                    per_tick_table = run_group['per_tick']
-                    
-                    # Convert to DataFrame
-                    if isinstance(per_tick_table, h5py.Dataset):
-                        per_tick_df = pd.DataFrame(per_tick_table[:])
-                        per_tick_df['source'] = 'experiment'
-                        per_tick_df['variant'] = variant_name
-                        per_tick_df['group'] = variant_group_assignment
-                        # Extract numeric run_id from run_name (e.g., "run_1" -> 1) to match df_all
-                        run_id_numeric = int(run_name.split('_')[1])
-                        per_tick_df['run_id'] = run_id_numeric
-                        all_per_tick_data.append(per_tick_df)
-    except Exception as e:
-        print(f"Warning: Error loading experiment per_tick data: {e}")
-        raise ValueError("Failed to load experiment per_tick data") from e
-    
-    # Load per_tick data from benchmarks
-    for source, benchmark_path in hdf5_files_dict.items():
-        if source == 'experiment':
-            continue
-        
+    # Load per_tick data from all experiment sources
+    for source_label, source_path in hdf5_files_dict.items():
+        # Determine group name from source label
+        # Experiments use source label directly as group name; benchmarks too
         try:
-            with h5py.File(benchmark_path, 'r') as f:
-                variant_names = sorted([k for k in f.keys() if k.startswith('variant_')])
-                for variant_name in variant_names:
-                    # Benchmarks are their own group
-                    variant_group = f[variant_name]
-                    run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
-                    
+            with h5py.File(source_path, 'r') as f:
+                vnames = sorted([k for k in f.keys() if k.startswith('variant_')])
+                for variant_name in vnames:
+                    # Look up group assignment from variant_groups if available, else use source_label
+                    group_assignment = variant_groups.get(variant_name, source_label)
+                    vg = f[variant_name]
+                    run_names = sorted([k for k in vg.keys() if k.startswith('run_')])
                     for run_name in run_names:
-                        if 'per_tick' not in variant_group[run_name]:
+                        if 'per_tick' not in vg[run_name]:
                             continue
-                        
-                        run_group = variant_group[run_name]
+                        run_group = vg[run_name]
                         per_tick_table = run_group['per_tick']
-                        
-                        # Convert to DataFrame
                         if isinstance(per_tick_table, h5py.Dataset):
                             per_tick_df = pd.DataFrame(per_tick_table[:])
-                            per_tick_df['source'] = source
+                            per_tick_df['source'] = source_label
                             per_tick_df['variant'] = variant_name
-                            per_tick_df['group'] = source
-                            # Extract numeric run_id from run_name (e.g., "run_1" -> 1) to match df_all
+                            per_tick_df['group'] = group_assignment
                             run_id_numeric = int(run_name.split('_')[1])
                             per_tick_df['run_id'] = run_id_numeric
                             all_per_tick_data.append(per_tick_df)
         except Exception as e:
-            print(f"Warning: Error loading benchmark '{source}' per_tick data: {e}")
+            print(f"Warning: Error loading per_tick data for '{source_label}': {e}")
+            raise ValueError(f"Failed to load per_tick data for '{source_label}'") from e
+    
+    # (legacy loop kept as placeholder - logic merged into unified loop above)
+    if False:  # dead code guard
+        pass
+    
+    # (benchmark loading merged into unified loop above)
     
     # Combine all per_tick data
     if not all_per_tick_data:
@@ -1425,81 +1349,39 @@ def load_per_tick_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_fi
 
 def load_heatmap_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_files_dict: dict) -> dict:
     """
-    Load staying heatmap data from HDF5 files for successful, unsuccessful, and benchmark variants.
-    
-    Only loads 'staying' heatmaps for relevant variants, avoiding expensive full-dataset loading.
-    Filters for successful and unsuccessful groups from experiment and all variants from benchmarks.
+    Load staying heatmap data from all HDF5 sources (experiments and benchmarks).
     
     Args:
-        experiment_hdf5_path: Path to experiment HDF5 file
-        variant_groups: Dict mapping variant names to their group assignments (successful/unsuccessful/other)
+        experiment_hdf5_path: Path to primary experiment HDF5 file (unused, kept for API compat)
+        variant_groups: Dict mapping variant names to their group assignments
         hdf5_files_dict: Dict mapping source labels to HDF5 file paths
     
     Returns:
         Dict: {source: {variant: [arrays...]}}
               Returns empty dict if no heatmap data exists.
-    
-    Note:
-        This function is called only after variant grouping is complete and only loads
-        data for relevant variants, making it much more efficient than loading all data upfront.
     """
     heatmap_data = {}  # {source: {variant: [arrays...]}}
     
-    # Define which groups to include from experiment
-    groups_to_include = {'successful', 'unsuccessful'}
-    
-    # Load heatmap data from experiment
-    try:
-        with h5py.File(experiment_hdf5_path, 'r') as f:
-            variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
-            for variant_name in variant_keys:
-                # Check if this variant is in one of the groups we want
-                variant_group_assignment = variant_groups.get(variant_name)
-                if variant_group_assignment not in groups_to_include:
-                    continue  # Skip 'other' variants
-                
-                variant_group = f[variant_name]
-                run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
-                
-                staying_arrays = []
-                
-                for run_name in run_keys:
-                    run_group = variant_group[run_name]
-                    if 'staying' in run_group:
-                        staying_arrays.append(run_group['staying'][:])
-                
-                if staying_arrays:
-                    if 'experiment' not in heatmap_data:
-                        heatmap_data['experiment'] = {}
-                    heatmap_data['experiment'][variant_name] = staying_arrays
-    except Exception as e:
-        print(f"Warning: Error loading experiment heatmap data: {e}")
-    
-    # Load heatmap data from benchmarks
-    for source, benchmark_path in hdf5_files_dict.items():
-        if source == 'experiment':
-            continue
-        
+    for source_label, source_path in hdf5_files_dict.items():
         try:
-            with h5py.File(benchmark_path, 'r') as f:
+            with h5py.File(source_path, 'r') as f:
                 variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
                 for variant_name in variant_keys:
-                    variant_group = f[variant_name]
-                    run_keys = sorted([k for k in variant_group.keys() if k.startswith('run_')])
+                    vg = f[variant_name]
+                    run_keys = sorted([k for k in vg.keys() if k.startswith('run_')])
                     
                     staying_arrays = []
-                    
                     for run_name in run_keys:
-                        run_group = variant_group[run_name]
+                        run_group = vg[run_name]
                         if 'staying' in run_group:
                             staying_arrays.append(run_group['staying'][:])
                     
                     if staying_arrays:
-                        if source not in heatmap_data:
-                            heatmap_data[source] = {}
-                        heatmap_data[source][variant_name] = staying_arrays
+                        if source_label not in heatmap_data:
+                            heatmap_data[source_label] = {}
+                        heatmap_data[source_label][variant_name] = staying_arrays
         except Exception as e:
-            print(f"Warning: Error loading benchmark '{source}' heatmap data: {e}")
+            print(f"Warning: Error loading heatmap data for '{source_label}': {e}")
     
     # Print summary
     total_variants = sum(len(variants_dict) for variants_dict in heatmap_data.values())
@@ -1567,18 +1449,8 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     # Create DataFrame of AUC values for statistical analysis
     df_auc = pd.DataFrame(per_tick_auc_data)
     
-    # Exclude 'other' group from per-tick analysis
-    df_auc = df_auc[df_auc['group'] != 'other']
-    
     # Discover all unique groups in df_auc
     all_groups = sorted(df_auc['group'].unique())
-    
-    # Map display names for experiment groups
-    display_name_map = {
-        'unsuccessful': 'Unsuccessful',
-        'successful': 'Successful',
-        'other': 'Other',
-    }
     
     # Create color map dynamically for all groups - built from provided group_color_map
     _gcm_pt = group_color_map or {}
@@ -1615,26 +1487,27 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     
     # Create color map for variants (group-based color, but each variant gets a line)
     variant_color_map = {}
-    variant_group_map = {}  # Map variant to its group for color assignment
+    variant_group_map = {}  # Map (source, variant) -> group for color assignment
     
     for group in all_groups:
-        group_data = df_auc[df_auc['group'] == group]
-        for variant in sorted(group_data['variant'].unique()):
-            variant_group_map[variant] = group
-            variant_color_map[variant] = color_map.get(group, '#808080')
+        group_data_g = df_auc[df_auc['group'] == group]
+        for _, row in group_data_g[['source', 'variant']].drop_duplicates().iterrows():
+            variant_group_map[(row['source'], row['variant'])] = group
+            variant_color_map[(row['source'], row['variant'])] = color_map.get(group, '#808080')
     
     # Plot: per-variant means with CI (no individual runs)
     fig, ax = plt.subplots(figsize=(14, 8))
     
     # Calculate and plot per-variant means with 95% CI
-    all_variants = sorted(variant_color_map.keys())
+    all_sv_keys = sorted(variant_color_map.keys())
     groups_added_to_legend = set()  # Track which groups we've already added to legend
     
-    for variant in all_variants:
-        # Collect all normalized curves for this variant
+    for sv_key in all_sv_keys:
+        source_v, variant = sv_key
+        # Collect all normalized curves for this (source, variant)
         variant_curves = []
         for (source, var, run_id), (percent_ticks, metric_values) in normalized_curves.items():
-            if var == variant:
+            if source == source_v and var == variant:
                 variant_curves.append((percent_ticks, metric_values))
         
         if len(variant_curves) == 0:
@@ -1658,12 +1531,11 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
         ci_lower = mean_curve - 1.96 * sem_curve
         ci_upper = mean_curve + 1.96 * sem_curve
         
-        color = variant_color_map.get(variant, '#808080')
-        group = variant_group_map.get(variant, 'Unknown')
-        display_label = display_name_map.get(group, group)
+        color = variant_color_map.get(sv_key, '#808080')
+        group = variant_group_map.get(sv_key, 'Unknown')
         
         # Add legend label only on first variant of each group
-        legend_label = display_label if group not in groups_added_to_legend else None
+        legend_label = group if group not in groups_added_to_legend else None
         if legend_label:
             groups_added_to_legend.add(group)
         
@@ -1691,10 +1563,8 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     doc.add_paragraph()
     
     # Perform statistical analysis on AUC values using analyze_per_run
-    # Filter out 'other' group before statistical analysis
-    df_auc_for_stats = df_auc[df_auc['group'] != 'other']
-    if len(df_auc_for_stats) > 0:
-        analyze_per_run(df_auc_for_stats, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str, group_color_map=group_color_map)
+    if len(df_auc) > 0:
+        analyze_per_run(df_auc, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str, group_color_map=group_color_map)
     
     return True
 
@@ -1817,33 +1687,30 @@ if BENCHMARK_HDF5_FILES:
         hdf5_files_dict[benchmark_name] = benchmark_path
 
 # ==================================================================================================================================================
-# Build COLOR_MAP: maps every group name (lowercase) to a hex color string.
-# The 'successful' and 'unsuccessful' groups always use fixed colors.
-# Additional experiments (index 1, 2, ...) use EXPERIMENT_COLORS[1], [2], ...
+# Build COLOR_MAP: maps every group name to a hex color string.
+# Experiments (all entries in EXPERIMENT_HDF5_FILES) use EXPERIMENT_COLORS[0], [1], [2], ...
 # Benchmarks use BENCHMARK_COLORS[0], [1], [2], ...
 # Beyond 3 entries of either type, colors are auto-generated in the same hue family.
 # ==================================================================================================================================================
 import colorsys as _colorsys
 
-COLOR_MAP: dict = {
-    'successful': EXPERIMENT_COLORS[0],
-    'unsuccessful': BENCHMARK_COLORS[0],
-    'other': '#808080',
-}
+COLOR_MAP: dict = {}
 
-# Additional experiments (EXPERIMENT_HDF5_FILES[1:])
-_additional_exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES[1:]]
-for _i, _exp_name in enumerate(_additional_exp_names):
-    _color_idx = _i + 1  # index into EXPERIMENT_COLORS (0 is used for successful)
-    if _color_idx < len(EXPERIMENT_COLORS):
-        COLOR_MAP[_exp_name] = EXPERIMENT_COLORS[_color_idx]
+# All experiments (EXPERIMENT_HDF5_FILES)
+_all_exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
+for _i, _exp_name in enumerate(_all_exp_names):
+    if _i < len(EXPERIMENT_COLORS):
+        COLOR_MAP[_exp_name] = EXPERIMENT_COLORS[_i]
     else:
         # Auto-generate a greenish color (hue ~120° / 0.33)
         _h = 0.33
-        _l = max(0.25, 0.45 - (_i - len(EXPERIMENT_COLORS) + 2) * 0.05)
+        _l = max(0.25, 0.45 - (_i - len(EXPERIMENT_COLORS)) * 0.05)
         _s = 0.6
         _r, _g, _b = _colorsys.hls_to_rgb(_h, _l, _s)
         COLOR_MAP[_exp_name] = f'#{int(_r*255):02x}{int(_g*255):02x}{int(_b*255):02x}'
+
+# Also map the primary experiment's source label 'experiment' to its color
+COLOR_MAP['experiment'] = COLOR_MAP.get(_all_exp_names[0], EXPERIMENT_COLORS[0])
 
 # Benchmarks (BENCHMARK_HDF5_FILES)
 _benchmark_names = [name for name, _ in BENCHMARK_HDF5_FILES]
@@ -2179,106 +2046,60 @@ else:
 
 #endregion # closes 1
 
-#region 2 Group Selection
+#region 2 Group Overview
 
-doc.add_heading("2. Group Selection", level=1)
+doc.add_heading("2. Group Overview", level=1)
 
-# Calculate median survival for each random variant
-median_by_variant = df_experiment.groupby('variant')['lifetime_ticks'].median().sort_values()
+# Assign groups: each source label IS the group name (no successful/unsuccessful split)
+# Primary experiment uses source label 'experiment' -> map to its display name
+variant_groups = {}  # kept for API compatibility with load_per_tick_data / load_heatmap_data
 
-# Get min and max medians
-min_median = median_by_variant.min()
-max_median = median_by_variant.max()
-median_range = max_median - min_median
+# Build a mapping: for variants in primary experiment, group = primary experiment display name
+_primary_exp_display_name = primary_exp_name
+with h5py.File(experiment_hdf5_path, 'r') as _f:
+    for _vname in sorted([k for k in _f.keys() if k.startswith('variant_')]):
+        variant_groups[_vname] = _primary_exp_display_name
 
-# Calculate thresholds at 10% and 90% of the range
-threshold_10_pct = min_median + (0.10 * median_range)
-threshold_90_pct = min_median + (0.90 * median_range)
-
-# Assign groups to experiment variants based on median survival
-variant_groups = {}
-successful_variants = []
-unsuccessful_variants = []
-other_variants = []
-
-for variant_name, median_val in median_by_variant.items():
-    if median_val < threshold_10_pct:
-        variant_groups[variant_name] = 'unsuccessful'
-        unsuccessful_variants.append(variant_name)
-    elif median_val > threshold_90_pct:
-        variant_groups[variant_name] = 'successful'
-        successful_variants.append(variant_name)
-    else:
-        variant_groups[variant_name] = 'other'
-        other_variants.append(variant_name)
-
-# Add group assignment to df_all
+# Assign group column: source label for additional experiments/benchmarks, display name for primary
 def assign_group(row):
     if row['source'] == 'experiment':
-        return variant_groups.get(row['variant'], 'unknown')
+        return _primary_exp_display_name
     else:
-        return row['source']  # Use benchmark source name as the group
+        return row['source']  # Additional experiments and benchmarks keep their source name as group
 
 df_all['group'] = df_all.apply(assign_group, axis=1)
 
 # Make df_all immutable to prevent accidental modifications
 df_all.flags.writeable = False
 
-# Add summary to document
-doc.add_paragraph(f"Thresholds based on median survival time (lifetime_ticks):")
-doc.add_paragraph(f"  Unsuccessful (bottom 10%): median < {threshold_10_pct:.2f} ticks", style="List Bullet")
-doc.add_paragraph(f"  Successful (top 10%): median > {threshold_90_pct:.2f} ticks", style="List Bullet")
-
-# Create table showing variant assignments
+# Add summary to document: group = source overview
+doc.add_paragraph("Groups correspond directly to data sources (no successful/unsuccessful split).")
 table = doc.add_table(rows=1, cols=3)
 table.style = "Light Grid Accent 1"
-
-# Header row
 header_cells = table.rows[0].cells
 header_cells[0].text = "Group"
-header_cells[1].text = "Count"
-header_cells[2].text = "Variants"
-
-# Add successful variants row
-table.add_row()
-row = table.rows[1].cells
-row[0].text = "Successful (Top 10%)"
-row[1].text = str(len(successful_variants))
-row[2].text = _get_variant_numbers(successful_variants)
-
-# Add unsuccessful variants row
-table.add_row()
-row = table.rows[2].cells
-row[0].text = "Unsuccessful (Bottom 10%)"
-row[1].text = str(len(unsuccessful_variants))
-row[2].text = _get_variant_numbers(unsuccessful_variants)
+header_cells[1].text = "No. Variants"
+header_cells[2].text = "No. Runs"
+for _grp in sorted(df_all['group'].unique()):
+    _grp_df = df_all[df_all['group'] == _grp]
+    _row = table.add_row().cells
+    _row[0].text = _grp
+    _row[1].text = str(_grp_df['variant'].nunique())
+    _row[2].text = str(len(_grp_df))
 
 doc.add_paragraph()
 analyze_survival_race(df_all, group_color_map=COLOR_MAP)
 doc.add_paragraph()
 
-#add a call to the analyze_wiring function for the first variant in the successful and unsuccessful groups
-
-# Get first variant from successful and unsuccessful groups
-first_successful = successful_variants[0] if successful_variants else None
-first_unsuccessful = unsuccessful_variants[0] if unsuccessful_variants else None
-
-# Analyze wiring for first successful variant
-if first_successful:
-    wiring_dict_success = {first_successful: wiring_data_experiment[first_successful]}
-    modulation_dict_success = {first_successful: modulation_data_experiment.get(first_successful, np.array([]))}
-    print(f"  Analyzing successful variant...")
-    analyze_wiring(wiring_dict_success, modulation_dict_success, RUNS_TO_SHOW_IN_DETAIL, f"Exemplary successful variant - {first_successful}")
-    print(f"  Successful variant analyzed.")
-
-# Analyze wiring for first unsuccessful variant
-if first_unsuccessful:
-    wiring_dict_unsuccess = {first_unsuccessful: wiring_data_experiment[first_unsuccessful]}
-    modulation_dict_unsuccess = {first_unsuccessful: modulation_data_experiment.get(first_unsuccessful, np.array([]))}
-    print(f"  Analyzing unsuccessful variant...")
-    analyze_wiring(wiring_dict_unsuccess, modulation_dict_unsuccess, RUNS_TO_SHOW_IN_DETAIL, f"Exemplary unsuccessful variant - {first_unsuccessful}")
-    print(f"  Unsuccessful variant analyzed.")
-print("Wiring analysis for exemplary variants done.")
+# Analyze wiring for the first variant of the primary experiment
+print("Analyzing wiring for primary experiment variants...")
+_first_primary_variant = sorted(variant_groups.keys())[0] if variant_groups else None
+if _first_primary_variant and _first_primary_variant in wiring_data_experiment:
+    wiring_dict_primary = {_first_primary_variant: wiring_data_experiment[_first_primary_variant]}
+    modulation_dict_primary = {_first_primary_variant: modulation_data_experiment.get(_first_primary_variant, np.array([]))}
+    analyze_wiring(wiring_dict_primary, modulation_dict_primary, RUNS_TO_SHOW_IN_DETAIL,
+                   f"{primary_exp_name} - {_first_primary_variant}")
+print("Wiring analysis for primary experiment done.")
 
 # ==================================================================================================================================================
 # Check if per_tick data is available and load it
@@ -2287,22 +2108,17 @@ print("Wiring analysis for exemplary variants done.")
 print("Checking for per-tick data...")
 per_tick_included = False
 
-# Check if per_tick data exists by looking at first successful variant
-if first_successful:
-    try:
-        with h5py.File(experiment_hdf5_path, 'r') as f:
-            if first_successful in f:
-                variant_group = f[first_successful]
-                # Get first run
-                run_names = sorted([k for k in variant_group.keys() if k.startswith('run_')])
-                if run_names:
-                    first_run = run_names[0]
-                    run_group = variant_group[first_run]
-                    # Check for per_tick table
-                    if 'per_tick' in run_group:
-                        per_tick_included = True
-    except Exception:
-        per_tick_included = False
+# Check if per_tick data exists in the primary experiment file
+try:
+    with h5py.File(experiment_hdf5_path, 'r') as f:
+        _check_variants = sorted([k for k in f.keys() if k.startswith('variant_')])
+        if _check_variants:
+            _cv = _check_variants[0]
+            _runs = sorted([k for k in f[_cv].keys() if k.startswith('run_')])
+            if _runs and 'per_tick' in f[_cv][_runs[0]]:
+                per_tick_included = True
+except Exception:
+    per_tick_included = False
 
 # Load per_tick data if available
 if per_tick_included:
@@ -2316,7 +2132,7 @@ if per_tick_included:
 else:
     print("No per-tick data available.")
 
-# Load heatmap data if available (only for relevant variants)
+# Load heatmap data if available
 print("Loading heatmap data...")
 try:
     heatmap_data = load_heatmap_data(experiment_hdf5_path, variant_groups, hdf5_files_dict)
@@ -2328,10 +2144,10 @@ except Exception as e:
 
 #endregion # closes 2
 
-#region 3 Comparison Successful vs. Unsuccessful (vs. Benchmarks)
+#region 3 Comparison Experiments vs. Benchmarks
 
 print("\nAnalyzing comparison section...")
-doc.add_heading("3. Comparison Successful vs. Unsuccessful (vs. Benchmarks)", level=1)
+doc.add_heading("3. Comparison Experiments vs. Benchmarks", level=1)
 
 #region 3.1 Survival
 
@@ -2370,22 +2186,47 @@ df_all.flags.writeable = False
 # Analyze normalized food consumption
 analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm', group_color_map=COLOR_MAP)
 
-doc.add_paragraph('Description of food consumption differences between groups, statistical test results, and interpretation goes here.', style='Normal')
+doc.add_paragraph('The food consumption per tick shows, that EA solution don\'t just randomly find food at the end of their lifes and then life another 17 ticks. The random rate to survive would be 1 food / 17 ticks, which equals 0.05 foods/tick. The exact rate at which random surviving variants feed by chance. The hand-wired solution finds food with about double, the EA solutions with more than tripple that frquency. None of the networks have information about the current energy levels.', style='Normal')
 
-# Food sensing per direction (normalized by lifetime_ticks)
-print("  Normalizing food sensing by direction...")
-df_all.flags.writeable = True
-for direction in ['north', 'east', 'south', 'west', 'stay']:
-    col_name = f"food_sensed_{direction}"
-    if col_name in df_all.columns:
-        df_all[f"food_sensed_norm_{direction}"] = df_all[col_name] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
-
-# Analyze food sensing per direction
-print("  Analyzing food sensing by direction...")
-analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
-print("  Food sensing analysis done.")
-doc.add_paragraph("TBD")
+# Food sensing per direction (from per-tick data)
+if per_tick_included and len(df_all_per_tick) > 0:
+    print("  Aggregating food sensing by direction from per-tick data...")
+    # Check which direction columns exist in per-tick data
+    per_tick_cols = df_all_per_tick.columns.tolist()
+    # Map short direction names (N/E/S/W) to long names (north/east/south/west)
+    direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west'}
+    available_directions_pt = []
+    for short_dir, long_dir in direction_map.items():
+        col_name = f"food_sensed_{short_dir}"
+        if col_name in per_tick_cols:
+            available_directions_pt.append((short_dir, long_dir))
+    
+    if available_directions_pt:
+        # Aggregate per_tick food_sensed by direction, per run
+        for short_dir, long_dir in available_directions_pt:
+            col_name = f"food_sensed_{short_dir}"
+            # Sum across all ticks for each (source, variant, run_id)
+            agg_data = df_all_per_tick.groupby(['source', 'variant', 'run_id'])[col_name].sum().reset_index()
+            agg_data.rename(columns={col_name: f'food_sensed_sum_{long_dir}'}, inplace=True)
+            
+            # Merge back into df_all
+            df_all.flags.writeable = True
+            # Merge on source, variant, run_id (which are the index keys in df_all)
+            df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
+            # Normalize by lifetime_ticks
+            df_all[f'food_sensed_norm_{long_dir}'] = df_all[f'food_sensed_sum_{long_dir}'] / df_all['lifetime_ticks']
+            df_all.flags.writeable = False
+        
+        # Analyze food sensing per direction
+        print("  Analyzing food sensing by direction...")
+        analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
+        print("  Food sensing analysis done.")
+    else:
+        print("  No direction-specific food_sensed columns found in per-tick data.")
+        doc.add_paragraph("TBD - Food sensing by direction data not available")
+else:
+    print("  Per-tick data not available for food sensing direction analysis.")
+    doc.add_paragraph("TBD - Per-tick data required for direction analysis")
 
 doc.add_paragraph()
 
@@ -2425,20 +2266,50 @@ if 'moves_norm' in df_all.columns:
 print("    Normalized movements analysis done.")
 doc.add_paragraph("TBD")
 
-# Movements per direction (normalized by lifetime_ticks)
-print("    Normalizing movements by direction...")
-df_all.flags.writeable = True
-for direction in ['north', 'east', 'south', 'west', 'stay']:
-    col_name = f"moves_{direction}"
-    if col_name in df_all.columns:
-        df_all[f"moves_norm_{direction}"] = df_all[col_name] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
-
-# Analyze movements per direction
-print("    Analyzing movements by direction...")
-analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
-print("    Movements by direction analysis done.")
-doc.add_paragraph("TBD")
+# Movements per direction (from per-tick data)
+if per_tick_included and len(df_all_per_tick) > 0:
+    print("    Aggregating movements by direction from per-tick data...")
+    # Movement data is in a single 'movement' column with values b'N'/b'E'/b'S'/b'W'/b'stay' (bytes)
+    if 'movement' in df_all_per_tick.columns:
+        # Convert movement column to string if it contains bytes
+        if df_all_per_tick['movement'].dtype == 'object' and isinstance(df_all_per_tick['movement'].iloc[0], bytes):
+            df_all_per_tick['movement'] = df_all_per_tick['movement'].str.decode('utf-8')
+        
+        # Map short direction names (N/E/S/W) to long names (north/east/south/west)
+        direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west', 'stay': 'stay'}
+        print(f"      df_all_per_tick shape: {df_all_per_tick.shape}")
+        print(f"      df_all shape before aggregation: {df_all.shape}")
+        print(f"      movement values: {sorted(df_all_per_tick['movement'].unique())}")
+        
+        # Aggregate movements by direction, per run
+        for short_dir, long_dir in direction_map.items():
+            # Count occurrences of this direction across all ticks for each (source, variant, run_id)
+            agg_data = df_all_per_tick[df_all_per_tick['movement'] == short_dir].groupby(['source', 'variant', 'run_id']).size().reset_index(name=f'moves_sum_{long_dir}')
+            print(f"      {short_dir} ({long_dir}): {len(agg_data)} rows with data")
+            
+            # Merge back into df_all
+            df_all.flags.writeable = True
+            df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
+            # Fill NaN (no movements in that direction) with 0
+            df_all[f'moves_sum_{long_dir}'].fillna(0, inplace=True)
+            # Normalize by lifetime_ticks
+            df_all[f'moves_norm_{long_dir}'] = df_all[f'moves_sum_{long_dir}'] / df_all['lifetime_ticks']
+            df_all.flags.writeable = False
+            print(f"      Created moves_norm_{long_dir}: min={df_all[f'moves_norm_{long_dir}'].min():.4f}, max={df_all[f'moves_norm_{long_dir}'].max():.4f}, mean={df_all[f'moves_norm_{long_dir}'].mean():.4f}")
+        
+        print(f"      df_all shape after aggregation: {df_all.shape}")
+        print(f"      Columns: {[c for c in df_all.columns if 'moves_norm' in c]}")
+        
+        # Analyze movements per direction
+        print("    Analyzing movements by direction...")
+        analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
+        print("    Movements by direction analysis done.")
+    else:
+        print("    'movement' column not found in per-tick data.")
+        doc.add_paragraph("TBD - Movements by direction data not available")
+else:
+    print("    Per-tick data not available for movements direction analysis.")
+    doc.add_paragraph("TBD - Per-tick data required for direction analysis")
 
 #endregion # closes 3.3.1
 
