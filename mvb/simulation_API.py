@@ -162,7 +162,7 @@ def eval_variant(
         summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
         # Pre-allocate wiring array with columns for all run final weights
-        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
+        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4'), ('reliability', 'f4')]
         for run_id in range(n_runs):
             dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
         wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
@@ -171,6 +171,7 @@ def eval_variant(
             wiring_array[idx]['src'] = src
             wiring_array[idx]['tgt'] = tgt
             wiring_array[idx]['weight_initial'] = connection_weights[src, tgt, 0]
+            wiring_array[idx]['reliability'] = connection_weights[src, tgt, 1]
 
         # Pre-allocate modulation array
         dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]

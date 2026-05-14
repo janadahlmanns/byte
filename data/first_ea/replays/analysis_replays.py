@@ -21,6 +21,7 @@ except ImportError:
 from statsmodels.stats.multitest import multipletests
 from itertools import combinations
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # Add workspace root to path for imports
@@ -1653,6 +1654,32 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     doc.add_paragraph()
 
 
+def _draw_wiring_panel(ax, wiring_df, modulation_array, neuron_positions, neuron_types,
+                       title: str) -> None:
+    """Draw one network panel into ax. wiring_df must already contain a 'weight' column."""
+    conns = wiring_df[['src', 'tgt', 'weight']].copy()
+    conns = conns[conns['weight'] != 0.0].reset_index(drop=True)
+
+    mod_df = None
+    if modulation_array is not None and len(modulation_array) > 0:
+        mod_df = pd.DataFrame(modulation_array)
+
+    neurons = {
+        nid: {'pos': pos, 'type': neuron_types.get(nid, 'hidden')}
+        for nid, pos in neuron_positions.items()
+    }
+
+    network_viz.draw_network(
+        neurons=neurons,
+        connections=conns,
+        modulatory=mod_df,
+        ax=ax,
+        title=title,
+        show_weights=True,
+        weight_column='weight',
+    )
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
@@ -1872,7 +1899,7 @@ for _i, _bench_name in enumerate(_benchmark_names):
 # ==================================================================================================================================================
 
 print("\n=== SECTION D: ANALYSIS ===")
-print("Creating document...")
+
 from docx import Document
 
 doc = Document()
@@ -1951,7 +1978,7 @@ SURVIVAL CURVES
 All groups' survival distributions are compared using the log-rank test:
    • Omnibus Test: Log-rank test (rank-based non-parametric test comparing survival distributions)
    • Post-hoc Pairwise Test: Pairwise log-rank tests (all group pairs compared)
-   • Multiple Comparisons Correction: Holm–Bonferroni (sequential adjustment of p-value thresholds)
+   • Multiple Comparisons Correction: Holm-Bonferroni (sequential adjustment of p-value thresholds)
    • Post-hoc Effect Size: χ² per pair (interpretation depends on degrees of freedom and sample sizes)
    • Significance threshold: p < 0.05 (omnibus and post-hoc)
    • Assumptions: All data fully observed with no censoring; does not assume normality or constant hazards
@@ -1981,6 +2008,7 @@ for _ri, (label, stat_key, fmt) in enumerate(_LIFETIME_STAT_ROWS, 1):
 doc.add_paragraph()
 
 doc.add_heading("1.4. EA results", level=2)
+
 
 doc.add_paragraph("space for EA results here")
 
@@ -2053,11 +2081,64 @@ analyze_per_tick_metric(df_per_tick, 'energy', 'Energy [units]', 'energy', group
 
 #endregion closes 2
 
+#region 3 Genomes
+doc.add_heading("3. Genomes", level=1)
 
+doc.add_heading("3.1. Wiring", level=2)
 
+_net_figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+_net_figures_dir.mkdir(exist_ok=True)
 
+try:
+    _net_positions, _net_neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+except Exception:
+    _net_positions, _net_neuron_types = {}, {}
 
+for _pass, (_pass_label, _weight_fn) in enumerate([
+    ("Effective Connection Strength (weight_initial × reliability)",
+     lambda df: df['weight_initial'] * df['reliability']),
+    ("Raw Initial Weights (weight_initial)",
+     lambda df: df['weight_initial']),
+]):
+    doc.add_heading(_pass_label, level=3)
+    _pass_tag = 'effective' if _pass == 0 else 'raw'
+    for _grp_name, _grp_variants in wiring_data.items():
+        _all_vids = sorted(_grp_variants.keys())
+        _n_all = len(_all_vids)
+        _n_pick = min(4, _n_all)
+        _indices = [int(np.floor(i)) for i in np.linspace(0, _n_all - 1, _n_pick)]
+        _vids = [_all_vids[i] for i in _indices]
+        fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+        fig.subplots_adjust(hspace=0.05, wspace=0.1)
+        axes = axes.flatten()
+        for _i, _vid in enumerate(_vids):
+            _w = pd.DataFrame(_grp_variants[_vid])
+            _w['weight'] = _weight_fn(_w)
+            _draw_wiring_panel(
+                axes[_i], _w, modulation_data[_grp_name][_vid],
+                _net_positions, _net_neuron_types,
+                title=f'Variant {_vid}',
+            )
+        for _i in range(len(_vids), 4):
+            axes[_i].axis('off')
+        # shared legend at figure bottom
+        _legend_elements = [
+            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['input_edge'],  linewidth=2, label='Input'),
+            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['output_edge'], linewidth=2, label='Output'),
+            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['hidden_edge'], linewidth=2, label='Hidden'),
+            plt.Line2D([0], [0], color=network_viz.COLORS['excitatory'], linewidth=2, linestyle='-', label='Excitatory'),
+            plt.Line2D([0], [0], color=network_viz.COLORS['inhibitory'], linewidth=2, linestyle='-', label='Inhibitory'),
+        ]
+        fig.legend(handles=_legend_elements, loc='lower center', ncol=5, fontsize=9,
+                   frameon=True, bbox_to_anchor=(0.5, 0.01))
+        fig.subplots_adjust(bottom=0.07)
+        _fig_path = _net_figures_dir / f'network_{_pass_tag}_{_grp_name.replace(" ", "_")}.png'
+        fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        doc.add_picture(str(_fig_path), width=6.5 * 914400)
+        doc.add_paragraph()
 
+#endregion 3 Genomes
 
 
 #endregion # closes 3.1
@@ -2311,8 +2392,7 @@ analyze_per_tick_metric(df_per_tick, 'energy', 'Energy [units]', 'energy', group
 # # SECTION E) WRAP UP
 # # ==================================================================================================================================================
 
-# print("\n=== SECTION E: WRAP UP ===")
-print("Saving report...")
+
 # Save the report
 report_path = Path(__file__).resolve().parent / f"report_{EXPERIMENT_NAME}.docx"
 doc.save(report_path)
