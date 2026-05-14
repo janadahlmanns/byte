@@ -51,15 +51,15 @@ EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 EXPERIMENT_HDF5_FILES = [
     ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all"),
     ("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all"),
-    ("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
+   # ("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
 ]
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
 BENCHMARK_HDF5_FILES = [
-    ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
+   # ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
     ("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
-    ("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
+    #("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
 ]
 
 # Network visualization configuration (e.g., '11' for network_viz_11.yaml)
@@ -249,6 +249,93 @@ def _get_variant_numbers(variant_list: list) -> str:
     return ", ".join(numbers)
 
 
+# Row spec used by both the helper and the docx writer:
+# (label, stat_key, format_spec)  where format_spec is one of 'ticks' | 'dimless' | 'pct'
+_LIFETIME_STAT_ROWS = [
+    ("Mean",                        'mean',     'ticks'),
+    ("Median",                      'median',   'ticks'),
+    ("Std Dev",                     'std',      'ticks'),
+    ("Min",                         'min',      'ticks'),
+    ("Max",                         'max',      'ticks'),
+    ("Range",                       'range',    'ticks'),
+    ("IQR (25th–75th percentile)",  'iqr',      'ticks'),
+    ("5th Percentile",              'p5',       'ticks'),
+    ("25th Percentile",             'p25',      'ticks'),
+    ("75th Percentile",             'p75',      'ticks'),
+    ("95th Percentile",             'p95',      'ticks'),
+    ("Skewness",                    'skewness', 'dimless'),
+    ("Kurtosis (excess)",           'kurtosis', 'dimless'),
+    ("Coefficient of Variation",    'cv',       'pct'),
+]
+
+
+def _fmt_stat(value: float, fmt: str) -> str:
+    """Format a single statistic value for a Word table cell."""
+    if fmt == 'ticks':   return f"{value:.2f} ticks"
+    if fmt == 'dimless': return f"{value:.3f}"
+    if fmt == 'pct':     return f"{value:.2f} %"
+    return str(value)
+
+
+def _lifetime_stats_by_group(df_summary: pd.DataFrame) -> dict:
+    """
+    Compute lifetime_ticks summary statistics for every group in df_summary.
+
+    Returns
+    -------
+    dict  {group_name: {stat_key: float}}
+          stat_keys: mean, median, std, min, max, range, iqr,
+                     p5, p25, p75, p95, skewness, kurtosis, cv
+    """
+    result = {}
+    for group_name in df_summary['group'].unique():
+        vals = df_summary.loc[df_summary['group'] == group_name, 'lifetime_ticks'].to_numpy(dtype=float)
+        result[group_name] = {
+            'mean':     vals.mean(),
+            'median':   np.median(vals),
+            'std':      vals.std(),
+            'min':      vals.min(),
+            'max':      vals.max(),
+            'range':    vals.max() - vals.min(),
+            'iqr':      np.percentile(vals, 75) - np.percentile(vals, 25),
+            'p5':       np.percentile(vals, 5),
+            'p25':      np.percentile(vals, 25),
+            'p75':      np.percentile(vals, 75),
+            'p95':      np.percentile(vals, 95),
+            'skewness': float(skew(vals)),
+            'kurtosis': float(kurtosis(vals)),
+            'cv':       (vals.std() / vals.mean()) * 100,
+        }
+    return result
+
+
+def _group_overview_stats(df_summary: pd.DataFrame) -> list[dict]:
+    """
+    Compute per-group overview counts from df_summary.
+
+    Returns a list of dicts (one per group, ordered by appearance in df_summary), each with:
+        group, type, hdf5_filename, n_variants, n_runs, runs_per_variant
+    """
+    # Build filename lookup: group_name -> hdf5 filename string (from user config)
+    _filename_lookup = {name: hdf5 for name, hdf5 in EXPERIMENT_HDF5_FILES + BENCHMARK_HDF5_FILES}
+
+    rows = []
+    for group_name in df_summary['group'].unique():
+        gdf        = df_summary[df_summary['group'] == group_name]
+        n_variants = gdf['variant'].nunique()
+        n_runs     = len(gdf)
+        runs_pv    = n_runs // n_variants if n_variants > 0 else 0
+        rows.append({
+            'group':           group_name,
+            'type':            gdf['type'].iloc[0],
+            'hdf5_filename':   _filename_lookup.get(group_name, ''),
+            'n_variants':      n_variants,
+            'n_runs':          n_runs,
+            'runs_per_variant': runs_pv,
+        })
+    return rows
+
+
 def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Box plot with jitter overlay per group, summary stats table, and comparative stats table.
@@ -349,7 +436,7 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     ax.set_title(f'{y_label} by Group', fontsize=14)
     ax.grid(True, alpha=0.3, axis='y')
     
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
     output_path = figures_dir / f'groups_{filename_str}.png'
     fig.tight_layout()
@@ -744,7 +831,7 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     }
     
     # Save figure
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
     output_path = figures_dir / f'groups_direction_{filename_str}.png'
     fig.tight_layout()
@@ -952,7 +1039,7 @@ def analyze_heatmaps(heatmap_data: dict, df_groups: pd.DataFrame) -> None:
             group_variants[group].append((source, variant_name))
     
     # For each group and variant, create a figure
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
     
     for group_name in sorted(group_variants.keys()):
@@ -1041,78 +1128,162 @@ def analyze_heatmaps(heatmap_data: dict, df_groups: pd.DataFrame) -> None:
     doc.add_paragraph()
 
 
-def analyze_survival_race(df_data: pd.DataFrame, group_color_map: dict = None) -> None:
+# Unicode superscript digits + minus for scientific p-value formatting
+_SUPERSCRIPT_DIGITS = str.maketrans('0123456789', '\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079')
+
+
+def _fmt_pvalue(p: float) -> str:
+    """Format p-value as decimal (>= 0.001) or scientific notation (< 0.001).
+    p == 0.0 means float underflow; reported as < 10⁻³⁰⁰."""
+    if p == 0.0:
+        return "< 10\u207b\u00b3\u2070\u2070"  # < 10⁻³⁰⁰
+    if p >= 0.001:
+        return f"{p:.4f}"
+    exp = int(np.floor(np.log10(p)))   # e.g. -15
+    mantissa = p / (10.0 ** exp)
+    exp_str = str(abs(exp)).translate(_SUPERSCRIPT_DIGITS)
+    return f"{mantissa:.2f} \u00d7 10\u207b{exp_str}"  # e.g. 2.85 × 10⁻¹⁵
+
+
+def _logrank_pairwise(df_summary: pd.DataFrame) -> list:
     """
-    Plot cumulative survival for each variant.
+    Pairwise log-rank tests: all possible combinations of groups.
+    Applies Holm-Bonferroni correction across all pairs.
+
+    Returns list of dicts sorted by (group_a, group_b):
+        group_a, group_b, chi2, p_raw, p_corrected, rejected (bool)
+    Returns empty list when fewer than two groups exist.
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    loaded = sorted(df_summary['group'].unique())
+    pairs  = list(combinations(loaded, 2))
+    if not pairs:
+        return []
+
+    results = []
+    for a, b in pairs:
+        df_pair     = df_summary[df_summary['group'].isin([a, b])]
+        event_times = np.sort(df_pair['lifetime_ticks'].unique())
+        O = {a: 0.0, b: 0.0}
+        E = {a: 0.0, b: 0.0}
+        V = {a: 0.0, b: 0.0}
+        for t in event_times:
+            n_j = int((df_pair['lifetime_ticks'] >= t).sum())
+            d_j = int((df_pair['lifetime_ticks'] == t).sum())
+            if n_j <= 1 or d_j == 0:
+                continue
+            for g in [a, b]:
+                mask = df_pair['group'] == g
+                n_ij = int((df_pair.loc[mask, 'lifetime_ticks'] >= t).sum())
+                d_ij = int((df_pair.loc[mask, 'lifetime_ticks'] == t).sum())
+                e_ij = n_ij * d_j / n_j
+                O[g] += d_ij
+                E[g] += e_ij
+                V[g] += (n_ij / n_j) * (1.0 - n_ij / n_j) * d_j * (n_j - d_j) / max(n_j - 1, 1)
+        stat  = sum((O[g] - E[g]) ** 2 / V[g] for g in [a, b] if V[g] > 0.0)
+        p_raw = float(chi2_dist.sf(stat, df=1))
+        results.append({'group_a': a, 'group_b': b, 'chi2': stat, 'p_raw': p_raw})
+
+    p_raws = [r['p_raw'] for r in results]
+    rejected, p_corrected, _, _ = multipletests(p_raws, alpha=0.05, method='holm')
+    for r, p_corr, rej in zip(results, p_corrected, rejected):
+        r['p_corrected'] = float(p_corr)
+        r['rejected']    = bool(rej)
+
+    return results
+
+
+def _logrank_test(df_summary: pd.DataFrame) -> dict:
+    """
+    k-sample log-rank test comparing lifetime_ticks distributions across groups.
+    All runs are fully observed (no censoring).
+
+    Returns dict with:
+        chi2, df, p_value, groups (list), observed (dict), expected (dict)
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    groups = list(df_summary['group'].unique())
+    event_times = np.sort(df_summary['lifetime_ticks'].unique())
+
+    O = {g: 0.0 for g in groups}
+    E = {g: 0.0 for g in groups}
+    V = {g: 0.0 for g in groups}
+
+    for t in event_times:
+        n_j = int((df_summary['lifetime_ticks'] >= t).sum())
+        d_j = int((df_summary['lifetime_ticks'] == t).sum())
+        if n_j <= 1 or d_j == 0:
+            continue
+        for g in groups:
+            mask = df_summary['group'] == g
+            n_ij = int((df_summary.loc[mask, 'lifetime_ticks'] >= t).sum())
+            d_ij = int((df_summary.loc[mask, 'lifetime_ticks'] == t).sum())
+            e_ij = n_ij * d_j / n_j
+            O[g] += d_ij
+            E[g] += e_ij
+            V[g] += (n_ij / n_j) * (1.0 - n_ij / n_j) * d_j * (n_j - d_j) / (n_j - 1)
+
+    stat = sum((O[g] - E[g]) ** 2 / V[g] for g in groups if V[g] > 0.0)
+    df_val = len(groups) - 1
+    p_val = float(chi2_dist.sf(stat, df=df_val))
+
+    return {
+        'chi2': stat,
+        'df': df_val,
+        'p_value': p_val,
+        'groups': groups,
+        'observed': O,
+        'expected': E,
+    }
+
+
+def analyze_survival_race(df_summary: pd.DataFrame, group_color_map: dict = None) -> None:
+    """
+    Plot cumulative survival for each (group, variant) pair.
     Each line shows how many runs are still alive at each tick.
-    group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
-    fig, ax = plt.subplots(figsize=(12, 8))
-    
-    # Create unique identifier combining source and variant
-    df_data['unique_variant'] = df_data['source'] + '_' + df_data['variant']
-    
-    # Get all unique groups
-    all_groups = sorted(df_data['group'].unique())
-    
-    # Color mapping by group - built from provided group_color_map or fallback defaults
-    _gcm_sr = group_color_map or {}
-
-    def _color_for_sr(group_name: str) -> str:
-        return _gcm_sr.get(group_name, '#808080')
-
-    color_map = {g: _color_for_sr(g) for g in all_groups}
-    
-    # Z-order mapping: experiments on top of benchmarks
-    _exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
-    _bench_names_sr = [name for name, _ in BENCHMARK_HDF5_FILES]
-    zorder_map = {}
-    for idx, g in enumerate(sorted(all_groups)):
-        if g in _exp_names:
-            zorder_map[g] = 3 + _exp_names.index(g)
-        else:
-            zorder_map[g] = 1 + idx
-    
-    # Plot one line per unique variant
-    for unique_var in sorted(df_data['unique_variant'].unique()):
-        variant_data = df_data[df_data['unique_variant'] == unique_var]
-        survival_times = variant_data['lifetime_ticks'].values
-        group = variant_data['group'].iloc[0]
-        color = color_map.get(group, '#808080')
-        zorder = zorder_map.get(group, 1)
-        
-        # Create tick array from 0 to max lifetime
-        max_tick = int(survival_times.max())
-        ticks = np.arange(0, max_tick + 1)
-        
-        # Count how many runs are still alive at each tick
-        alive_counts = np.array([(survival_times >= t).sum() for t in ticks])
-        
-        # Plot this variant's survival curve with z-order
-        ax.plot(ticks, alive_counts, color=color, zorder=zorder)
-    
-    # Create custom legend for all groups
     from matplotlib.lines import Line2D
-    legend_elements = []
-    for g in all_groups:
-        legend_elements.append(Line2D([0], [0], color=_color_for_sr(g), linewidth=2, label=g))
-    
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    all_groups = list(df_summary['group'].unique())
+    _gcm = group_color_map or {}
+
+    # Z-order: experiments on top
+    _exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
+    zorder_map = {
+        g: (3 + _exp_names.index(g)) if g in _exp_names else 1
+        for g in all_groups
+    }
+
+    for (group_name, variant_id), grp in df_summary.groupby(['group', 'variant']):
+        survival_times = grp['lifetime_ticks'].to_numpy(dtype=float)
+        color  = _gcm.get(group_name, '#808080')
+        zorder = zorder_map.get(group_name, 1)
+        max_tick = int(survival_times.max())
+        ticks  = np.arange(0, max_tick + 1)
+        alive  = np.array([(survival_times >= t).sum() for t in ticks])
+        ax.plot(ticks, alive, color=color, zorder=zorder)
+
+    legend_elements = [
+        Line2D([0], [0], color=_gcm.get(g, '#808080'), linewidth=2, label=g)
+        for g in all_groups
+    ]
     ax.legend(handles=legend_elements, loc='upper right')
-    
     ax.set_xlabel('Ticks')
     ax.set_ylabel('Runs Alive')
     ax.set_title('Survival Race')
     ax.grid(True, alpha=0.3)
-    
-    # Save figure
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
     output_path = figures_dir / 'survival_race.png'
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    
-    # Add to document
+
     doc.add_picture(str(output_path), width=6.5 * 914400)
     doc.add_paragraph()
 
@@ -1170,7 +1341,7 @@ def analyze_wiring(wiring_data: dict, modulation_data: dict, runs_to_show: list,
     panel_labels = panel_labels[:4]
     
     # Create output directory for figures
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
     
     # Determine output filename - use the benchmark name
@@ -1391,300 +1562,268 @@ def load_heatmap_data(experiment_hdf5_path: Path, variant_groups: dict, hdf5_fil
     return heatmap_data
 
 
-def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str, group_color_map: dict = None) -> bool:  
+def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
-    Analyze per-tick metrics (e.g., energy per tick) for different groups.
-    
-    Uses pre-loaded per_tick data from df_all_per_tick.
-    Plots individual run curves with group means and 95% CI bands.
-    Calculates AUC for each run and performs statistical comparison between groups.
-    
-    Args:
-        df_per_tick: Pre-loaded per-tick DataFrame with columns: tick-level metrics, source, variant, group, run_id
-        metric_name: Name of the metric column in per_tick data (e.g., 'energy', 'manhattan_dist')
-        y_label: Label for y-axis in plots
-        filename_str: Base name for output files
-    
-    Returns:
-        True if metric successfully analyzed, False if metric column not found
+    Plot a per-tick metric as two time-series figures and run adaptive statistical tests.
+
+    Steps:
+      1. Silently return if per_tick_available is False or metric column is missing.
+      2. Plot 1: absolute ticks on x-axis: per-group mean line + 95% CI band.
+      3. Adaptive stats on per-run means (calls analyze_per_run).
+      4. Plot 2: normalized % lifetime on x-axis (uses ticks_norm column from df_per_tick):
+         same aggregation as Plot 1 but with x=ticks_norm.
     """
-    
-    # Check if metric column exists in the dataframe
+    if not per_tick_available or df_per_tick is None:
+        return
     if metric_name not in df_per_tick.columns:
-        print(f"Warning: Metric '{metric_name}' not found in per_tick data columns")
-        return False
-    
-    # Build per_tick_auc_data from the dataframe
-    per_tick_auc_data = []  # List of dicts: {run_id, source, variant, group, auc}
-    
-    # Group by (source, variant, run_id) to extract curves and calculate AUC
-    # This avoids collisions when same run_id appears in different sources/variants
-    for (source, variant, run_id), group_data in df_per_tick.groupby(['source', 'variant', 'run_id']):
-        # Sort by tick to ensure correct order (if there's a tick column)
-        group_data = group_data.sort_values('tick') if 'tick' in group_data.columns else group_data
-        
-        # Extract metric values
-        metric_values = group_data[metric_name].values
-        ticks = np.arange(len(metric_values))
-        
-        # Calculate AUC using trapezoidal rule
-        auc_value = trapz(metric_values, ticks)
-        
-        # Get group info from first row
-        first_row = group_data.iloc[0]
-        group = first_row['group']
-        
-        per_tick_auc_data.append({
-            'run_id': run_id,
-            'source': source,
-            'variant': variant,
-            'group': group,
-            'auc': auc_value
-        })
-    
-    if len(per_tick_auc_data) == 0:
-        print(f"Warning: No per_tick curves found for metric '{metric_name}'")
-        return False
-    
-    # Create DataFrame of AUC values for statistical analysis
-    df_auc = pd.DataFrame(per_tick_auc_data)
-    
-    # Discover all unique groups in df_auc
-    all_groups = sorted(df_auc['group'].unique())
-    
-    # Create color map dynamically for all groups - built from provided group_color_map
-    _gcm_pt = group_color_map or {}
+        return
 
-    def _color_for_pt(group_name: str) -> str:
-        return _gcm_pt.get(group_name, '#808080')
-
-    color_map = {g: _color_for_pt(g) for g in all_groups}
-    
-    # Create figures directory for output
-    figures_dir = Path(__file__).resolve().parent / 'figures'
+    all_groups = sorted(df_per_tick['group'].unique())
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
-    
-    # ===== SECOND PLOT: Normalized by percentage of lifespan, averaged per variant =====
-    # Create normalized curves where x-axis is % of total lifespan (0-100)
-    # and average curves are created per variant instead of per group
-    
-    normalized_curves = {}  # {(source, variant, run_id): (percent_ticks, metric_values)}
-    
-    # Build normalized data for each run
-    for (source, variant, run_id), group_data in df_per_tick.groupby(['source', 'variant', 'run_id']):
-        group_data = group_data.sort_values('tick') if 'tick' in group_data.columns else group_data
-        metric_values = group_data[metric_name].values
-        
-        # Get lifetime (total ticks) for this run
-        lifetime = len(metric_values)
-        if lifetime == 0:
-            continue
-        
-        # Create normalized x-axis: 0 to 100% of lifespan
-        percent_ticks = np.linspace(0, 100, lifetime)
-        
-        normalized_curves[(source, variant, run_id)] = (percent_ticks, metric_values)
-    
-    # Create color map for variants (group-based color, but each variant gets a line)
-    variant_color_map = {}
-    variant_group_map = {}  # Map (source, variant) -> group for color assignment
-    
-    for group in all_groups:
-        group_data_g = df_auc[df_auc['group'] == group]
-        for _, row in group_data_g[['source', 'variant']].drop_duplicates().iterrows():
-            variant_group_map[(row['source'], row['variant'])] = group
-            variant_color_map[(row['source'], row['variant'])] = color_map.get(group, '#808080')
-    
-    # Plot: per-variant means with CI (no individual runs)
-    fig, ax = plt.subplots(figsize=(14, 8))
-    
-    # Calculate and plot per-variant means with 95% CI
-    all_sv_keys = sorted(variant_color_map.keys())
-    groups_added_to_legend = set()  # Track which groups we've already added to legend
-    
-    for sv_key in all_sv_keys:
-        source_v, variant = sv_key
-        # Collect all normalized curves for this (source, variant)
-        variant_curves = []
-        for (source, var, run_id), (percent_ticks, metric_values) in normalized_curves.items():
-            if source == source_v and var == variant:
-                variant_curves.append((percent_ticks, metric_values))
-        
-        if len(variant_curves) == 0:
-            continue
-        
-        # Interpolate all curves to a common grid (0-100%) for averaging
-        common_percent = np.linspace(0, 100, 100)  # 100 points along 0-100%
-        interpolated_curves = []
-        
-        for percent_ticks, metric_values in variant_curves:
-            # Use linear interpolation to resample each curve to the common grid
-            interp_values = np.interp(common_percent, percent_ticks, metric_values)
-            interpolated_curves.append(interp_values)
-        
-        # Calculate mean and 95% CI
-        interpolated_curves = np.array(interpolated_curves)
-        mean_curve = np.mean(interpolated_curves, axis=0)
-        std_curve = np.std(interpolated_curves, axis=0)
-        n = len(interpolated_curves)
-        sem_curve = std_curve / np.sqrt(n)
-        ci_lower = mean_curve - 1.96 * sem_curve
-        ci_upper = mean_curve + 1.96 * sem_curve
-        
-        color = variant_color_map.get(sv_key, '#808080')
-        group = variant_group_map.get(sv_key, 'Unknown')
-        
-        # Add legend label only on first variant of each group
-        legend_label = group if group not in groups_added_to_legend else None
-        if legend_label:
-            groups_added_to_legend.add(group)
-        
-        # Plot CI as shaded region
-        ax.fill_between(common_percent, ci_lower, ci_upper, color=color, alpha=0.2, zorder=2)
-        
-        # Plot mean curve
-        ax.plot(common_percent, mean_curve, color=color, linewidth=2.5, label=legend_label, zorder=3)
-    
+
+    # ── Plot 1: absolute ticks ─────────────────────────────────────────────────
+    tick_stats = (
+        df_per_tick.groupby(['group', 'tick'])[metric_name]
+        .agg(['mean', 'std', 'count'])
+        .reset_index()
+    )
+    tick_stats['sem'] = tick_stats['std'] / np.sqrt(tick_stats['count'])
+    tick_stats['ci_lo'] = tick_stats['mean'] - 1.96 * tick_stats['sem']
+    tick_stats['ci_hi'] = tick_stats['mean'] + 1.96 * tick_stats['sem']
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for g in all_groups:
+        gdf = tick_stats[tick_stats['group'] == g].sort_values('tick')
+        color = COLOR_MAP.get(g, '#808080')
+        ax.plot(gdf['tick'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=3)
+        ax.fill_between(gdf['tick'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=2)
+    ax.set_xlabel('Tick', fontsize=12)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} over Time', fontsize=14)
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    out_abs = figures_dir / f'ticks_abs_{filename_str}.png'
+    fig.tight_layout()
+    fig.savefig(out_abs, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    doc.add_picture(str(out_abs), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── Stats: per-run mean → adaptive tests via analyze_per_run ──────────────
+    df_run_means = (
+        df_per_tick.groupby(['group', 'variant', 'run'])[metric_name]
+        .mean()
+        .reset_index()
+    )
+    analyze_per_run(df_run_means, metric_name, f'Mean {y_label} per Run',
+                    f'{filename_str}_stats', group_color_map=group_color_map)
+
+    # ── Plot 2: normalised % lifetime (ticks_norm column) ─────────────────────
+    norm_stats = (
+        df_per_tick.groupby(['group', 'ticks_norm'])[metric_name]
+        .agg(['mean', 'std', 'count'])
+        .reset_index()
+    )
+    norm_stats['sem'] = norm_stats['std'] / np.sqrt(norm_stats['count'])
+    norm_stats['ci_lo'] = norm_stats['mean'] - 1.96 * norm_stats['sem']
+    norm_stats['ci_hi'] = norm_stats['mean'] + 1.96 * norm_stats['sem']
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for g in all_groups:
+        gdf = norm_stats[norm_stats['group'] == g].sort_values('ticks_norm')
+        color = COLOR_MAP.get(g, '#808080')
+        ax.plot(gdf['ticks_norm'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=3)
+        ax.fill_between(gdf['ticks_norm'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=2)
     ax.set_xlabel('Percentage of Lifespan (%)', fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
-    ax.set_title(f'{y_label} across Lifespan per Variant', fontsize=14)
+    ax.set_title(f'{y_label} across Lifespan (normalized)', fontsize=14)
     ax.set_xlim(0, 100)
     ax.legend(loc='best', fontsize=11)
     ax.grid(True, alpha=0.3, axis='y')
-    
-    # Save figure
-    output_path_normalized = figures_dir / f'ticks_normalized_{filename_str}.png'
+
+    out_norm = figures_dir / f'ticks_norm_{filename_str}.png'
     fig.tight_layout()
-    fig.savefig(output_path_normalized, dpi=150, bbox_inches='tight')
+    fig.savefig(out_norm, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    
-    # Add to document
-    doc.add_picture(str(output_path_normalized), width=6.5 * 914400)
+
+    doc.add_picture(str(out_norm), width=6.5 * 914400)
     doc.add_paragraph()
-    
-    # Perform statistical analysis on AUC values using analyze_per_run
-    if len(df_auc) > 0:
-        analyze_per_run(df_auc, 'auc', f'Area Under Curve (AUC) of {y_label}', filename_str, group_color_map=group_color_map)
-    
-    return True
 
 
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
 
-print("\n=== SECTION C: DATA LOADING ===")
+# --- Column subsets loaded from each dataset ---
+_SUMMARY_COLS  = ['run_id', 'lifetime_ticks', 'foods', 'distance', 'final_energy']
+_PER_TICK_COLS = ['tick', 'food_sensed_N', 'food_sensed_E', 'food_sensed_S', 'food_sensed_W',
+                  'movement', 'food_consumed', 'energy', 'manhattan_dist', 'decision_made']
 
-# Load primary experiment (first entry in EXPERIMENT_HDF5_FILES)
-primary_exp_name, primary_exp_hdf5 = EXPERIMENT_HDF5_FILES[0]
-print(f"Loading primary experiment '{primary_exp_name}' from: {primary_exp_hdf5}")
-experiment_hdf5_path = _find_hdf5_file(primary_exp_hdf5)
-df_experiment = _load_hdf5_variants_to_dataframe(experiment_hdf5_path, source_label="experiment")
-print(f"  Loaded {len(df_experiment)} runs across {df_experiment['variant'].nunique()} variants")
+# --- Availability flags (determined by probing the first file) ---
+per_tick_available = False
+heatmap_available  = False
 
-# Load additional experiments (all entries after the first)
-additional_experiment_dfs = []
-additional_experiment_paths = {}  # {exp_name: Path}
-for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
-    print(f"Loading additional experiment '{exp_name}' from: {exp_hdf5}")
-    exp_path = _find_hdf5_file(exp_hdf5)
-    df_exp = _load_hdf5_variants_to_dataframe(exp_path, source_label=exp_name)
-    print(f"  Loaded {len(df_exp)} runs across {df_exp['variant'].nunique()} variants")
-    additional_experiment_dfs.append(df_exp)
-    additional_experiment_paths[exp_name] = exp_path
+# --- Accumulators (assembled into final structures after all files are loaded) ---
+_summary_parts  = []   # list[pd.DataFrame]  -->  df_summary
+_per_tick_parts = []   # list[pd.DataFrame]  -->  df_per_tick
+modulation_data = {}   # {group_name: {variant_id (int): np.ndarray}}
+wiring_data     = {}   # {group_name: {variant_id (int): np.ndarray}}
+heatmap_data    = {}   # {group_name: {variant_id (int): {run_id (int): np.ndarray}}}
 
-df_all = df_experiment.copy()
-if additional_experiment_dfs:
-    df_all = pd.concat([df_all] + additional_experiment_dfs, ignore_index=True)
 
-print("Experiment data loaded.")
-print("Loading benchmark data...")
+def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
+                       check_availability: bool = False) -> None:
+    """
+    Load all data from one HDF5 file and append to the module-level accumulators.
 
-# Load benchmark data if specified
-df_benchmarks = None
-if BENCHMARK_HDF5_FILES:
-    benchmark_dfs = []
-    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
-        print(f"Loading benchmark '{benchmark_name}' from: {benchmark_hdf5}")
-        benchmark_path = _find_hdf5_file(benchmark_hdf5)
-        df_bench = _load_hdf5_variants_to_dataframe(benchmark_path, source_label=benchmark_name)
-        print(f"  Loaded {len(df_bench)} runs across {df_bench['variant'].nunique()} variants")
-        benchmark_dfs.append(df_bench)
-    
-    df_benchmarks = pd.concat(benchmark_dfs, ignore_index=True)
-    df_all = pd.concat([df_all, df_benchmarks], ignore_index=True)
-    print(f"Combined dataset: {len(df_all)} total runs")
-    print("Benchmark data loaded.")
+    Always loads dataset a) summary for every variant.
+    If check_availability=True, probes variant_0/run_0 for d) per_tick and e) staying
+    and sets the module-level per_tick_available / heatmap_available flags accordingly.
+    For subsequent files those flags are already set; raises loudly if expected data is absent.
+
+    Heatmaps are limited to the first 5 variants per group to reduce memory usage.
+
+    Args:
+        hdf5_path:          Absolute path to the .h5 file.
+        group_name:         Human-readable group label (from user config at the top).
+        data_type:          'experiment' or 'benchmark'.
+        check_availability: True only for the very first file loaded.
+    """
+    global per_tick_available, heatmap_available
+
+    print(f"  Loading: {hdf5_path.name}")
+
+    with h5py.File(hdf5_path, 'r') as f:
+        variant_keys = sorted([k for k in f.keys() if k.startswith('variant_')])
+        if not variant_keys:
+            raise RuntimeError(f"No variant_ groups found in {hdf5_path}")
+
+        # --- 1.2  Probe d) and e) availability (first file only) ---
+        if check_availability:
+            _probe_vg   = f[variant_keys[0]]
+            _probe_runs = sorted([k for k in _probe_vg.keys() if k.startswith('run_')])
+            if _probe_runs:
+                _probe_run      = _probe_vg[_probe_runs[0]]
+                per_tick_available = 'per_tick' in _probe_run
+                heatmap_available  = 'staying'  in _probe_run
+            # if no run_ subfolders exist, both flags remain False
+            print(f"    Availability probe  ->  per_tick={per_tick_available},  heatmap={heatmap_available}")
+
+        modulation_data[group_name] = {}
+        wiring_data[group_name]     = {}
+        if heatmap_available:
+            heatmap_data[group_name] = {}
+
+        # --- Limit heatmap loading to first 5 variants per group ---
+        heatmap_variant_count = 0
+
+        for variant_key in variant_keys:
+            variant_id = int(variant_key.split('_')[1])
+            vg = f[variant_key]
+
+            # --- 1.1  Load dataset a) summary ---
+            df_var = pd.DataFrame(vg['summary'][:])[_SUMMARY_COLS]
+            df_var.insert(0, 'variant', variant_id)
+            df_var.insert(0, 'type',    data_type)
+            df_var.insert(0, 'group',   group_name)
+            _summary_parts.append(df_var)
+
+            # --- 1.1b  Load dataset b) modulation and c) wiring ---
+            modulation_data[group_name][variant_id] = vg['modulation'][:]
+            wiring_data[group_name][variant_id]     = vg['wiring'][:]
+
+            # Check if we should load heatmap for this variant (limit to first 5)
+            load_heatmap_for_this_variant = heatmap_available and heatmap_variant_count < 5
+
+            # --- 1.3 / 1.4  Load d) per_tick and/or e) staying ---
+            if per_tick_available or load_heatmap_for_this_variant:
+                run_keys = sorted([k for k in vg.keys() if k.startswith('run_')])
+                if not run_keys:
+                    raise RuntimeError(
+                        f"per_tick/heatmap data expected (flags are set) but no run_ subfolders "
+                        f"found in  {hdf5_path.name}/{variant_key}"
+                    )
+
+                if load_heatmap_for_this_variant:
+                    heatmap_data[group_name][variant_id] = {}
+                    heatmap_variant_count += 1
+
+                for run_key in run_keys:
+                    run_id = int(run_key.split('_')[1])
+                    rg     = vg[run_key]
+
+                    if per_tick_available:
+                        if 'per_tick' not in rg:
+                            raise RuntimeError(
+                                f"per_tick expected but missing in "
+                                f"{hdf5_path.name}/{variant_key}/{run_key}"
+                            )
+                        df_tick = pd.DataFrame(rg['per_tick'][:])[_PER_TICK_COLS]
+                        df_tick.insert(0, 'run',     run_id)
+                        df_tick.insert(0, 'variant', variant_id)
+                        df_tick.insert(0, 'type',    data_type)
+                        df_tick.insert(0, 'group',   group_name)
+                        _per_tick_parts.append(df_tick)
+
+                    if load_heatmap_for_this_variant:
+                        if 'staying' not in rg:
+                            raise RuntimeError(
+                                f"staying expected but missing in "
+                                f"{hdf5_path.name}/{variant_key}/{run_key}"
+                            )
+                        heatmap_data[group_name][variant_id][run_id] = rg['staying'][:]
+
+    print(f"    Done: {len(variant_keys)} variants.")
+
+
+# --- Step 1: First experiment file — probes for d/e availability ---
+_first_exp_name, _first_exp_hdf5 = EXPERIMENT_HDF5_FILES[0]
+print(f"Loading first experiment '{_first_exp_name}' (availability probe)...")
+_process_hdf5_file(_find_hdf5_file(_first_exp_hdf5), _first_exp_name, 'experiment',
+                   check_availability=True)
+
+# --- Step 2: Remaining experiment files ---
+for _exp_name, _exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
+    print(f"Loading experiment '{_exp_name}'...")
+    _process_hdf5_file(_find_hdf5_file(_exp_hdf5), _exp_name, 'experiment')
+
+# --- Step 3: Benchmark files ---
+for _bench_name, _bench_hdf5 in BENCHMARK_HDF5_FILES:
+    print(f"Loading benchmark '{_bench_name}'...")
+    _process_hdf5_file(_find_hdf5_file(_bench_hdf5), _bench_name, 'benchmark')
+
+# --- Assemble final data structures ---
+df_summary = pd.concat(_summary_parts, ignore_index=True)
+print(f"\ndf_summary:    {len(df_summary)} rows  |  groups: {df_summary['group'].unique().tolist()}")
+
+_n_modulation = sum(len(v) for v in modulation_data.values())
+_n_wiring     = sum(len(v) for v in wiring_data.values())
+print(f"modulation_data: {len(modulation_data)} groups  |  {_n_modulation} total arrays")
+print(f"wiring_data:     {len(wiring_data)} groups  |  {_n_wiring} total arrays")
+
+if per_tick_available:
+    df_per_tick = pd.concat(_per_tick_parts, ignore_index=True)
+    # Normalised tick position per run: tick 0 → 0 %, last tick → 100 %
+    _max_tick_per_run = df_per_tick.groupby(['group', 'variant', 'run'])['tick'].transform('max')
+    df_per_tick['ticks_norm'] = (df_per_tick['tick'] / _max_tick_per_run * 100).round(1)
+    print(f"df_per_tick:  {len(df_per_tick)} rows")
 else:
-    print(f"Dataset (experiments only): {len(df_all)} total runs")
-    print("No benchmark data.")
+    df_per_tick = None
+    print("df_per_tick:  not available")
 
-# Wiring data: {source: {variant: {run: data}}}
-print("Loading wiring data...")
-wiring_data_experiment = {}
-modulation_data_experiment = {}
+if heatmap_available:
+    _n_heatmaps = sum(
+        len(runs) for variants in heatmap_data.values() for runs in variants.values()
+    )
+    print(f"heatmap_data: {len(heatmap_data)} groups  |  {_n_heatmaps} total heatmaps")
+else:
+    print("heatmap_data: not available")
 
-with h5py.File(experiment_hdf5_path, 'r') as f:
-    variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
-    for variant_name in variant_names:
-        variant_group = f[variant_name]
-        if 'wiring' in variant_group:
-            wiring_data_experiment[variant_name] = variant_group['wiring'][:]
-        if 'modulation' in variant_group:
-            modulation_data_experiment[variant_name] = variant_group['modulation'][:]
 
-print("Experiment wiring data loaded.")
-print("Loading additional experiment wiring data...")
 
-# Wiring data for additional experiments
-wiring_data_additional = {}    # {exp_name: {variant: array}}
-modulation_data_additional = {}  # {exp_name: {variant: array}}
-for exp_name, exp_path in additional_experiment_paths.items():
-    wiring_data_additional[exp_name] = {}
-    modulation_data_additional[exp_name] = {}
-    with h5py.File(exp_path, 'r') as f:
-        variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
-        for variant_name in variant_names:
-            variant_group = f[variant_name]
-            if 'wiring' in variant_group:
-                wiring_data_additional[exp_name][variant_name] = variant_group['wiring'][:]
-            if 'modulation' in variant_group:
-                modulation_data_additional[exp_name][variant_name] = variant_group['modulation'][:]
-
-print("Additional experiment wiring data loaded.")
-print("Loading benchmark wiring data...")
-
-# Wiring data for benchmarks
-wiring_data_benchmarks = {}
-modulation_data_benchmarks = {}
-
-if BENCHMARK_HDF5_FILES:
-    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
-        benchmark_path = _find_hdf5_file(benchmark_hdf5)
-        wiring_data_benchmarks[benchmark_name] = {}
-        modulation_data_benchmarks[benchmark_name] = {}
-        
-        with h5py.File(benchmark_path, 'r') as f:
-            variant_names = sorted([key for key in f.keys() if key.startswith('variant_')])
-            for variant_name in variant_names:
-                variant_group = f[variant_name]
-                if 'wiring' in variant_group:
-                    wiring_data_benchmarks[benchmark_name][variant_name] = variant_group['wiring'][:]
-                if 'modulation' in variant_group:
-                    modulation_data_benchmarks[benchmark_name][variant_name] = variant_group['modulation'][:]
-
-print("Benchmark wiring data loaded.")
-print("All HDF5 data loaded.")
-print("=== END SECTION C ===")
-
-# HDF5 files dictionary for per-tick analyses
-hdf5_files_dict = {'experiment': experiment_hdf5_path}
-for exp_name, exp_path in additional_experiment_paths.items():
-    hdf5_files_dict[exp_name] = exp_path
-if BENCHMARK_HDF5_FILES:
-    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
-        benchmark_path = _find_hdf5_file(benchmark_hdf5)
-        hdf5_files_dict[benchmark_name] = benchmark_path
 
 # ==================================================================================================================================================
 # Build COLOR_MAP: maps every group name to a hex color string.
@@ -1725,7 +1864,7 @@ for _i, _bench_name in enumerate(_benchmark_names):
         _r, _g, _b = _colorsys.hls_to_rgb(_h, _l, _s)
         COLOR_MAP[_bench_name] = f'#{int(_r*255):02x}{int(_g*255):02x}{int(_b*255):02x}'
 
-print(f"COLOR_MAP built: {COLOR_MAP}")
+
 
 
 # ==================================================================================================================================================
@@ -1734,60 +1873,38 @@ print(f"COLOR_MAP built: {COLOR_MAP}")
 
 print("\n=== SECTION D: ANALYSIS ===")
 print("Creating document...")
-
 from docx import Document
 
 doc = Document()
 doc.add_heading(f"Analysis Report: {EXPERIMENT_NAME}", level=0)
-print("Document created.")
+
 
 #region 1 Experiment Information
 
-print("Analyzing experiment information...")
 doc.add_heading("1. Experiment Information", level=1)
 
-# Experiment overview — primary experiment
-doc.add_paragraph(f"{primary_exp_name} (Primary Experiment):", style="Heading 3")
-experiment_n_variants = df_experiment['variant'].nunique()
-experiment_total_runs = len(df_experiment)
-experiment_runs_per_variant = experiment_total_runs // experiment_n_variants if experiment_n_variants > 0 else 0
-doc.add_paragraph(f"Dataset: {primary_exp_hdf5}.h5")
-doc.add_paragraph(f"Number of variants: {experiment_n_variants}")
-doc.add_paragraph(f"Runs per variant: {experiment_runs_per_variant}")
-doc.add_paragraph(f"Total data points: {experiment_total_runs}")
-
-# Additional experiments
-for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
-    doc.add_paragraph(f"{exp_name}:", style="Heading 3")
-    df_exp_info = df_all[df_all['source'] == exp_name]
-    exp_n_variants = df_exp_info['variant'].nunique()
-    exp_total_runs = len(df_exp_info)
-    exp_runs_per_variant = exp_total_runs // exp_n_variants if exp_n_variants > 0 else 0
-    doc.add_paragraph(f"Dataset: {exp_hdf5}.h5")
-    doc.add_paragraph(f"Number of variants: {exp_n_variants}")
-    doc.add_paragraph(f"Runs per variant: {exp_runs_per_variant}")
-    doc.add_paragraph(f"Total data points: {exp_total_runs}")
-
-
-
-if df_benchmarks is not None and len(df_benchmarks) > 0:
-    for benchmark_name, benchmark_hdf5 in BENCHMARK_HDF5_FILES:
-        doc.add_paragraph(f"{benchmark_name}:", style="Heading 3")
-        benchmark_df = df_benchmarks[df_benchmarks['source'] == benchmark_name]
-        benchmark_n_variants = benchmark_df['variant'].nunique()
-        benchmark_total_runs = len(benchmark_df)
-        benchmark_runs_per_variant = benchmark_total_runs // benchmark_n_variants if benchmark_n_variants > 0 else 0
-        doc.add_paragraph(f"Dataset: {benchmark_hdf5}.h5")
-        doc.add_paragraph(f"Number of variants: {benchmark_n_variants}")
-        doc.add_paragraph(f"Runs per variant: {benchmark_runs_per_variant}")
-        doc.add_paragraph(f"Total data points: {benchmark_total_runs}")
-else:
-    doc.add_paragraph("No benchmark data loaded.")
+doc.add_heading("1.1. Data overview", level=2)
+# Overview table: one row per group
+_overview = _group_overview_stats(df_summary)
+table = doc.add_table(rows=len(_overview) + 1, cols=5)
+table.style = "Light Grid Accent 1"
+_hdr = table.rows[0].cells
+_hdr[0].text = "Group"
+_hdr[1].text = "Type"
+_hdr[2].text = "Dataset"
+_hdr[3].text = "Variants"
+_hdr[4].text = "Runs (total / per variant)"
+for _row_data, _row in zip(_overview, table.rows[1:]):
+    _row.cells[0].text = _row_data['group']
+    _row.cells[1].text = _row_data['type']
+    _row.cells[2].text = f"{_row_data['hdf5_filename']}.h5"
+    _row.cells[3].text = str(_row_data['n_variants'])
+    _row.cells[4].text = f"{_row_data['n_runs']} / {_row_data['runs_per_variant']}"
 
 doc.add_paragraph()
 
 # Add statistical methodology section
-doc.add_heading("Statistical Analysis Methodology", level=2)
+doc.add_heading("1.2.Statistical Analysis Methodology", level=2)
 methodology_text = """
 This report employs adaptive statistical analysis based on data distribution and group count. Four analytical scenarios are used:
 
@@ -1828,594 +1945,373 @@ For metrics tracked per simulation tick (e.g., energy), per-tick data are analyz
    • AUC values are then compared across groups using the same adaptive statistical framework as above (Welch's t-test/Mann-Whitney U for 2 groups, ANOVA/Kruskal-Wallis for >2 groups)
    • This approach is conservative and avoids temporal autocorrelation issues by summarizing the time-series into a single magnitude metric
    • Visualizations show individual run curves (low opacity) overlaid with group mean curves (bold) and 95% confidence bands (shaded)
+
+SURVIVAL CURVES
+
+All groups' survival distributions are compared using the log-rank test:
+   • Omnibus Test: Log-rank test (rank-based non-parametric test comparing survival distributions)
+   • Post-hoc Pairwise Test: Pairwise log-rank tests (all group pairs compared)
+   • Multiple Comparisons Correction: Holm–Bonferroni (sequential adjustment of p-value thresholds)
+   • Post-hoc Effect Size: χ² per pair (interpretation depends on degrees of freedom and sample sizes)
+   • Significance threshold: p < 0.05 (omnibus and post-hoc)
+   • Assumptions: All data fully observed with no censoring; does not assume normality or constant hazards
 """
 doc.add_paragraph(methodology_text)
 
 doc.add_paragraph()
 
-#region 1.1 Overview Variants
+doc.add_heading("1.3. Descriptive Statistics per Group", level=2)
 
-doc.add_heading("1.1. Overview Variants", level=2)
+# One wide table: Statistic | group_0 | group_1 | ...
+_lifetime_stats = _lifetime_stats_by_group(df_summary)
+_groups_ordered = list(df_summary['group'].unique())
 
-# Calculate overview statistics for experiment variants
-df_experiment_data = df_all[df_all['source'] == 'experiment']
-stats_experiment = _calculate_overview_statistics(df_experiment_data['lifetime_ticks'])
-
-# Create statistics table for experiment variants
-stats_labels_and_units = [
-    ("Mean", stats_experiment['mean'], " ticks"),
-    ("Median", stats_experiment['median'], " ticks"),
-    ("Std Dev", stats_experiment['std'], " ticks"),
-    ("Min", stats_experiment['min'], " ticks"),
-    ("Max", stats_experiment['max'], " ticks"),
-    ("Range", stats_experiment['range'], " ticks"),
-    ("IQR (25th-75th percentile)", stats_experiment['iqr'], " ticks"),
-    ("5th Percentile", stats_experiment['p5'], " ticks"),
-    ("25th Percentile", stats_experiment['p25'], " ticks"),
-    ("75th Percentile", stats_experiment['p75'], " ticks"),
-    ("95th Percentile", stats_experiment['p95'], " ticks"),
-    ("Skewness", stats_experiment['skewness'], ""),
-    ("Kurtosis (excess)", stats_experiment['kurtosis'], ""),
-    ("Coefficient of Variation", stats_experiment['cv'], "%"),
-]
-
-# Build table
-table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=2)
+table = doc.add_table(rows=len(_LIFETIME_STAT_ROWS) + 1, cols=len(_groups_ordered) + 1)
 table.style = "Light Grid Accent 1"
+_hdr = table.rows[0].cells
+_hdr[0].text = "Statistic"
+for _ci, _gname in enumerate(_groups_ordered, 1):
+    _hdr[_ci].text = _gname
+for _ri, (label, stat_key, fmt) in enumerate(_LIFETIME_STAT_ROWS, 1):
+    _row = table.rows[_ri].cells
+    _row[0].text = label
+    for _ci, _gname in enumerate(_groups_ordered, 1):
+        _row[_ci].text = _fmt_stat(_lifetime_stats[_gname][stat_key], fmt)
 
-# Header row
-header_cells = table.rows[0].cells
-header_cells[0].text = "Statistic"
-header_cells[1].text = "Value"
+doc.add_paragraph()
 
-# Data rows
-for row_idx, (label, value, unit) in enumerate(stats_labels_and_units, 1):
-    cells = table.rows[row_idx].cells
-    cells[0].text = label
-    if unit == "%":
-        cells[1].text = f"{value:.2f} %"
-    elif label in ["Skewness", "Kurtosis (excess)"]:
-        cells[1].text = f"{value:.3f}"
-    else:
-        cells[1].text = f"{value:.2f}{unit}"
+doc.add_heading("1.4. EA results", level=2)
 
-# Per-variant statistics table
-doc.add_paragraph("Per-Variant Summary (Min, Max, Average across variants):", style="Heading 3")
+doc.add_paragraph("space for EA results here")
 
-per_variant_agg = _calculate_per_variant_statistics(df_experiment_data, 'lifetime_ticks')
-
-# Define statistics to display
-stats_labels_and_units = [
-    ("Mean", 'mean', " ticks"),
-    ("Median", 'median', " ticks"),
-    ("Std Dev", 'std', " ticks"),
-    ("Min", 'min', " ticks"),
-    ("Max", 'max', " ticks"),
-    ("Range", 'range', " ticks"),
-    ("IQR (25th-75th percentile)", 'iqr', " ticks"),
-    ("5th Percentile", 'p5', " ticks"),
-    ("25th Percentile", 'p25', " ticks"),
-    ("75th Percentile", 'p75', " ticks"),
-    ("95th Percentile", 'p95', " ticks"),
-    ("Skewness", 'skewness', ""),
-    ("Kurtosis (excess)", 'kurtosis', ""),
-    ("Coefficient of Variation", 'cv', "%"),
-]
-
-# Build table with 4 columns: Statistic | Min | Max | Average
-table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=4)
-table.style = "Light Grid Accent 1"
-
-# Header row
-header_cells = table.rows[0].cells
-header_cells[0].text = "Statistic"
-header_cells[1].text = "Min (Variant)"
-header_cells[2].text = "Max (Variant)"
-header_cells[3].text = "Average"
-
-# Data rows
-for row_idx, (label, stat_key, unit) in enumerate(stats_labels_and_units, 1):
-    cells = table.rows[row_idx].cells
-    cells[0].text = label
-    
-    min_value, min_variant = per_variant_agg[stat_key]['min']
-    max_value, max_variant = per_variant_agg[stat_key]['max']
-    avg_value = per_variant_agg[stat_key]['avg']
-    
-    # Format min value
-    if unit == "%":
-        cells[1].text = f"{min_value:.2f} % ({min_variant})"
-    elif label in ["Skewness", "Kurtosis (excess)"]:
-        cells[1].text = f"{min_value:.3f} ({min_variant})"
-    else:
-        cells[1].text = f"{min_value:.2f}{unit} ({min_variant})"
-    
-    # Format max value
-    if unit == "%":
-        cells[2].text = f"{max_value:.2f} % ({max_variant})"
-    elif label in ["Skewness", "Kurtosis (excess)"]:
-        cells[2].text = f"{max_value:.3f} ({max_variant})"
-    else:
-        cells[2].text = f"{max_value:.2f}{unit} ({max_variant})"
-    
-    # Format average value
-    if unit == "%":
-        cells[3].text = f"{avg_value:.2f} %"
-    elif label in ["Skewness", "Kurtosis (excess)"]:
-        cells[3].text = f"{avg_value:.3f}"
-    else:
-        cells[3].text = f"{avg_value:.2f}{unit}"
-
-#table with statistics calculated per variant goes here
-
-# Overview statistics for additional experiments
-for exp_name, exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
-    doc.add_paragraph(f"{exp_name}:", style="Heading 3")
-    df_exp_data_add = df_all[df_all['source'] == exp_name]
-    if len(df_exp_data_add) > 0:
-        stats_add = _calculate_overview_statistics(df_exp_data_add['lifetime_ticks'])
-        add_stats_labels = [
-            ("Mean", stats_add['mean'], " ticks"), ("Median", stats_add['median'], " ticks"),
-            ("Std Dev", stats_add['std'], " ticks"), ("Min", stats_add['min'], " ticks"),
-            ("Max", stats_add['max'], " ticks"), ("Coefficient of Variation", stats_add['cv'], "%"),
-        ]
-        tbl_add = doc.add_table(rows=len(add_stats_labels) + 1, cols=2)
-        tbl_add.style = "Light Grid Accent 1"
-        tbl_add.rows[0].cells[0].text = "Statistic"
-        tbl_add.rows[0].cells[1].text = "Value"
-        for _ri, (_lbl, _val, _unit) in enumerate(add_stats_labels, 1):
-            tbl_add.rows[_ri].cells[0].text = _lbl
-            tbl_add.rows[_ri].cells[1].text = f"{_val:.2f}{_unit}" if _unit != "%" else f"{_val:.2f} %"
-
-#endregion # closes 1.1
-
-#region 1.2 Overview Benchmarks
-
-doc.add_heading("1.2. Overview Benchmarks", level=2)
-
-if df_benchmarks is not None and len(df_benchmarks) > 0:
-    # Calculate statistics for each benchmark
-    benchmark_stats_all = {}
-    for benchmark_name, _ in BENCHMARK_HDF5_FILES:
-        df_bench_data = df_all[df_all['source'] == benchmark_name]
-        if len(df_bench_data) > 0:
-            benchmark_stats_all[benchmark_name] = _calculate_overview_statistics(df_bench_data['lifetime_ticks'])
-    
-    if benchmark_stats_all:
-        # Define statistics to display
-        stats_labels_and_units = [
-            ("Mean", 'mean', " ticks"),
-            ("Median", 'median', " ticks"),
-            ("Std Dev", 'std', " ticks"),
-            ("Min", 'min', " ticks"),
-            ("Max", 'max', " ticks"),
-            ("Range", 'range', " ticks"),
-            ("IQR (25th-75th percentile)", 'iqr', " ticks"),
-            ("5th Percentile", 'p5', " ticks"),
-            ("25th Percentile", 'p25', " ticks"),
-            ("75th Percentile", 'p75', " ticks"),
-            ("95th Percentile", 'p95', " ticks"),
-            ("Skewness", 'skewness', ""),
-            ("Kurtosis (excess)", 'kurtosis', ""),
-            ("Coefficient of Variation", 'cv', "%"),
-        ]
-        
-        # Create table with one column per benchmark
-        n_benchmarks = len(benchmark_stats_all)
-        table = doc.add_table(rows=len(stats_labels_and_units) + 1, cols=n_benchmarks + 1)
-        table.style = "Light Grid Accent 1"
-        
-        # Header row: metric name + benchmark names
-        header_cells = table.rows[0].cells
-        header_cells[0].text = "Statistic"
-        for col_idx, benchmark_name in enumerate(sorted(benchmark_stats_all.keys()), 1):
-            header_cells[col_idx].text = benchmark_name
-        
-        # Data rows
-        for row_idx, (label, stat_key, unit) in enumerate(stats_labels_and_units, 1):
-            cells = table.rows[row_idx].cells
-            cells[0].text = label
-            
-            for col_idx, benchmark_name in enumerate(sorted(benchmark_stats_all.keys()), 1):
-                value = benchmark_stats_all[benchmark_name][stat_key]
-                if unit == "%":
-                    cells[col_idx].text = f"{value:.2f} %"
-                elif label in ["Skewness", "Kurtosis (excess)"]:
-                    cells[col_idx].text = f"{value:.3f}"
-                else:
-                    cells[col_idx].text = f"{value:.2f}{unit}"
-
-    # Analyze wiring for each benchmark
-    for benchmark_name, _ in BENCHMARK_HDF5_FILES:
-        if benchmark_name in wiring_data_benchmarks:
-            modulation_dict = modulation_data_benchmarks.get(benchmark_name, {})
-            analyze_wiring(wiring_data_benchmarks[benchmark_name], modulation_dict, RUNS_TO_SHOW_IN_DETAIL, benchmark_name)
-
-    # Analyze wiring for each additional experiment
-    for exp_name in additional_experiment_paths:
-        if exp_name in wiring_data_additional and wiring_data_additional[exp_name]:
-            modulation_dict = modulation_data_additional.get(exp_name, {})
-            analyze_wiring(wiring_data_additional[exp_name], modulation_dict, RUNS_TO_SHOW_IN_DETAIL, exp_name)
-                    
-else:
-    doc.add_paragraph("No benchmark data loaded.")
-
-
-
-#endregion # closes 1.2
 
 #endregion # closes 1
 
-#region 2 Group Overview
+#region 2 Survival
 
-doc.add_heading("2. Group Overview", level=1)
 
-# Assign groups: each source label IS the group name (no successful/unsuccessful split)
-# Primary experiment uses source label 'experiment' -> map to its display name
-variant_groups = {}  # kept for API compatibility with load_per_tick_data / load_heatmap_data
+doc.add_heading("2. Survival", level=1)
 
-# Build a mapping: for variants in primary experiment, group = primary experiment display name
-_primary_exp_display_name = primary_exp_name
-with h5py.File(experiment_hdf5_path, 'r') as _f:
-    for _vname in sorted([k for k in _f.keys() if k.startswith('variant_')]):
-        variant_groups[_vname] = _primary_exp_display_name
+analyze_survival_race(df_summary, group_color_map=COLOR_MAP)
+_lr = _logrank_test(df_summary)
 
-# Assign group column: source label for additional experiments/benchmarks, display name for primary
-def assign_group(row):
-    if row['source'] == 'experiment':
-        return _primary_exp_display_name
-    else:
-        return row['source']  # Additional experiments and benchmarks keep their source name as group
-
-df_all['group'] = df_all.apply(assign_group, axis=1)
-
-# Make df_all immutable to prevent accidental modifications
-df_all.flags.writeable = False
-
-# Add summary to document: group = source overview
-doc.add_paragraph("Groups correspond directly to data sources (no successful/unsuccessful split).")
-table = doc.add_table(rows=1, cols=3)
-table.style = "Light Grid Accent 1"
-header_cells = table.rows[0].cells
-header_cells[0].text = "Group"
-header_cells[1].text = "No. Variants"
-header_cells[2].text = "No. Runs"
-for _grp in sorted(df_all['group'].unique()):
-    _grp_df = df_all[df_all['group'] == _grp]
-    _row = table.add_row().cells
-    _row[0].text = _grp
-    _row[1].text = str(_grp_df['variant'].nunique())
-    _row[2].text = str(len(_grp_df))
+# Omnibus: observed vs. expected table
+doc.add_heading("Omnibus", level=3)
+_lr_table = doc.add_table(rows=len(_lr['groups']) + 1, cols=4)
+_lr_table.style = "Light Grid Accent 1"
+_lr_hdr = _lr_table.rows[0].cells
+_lr_hdr[0].text = "Group"
+_lr_hdr[1].text = "Observed deaths"
+_lr_hdr[2].text = "Expected deaths"
+_lr_hdr[3].text = "(O - E) / E"
+for _ri, _gname in enumerate(_lr['groups'], 1):
+    _o = _lr['observed'][_gname]
+    _e = _lr['expected'][_gname]
+    _r = _lr_table.rows[_ri].cells
+    _r[0].text = _gname
+    _r[1].text = f"{_o:.0f}"
+    _r[2].text = f"{_e:.2f}"
+    _r[3].text = f"{(_o - _e) / _e * 100:.2f} %"
 
 doc.add_paragraph()
-analyze_survival_race(df_all, group_color_map=COLOR_MAP)
+_sig_omni = "significant" if _lr['p_value'] < 0.05 else "not significant"
+doc.add_paragraph(
+    f"Omnibus log-rank test: \u03c7\u00b2({_lr['df']}) = {_lr['chi2']:.3f}, "
+    f"p = {_fmt_pvalue(_lr['p_value'])}. The difference between survival curves is {_sig_omni} "
+    f"at \u03b1 = 0.05."
+)
+
+
+# Pairwise (all group combinations, Holm-Bonferroni corrected)
+_lr_pairs = _logrank_pairwise(df_summary)
+if _lr_pairs:
+    doc.add_heading("Pairwise Comparisons (Holm-Bonferroni corrected)", level=3)
+    _pw_table = doc.add_table(rows=len(_lr_pairs) + 1, cols=5)
+    _pw_table.style = "Light Grid Accent 1"
+    _pw_hdr = _pw_table.rows[0].cells
+    _pw_hdr[0].text = "Group A"
+    _pw_hdr[1].text = "Group B"
+    _pw_hdr[2].text = "\u03c7\u00b2"
+    _pw_hdr[3].text = "p (raw)"
+    _pw_hdr[4].text = "p (corrected)"
+    for _ri, _pw in enumerate(_lr_pairs, 1):
+        _r = _pw_table.rows[_ri].cells
+        _r[0].text = _pw['group_a']
+        _r[1].text = _pw['group_b']
+        _r[2].text = f"{_pw['chi2']:.3f}"
+        _r[3].text = _fmt_pvalue(_pw['p_raw'])
+        _r[4].text = _fmt_pvalue(_pw['p_corrected']) + (" *" if _pw['rejected'] else "")
+    doc.add_paragraph()
+    print(f"  Pairwise: {len(_lr_pairs)} pair(s) tested with Holm-Bonferroni correction.")
+
 doc.add_paragraph()
 
-# Analyze wiring for the first variant of the primary experiment
-print("Analyzing wiring for primary experiment variants...")
-_first_primary_variant = sorted(variant_groups.keys())[0] if variant_groups else None
-if _first_primary_variant and _first_primary_variant in wiring_data_experiment:
-    wiring_dict_primary = {_first_primary_variant: wiring_data_experiment[_first_primary_variant]}
-    modulation_dict_primary = {_first_primary_variant: modulation_data_experiment.get(_first_primary_variant, np.array([]))}
-    analyze_wiring(wiring_dict_primary, modulation_dict_primary, RUNS_TO_SHOW_IN_DETAIL,
-                   f"{primary_exp_name} - {_first_primary_variant}")
-print("Wiring analysis for primary experiment done.")
 
-# ==================================================================================================================================================
-# Check if per_tick data is available and load it
-# ==================================================================================================================================================
+analyze_per_run(df_summary, 'lifetime_ticks', 'Survival Time [ticks]', 'lifetime', group_color_map=COLOR_MAP)
 
-print("Checking for per-tick data...")
-per_tick_included = False
+analyze_per_tick_metric(df_per_tick, 'energy', 'Energy [units]', 'energy', group_color_map=COLOR_MAP)
 
-# Check if per_tick data exists in the primary experiment file
-try:
-    with h5py.File(experiment_hdf5_path, 'r') as f:
-        _check_variants = sorted([k for k in f.keys() if k.startswith('variant_')])
-        if _check_variants:
-            _cv = _check_variants[0]
-            _runs = sorted([k for k in f[_cv].keys() if k.startswith('run_')])
-            if _runs and 'per_tick' in f[_cv][_runs[0]]:
-                per_tick_included = True
-except Exception:
-    per_tick_included = False
+#endregion closes 2
 
-# Load per_tick data if available
-if per_tick_included:
-    print("Loading per-tick data...")
-    try:
-        df_all_per_tick = load_per_tick_data(experiment_hdf5_path, variant_groups, hdf5_files_dict)
-        print("Per-tick data loaded.")
-    except ValueError:
-        per_tick_included = False
-        print("Per-tick data load failed.")
-else:
-    print("No per-tick data available.")
 
-# Load heatmap data if available
-print("Loading heatmap data...")
-try:
-    heatmap_data = load_heatmap_data(experiment_hdf5_path, variant_groups, hdf5_files_dict)
-    print("Heatmap data loaded.")
-except Exception as e:
-    print(f"Warning: Failed to load heatmap data: {e}")
-    heatmap_data = {}
-    print("Heatmap load failed.")
 
-#endregion # closes 2
 
-#region 3 Comparison Experiments vs. Benchmarks
 
-print("\nAnalyzing comparison section...")
-doc.add_heading("3. Comparison Experiments vs. Benchmarks", level=1)
 
-#region 3.1 Survival
 
-print("  Analyzing survival times...")
-doc.add_heading("3.1. Survival", level=2)
-
-analyze_per_run(df_all, 'lifetime_ticks', 'Survival Time [ticks]', 'survival_times', group_color_map=COLOR_MAP)
-print("  Survival analysis done.")
-doc.add_paragraph('Description of survival time differences between groups, statistical test results, and interpretation goes here.', style='Normal')
-doc.add_paragraph()
-
-# Per-tick energy analysis
-if per_tick_included:
-    print("  Analyzing per-tick energy...")
-    analyze_per_tick_metric(df_all_per_tick, 'energy', 'Energy [units]', 'energy', group_color_map=COLOR_MAP)
-    print("  Per-tick energy analysis done.")
-doc.add_paragraph("TBD")
 
 #endregion # closes 3.1
 
-#region 3.2 Food Consumption
+# #region 3.2 Food Consumption
 
-print("  Analyzing food consumption...")
-doc.add_heading("3.2. Food Consumption", level=2)
+# print("  Analyzing food consumption...")
+# doc.add_heading("3.2. Food Consumption", level=2)
 
-analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods', group_color_map=COLOR_MAP)
-print("  Food consumption analysis done.")
+# analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods', group_color_map=COLOR_MAP)
+# print("  Food consumption analysis done.")
 
 
-# Calculate normalized food consumption (foods per tick)
-# Temporarily make df_all writable to add new column
-df_all.flags.writeable = True
-df_all['foods_norm'] = df_all['foods'] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
+# # Calculate normalized food consumption (foods per tick)
+# # Temporarily make df_all writable to add new column
+# df_all.flags.writeable = True
+# df_all['foods_norm'] = df_all['foods'] / df_all['lifetime_ticks']
+# df_all.flags.writeable = False
 
-# Analyze normalized food consumption
-analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm', group_color_map=COLOR_MAP)
+# # Analyze normalized food consumption
+# analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm', group_color_map=COLOR_MAP)
 
-doc.add_paragraph('The food consumption per tick shows, that EA solution don\'t just randomly find food at the end of their lifes and then life another 17 ticks. The random rate to survive would be 1 food / 17 ticks, which equals 0.05 foods/tick. The exact rate at which random surviving variants feed by chance. The hand-wired solution finds food with about double, the EA solutions with more than tripple that frquency. None of the networks have information about the current energy levels.', style='Normal')
+# doc.add_paragraph('The food consumption per tick shows, that EA solution don\'t just randomly find food at the end of their lifes and then life another 17 ticks. The random rate to survive would be 1 food / 17 ticks, which equals 0.05 foods/tick. The exact rate at which random surviving variants feed by chance. The hand-wired solution finds food with about double, the EA solutions with more than tripple that frquency. None of the networks have information about the current energy levels.', style='Normal')
 
-# Food sensing per direction (from per-tick data)
-if per_tick_included and len(df_all_per_tick) > 0:
-    print("  Aggregating food sensing by direction from per-tick data...")
-    # Check which direction columns exist in per-tick data
-    per_tick_cols = df_all_per_tick.columns.tolist()
-    # Map short direction names (N/E/S/W) to long names (north/east/south/west)
-    direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west'}
-    available_directions_pt = []
-    for short_dir, long_dir in direction_map.items():
-        col_name = f"food_sensed_{short_dir}"
-        if col_name in per_tick_cols:
-            available_directions_pt.append((short_dir, long_dir))
+# # Food sensing per direction (from per-tick data)
+# if per_tick_included and len(df_all_per_tick) > 0:
+#     print("  Aggregating food sensing by direction from per-tick data...")
+#     # Check which direction columns exist in per-tick data
+#     per_tick_cols = df_all_per_tick.columns.tolist()
+#     # Map short direction names (N/E/S/W) to long names (north/east/south/west)
+#     direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west'}
+#     available_directions_pt = []
+#     for short_dir, long_dir in direction_map.items():
+#         col_name = f"food_sensed_{short_dir}"
+#         if col_name in per_tick_cols:
+#             available_directions_pt.append((short_dir, long_dir))
     
-    if available_directions_pt:
-        # Aggregate per_tick food_sensed by direction, per run
-        for short_dir, long_dir in available_directions_pt:
-            col_name = f"food_sensed_{short_dir}"
-            # Sum across all ticks for each (source, variant, run_id)
-            agg_data = df_all_per_tick.groupby(['source', 'variant', 'run_id'])[col_name].sum().reset_index()
-            agg_data.rename(columns={col_name: f'food_sensed_sum_{long_dir}'}, inplace=True)
+#     if available_directions_pt:
+#         # Aggregate per_tick food_sensed by direction, per run
+#         for short_dir, long_dir in available_directions_pt:
+#             col_name = f"food_sensed_{short_dir}"
+#             # Sum across all ticks for each (source, variant, run_id)
+#             agg_data = df_all_per_tick.groupby(['source', 'variant', 'run_id'])[col_name].sum().reset_index()
+#             agg_data.rename(columns={col_name: f'food_sensed_sum_{long_dir}'}, inplace=True)
             
-            # Merge back into df_all
-            df_all.flags.writeable = True
-            # Merge on source, variant, run_id (which are the index keys in df_all)
-            df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
-            # Normalize by lifetime_ticks
-            df_all[f'food_sensed_norm_{long_dir}'] = df_all[f'food_sensed_sum_{long_dir}'] / df_all['lifetime_ticks']
-            df_all.flags.writeable = False
+#             # Merge back into df_all
+#             df_all.flags.writeable = True
+#             # Merge on source, variant, run_id (which are the index keys in df_all)
+#             df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
+#             # Normalize by lifetime_ticks
+#             df_all[f'food_sensed_norm_{long_dir}'] = df_all[f'food_sensed_sum_{long_dir}'] / df_all['lifetime_ticks']
+#             df_all.flags.writeable = False
         
-        # Analyze food sensing per direction
-        print("  Analyzing food sensing by direction...")
-        analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
-        print("  Food sensing analysis done.")
-    else:
-        print("  No direction-specific food_sensed columns found in per-tick data.")
-        doc.add_paragraph("TBD - Food sensing by direction data not available")
-else:
-    print("  Per-tick data not available for food sensing direction analysis.")
-    doc.add_paragraph("TBD - Per-tick data required for direction analysis")
+#         # Analyze food sensing per direction
+#         print("  Analyzing food sensing by direction...")
+#         analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
+#         print("  Food sensing analysis done.")
+#     else:
+#         print("  No direction-specific food_sensed columns found in per-tick data.")
+#         doc.add_paragraph("TBD - Food sensing by direction data not available")
+# else:
+#     print("  Per-tick data not available for food sensing direction analysis.")
+#     doc.add_paragraph("TBD - Per-tick data required for direction analysis")
 
-doc.add_paragraph()
+# doc.add_paragraph()
 
-#endregion # closes 3.2
+# #endregion # closes 3.2
 
-#region 3.3 Movement
+# #region 3.3 Movement
 
-print("  Analyzing movement...")
-doc.add_heading("3.3. Movement", level=2)
+# print("  Analyzing movement...")
+# doc.add_heading("3.3. Movement", level=2)
 
-#region 3.3.1 Movements Made
+# #region 3.3.1 Movements Made
 
-doc.add_heading("3.3.1. Movements Made", level=3)
+# doc.add_heading("3.3.1. Movements Made", level=3)
 
-# Calculate total movements (sum across all directions)
-print("    Calculating total movements...")
-df_all.flags.writeable = True
-if 'moves_north' in df_all.columns:
-    df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
-df_all.flags.writeable = False
+# # Calculate total movements (sum across all directions)
+# print("    Calculating total movements...")
+# df_all.flags.writeable = True
+# if 'moves_north' in df_all.columns:
+#     df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
+# df_all.flags.writeable = False
 
-# Analyze total movements
-if 'moves_total' in df_all.columns:
-    analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total', group_color_map=COLOR_MAP)
-print("    Total movements analysis done.")
+# # Analyze total movements
+# if 'moves_total' in df_all.columns:
+#     analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total', group_color_map=COLOR_MAP)
+# print("    Total movements analysis done.")
 
-# Calculate normalized movements (movements per tick)
-print("    Calculating normalized movements...")
-df_all.flags.writeable = True
-if 'moves_total' in df_all.columns:
-    df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
+# # Calculate normalized movements (movements per tick)
+# print("    Calculating normalized movements...")
+# df_all.flags.writeable = True
+# if 'moves_total' in df_all.columns:
+#     df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
+# df_all.flags.writeable = False
 
-# Analyze normalized movements
-if 'moves_norm' in df_all.columns:
-    analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm', group_color_map=COLOR_MAP)
-print("    Normalized movements analysis done.")
-doc.add_paragraph("TBD")
+# # Analyze normalized movements
+# if 'moves_norm' in df_all.columns:
+#     analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm', group_color_map=COLOR_MAP)
+# print("    Normalized movements analysis done.")
+# doc.add_paragraph("TBD")
 
-# Movements per direction (from per-tick data)
-if per_tick_included and len(df_all_per_tick) > 0:
-    print("    Aggregating movements by direction from per-tick data...")
-    # Movement data is in a single 'movement' column with values b'N'/b'E'/b'S'/b'W'/b'stay' (bytes)
-    if 'movement' in df_all_per_tick.columns:
-        # Convert movement column to string if it contains bytes
-        if df_all_per_tick['movement'].dtype == 'object' and isinstance(df_all_per_tick['movement'].iloc[0], bytes):
-            df_all_per_tick['movement'] = df_all_per_tick['movement'].str.decode('utf-8')
+# # Movements per direction (from per-tick data)
+# if per_tick_included and len(df_all_per_tick) > 0:
+#     print("    Aggregating movements by direction from per-tick data...")
+#     # Movement data is in a single 'movement' column with values b'N'/b'E'/b'S'/b'W'/b'stay' (bytes)
+#     if 'movement' in df_all_per_tick.columns:
+#         # Convert movement column to string if it contains bytes
+#         if df_all_per_tick['movement'].dtype == 'object' and isinstance(df_all_per_tick['movement'].iloc[0], bytes):
+#             df_all_per_tick['movement'] = df_all_per_tick['movement'].str.decode('utf-8')
         
-        # Map short direction names (N/E/S/W) to long names (north/east/south/west)
-        direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west', 'stay': 'stay'}
-        print(f"      df_all_per_tick shape: {df_all_per_tick.shape}")
-        print(f"      df_all shape before aggregation: {df_all.shape}")
-        print(f"      movement values: {sorted(df_all_per_tick['movement'].unique())}")
+#         # Map short direction names (N/E/S/W) to long names (north/east/south/west)
+#         direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west', 'stay': 'stay'}
+#         print(f"      df_all_per_tick shape: {df_all_per_tick.shape}")
+#         print(f"      df_all shape before aggregation: {df_all.shape}")
+#         print(f"      movement values: {sorted(df_all_per_tick['movement'].unique())}")
         
-        # Aggregate movements by direction, per run
-        for short_dir, long_dir in direction_map.items():
-            # Count occurrences of this direction across all ticks for each (source, variant, run_id)
-            agg_data = df_all_per_tick[df_all_per_tick['movement'] == short_dir].groupby(['source', 'variant', 'run_id']).size().reset_index(name=f'moves_sum_{long_dir}')
-            print(f"      {short_dir} ({long_dir}): {len(agg_data)} rows with data")
+#         # Aggregate movements by direction, per run
+#         for short_dir, long_dir in direction_map.items():
+#             # Count occurrences of this direction across all ticks for each (source, variant, run_id)
+#             agg_data = df_all_per_tick[df_all_per_tick['movement'] == short_dir].groupby(['source', 'variant', 'run_id']).size().reset_index(name=f'moves_sum_{long_dir}')
+#             print(f"      {short_dir} ({long_dir}): {len(agg_data)} rows with data")
             
-            # Merge back into df_all
-            df_all.flags.writeable = True
-            df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
-            # Fill NaN (no movements in that direction) with 0
-            df_all[f'moves_sum_{long_dir}'].fillna(0, inplace=True)
-            # Normalize by lifetime_ticks
-            df_all[f'moves_norm_{long_dir}'] = df_all[f'moves_sum_{long_dir}'] / df_all['lifetime_ticks']
-            df_all.flags.writeable = False
-            print(f"      Created moves_norm_{long_dir}: min={df_all[f'moves_norm_{long_dir}'].min():.4f}, max={df_all[f'moves_norm_{long_dir}'].max():.4f}, mean={df_all[f'moves_norm_{long_dir}'].mean():.4f}")
+#             # Merge back into df_all
+#             df_all.flags.writeable = True
+#             df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
+#             # Fill NaN (no movements in that direction) with 0
+#             df_all[f'moves_sum_{long_dir}'].fillna(0, inplace=True)
+#             # Normalize by lifetime_ticks
+#             df_all[f'moves_norm_{long_dir}'] = df_all[f'moves_sum_{long_dir}'] / df_all['lifetime_ticks']
+#             df_all.flags.writeable = False
+#             print(f"      Created moves_norm_{long_dir}: min={df_all[f'moves_norm_{long_dir}'].min():.4f}, max={df_all[f'moves_norm_{long_dir}'].max():.4f}, mean={df_all[f'moves_norm_{long_dir}'].mean():.4f}")
         
-        print(f"      df_all shape after aggregation: {df_all.shape}")
-        print(f"      Columns: {[c for c in df_all.columns if 'moves_norm' in c]}")
+#         print(f"      df_all shape after aggregation: {df_all.shape}")
+#         print(f"      Columns: {[c for c in df_all.columns if 'moves_norm' in c]}")
         
-        # Analyze movements per direction
-        print("    Analyzing movements by direction...")
-        analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
-        print("    Movements by direction analysis done.")
-    else:
-        print("    'movement' column not found in per-tick data.")
-        doc.add_paragraph("TBD - Movements by direction data not available")
-else:
-    print("    Per-tick data not available for movements direction analysis.")
-    doc.add_paragraph("TBD - Per-tick data required for direction analysis")
+#         # Analyze movements per direction
+#         print("    Analyzing movements by direction...")
+#         analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
+#         print("    Movements by direction analysis done.")
+#     else:
+#         print("    'movement' column not found in per-tick data.")
+#         doc.add_paragraph("TBD - Movements by direction data not available")
+# else:
+#     print("    Per-tick data not available for movements direction analysis.")
+#     doc.add_paragraph("TBD - Per-tick data required for direction analysis")
 
-#endregion # closes 3.3.1
+# #endregion # closes 3.3.1
 
-#region 3.3.2 Ground Covered
+# #region 3.3.2 Ground Covered
 
-doc.add_heading("3.3.2. Ground Covered", level=3)
+# doc.add_heading("3.3.2. Ground Covered", level=3)
 
-# Per-tick manhattan distance analysis
-if per_tick_included:
-    print("    Analyzing per-tick distance...")
-    analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', group_color_map=COLOR_MAP)
-    print("    Per-tick distance analysis done.")
-doc.add_paragraph("TBD")
+# # Per-tick manhattan distance analysis
+# if per_tick_included:
+#     print("    Analyzing per-tick distance...")
+#     analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', group_color_map=COLOR_MAP)
+#     print("    Per-tick distance analysis done.")
+# doc.add_paragraph("TBD")
 
-# Heatmaps: staying and entering
-if heatmap_data:
-    print("    Analyzing heatmaps...")
-    analyze_heatmaps(heatmap_data, df_all)
-    print("    Heatmap analysis done.")
-doc.add_paragraph("TBD")
+# # Heatmaps: staying and entering
+# if heatmap_data:
+#     print("    Analyzing heatmaps...")
+#     analyze_heatmaps(heatmap_data, df_all)
+#     print("    Heatmap analysis done.")
+# doc.add_paragraph("TBD")
 
-#endregion # closes 3.3.2
+# #endregion # closes 3.3.2
 
-#endregion # closes 3.3
+# #endregion # closes 3.3
 
-#region 3.4 Decisions
+# #region 3.4 Decisions
 
-print("  Analyzing decisions...")
-doc.add_heading("3.4. Decisions", level=2)
+# print("  Analyzing decisions...")
+# doc.add_heading("3.4. Decisions", level=2)
 
-#region 3.4.1 Decisions Made
+# #region 3.4.1 Decisions Made
 
-doc.add_heading("3.4.1. Decisions Made", level=3)
+# doc.add_heading("3.4.1. Decisions Made", level=3)
 
-# Analyze total decisions
-print("    Analyzing total decisions...")
-if 'decisions' in df_all.columns:
-    analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions', group_color_map=COLOR_MAP)
-print("    Total decisions analysis done.")
+# # Analyze total decisions
+# print("    Analyzing total decisions...")
+# if 'decisions' in df_all.columns:
+#     analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions', group_color_map=COLOR_MAP)
+# print("    Total decisions analysis done.")
 
-# Calculate normalized decisions (decisions per tick)
-print("    Calculating normalized decisions...")
-df_all.flags.writeable = True
-if 'decisions' in df_all.columns:
-    df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
+# # Calculate normalized decisions (decisions per tick)
+# print("    Calculating normalized decisions...")
+# df_all.flags.writeable = True
+# if 'decisions' in df_all.columns:
+#     df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
+# df_all.flags.writeable = False
 
-# Analyze normalized decisions
-if 'decisions_norm' in df_all.columns:
-    analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm', group_color_map=COLOR_MAP)
-print("    Normalized decisions analysis done.")
-doc.add_paragraph("TBD")
+# # Analyze normalized decisions
+# if 'decisions_norm' in df_all.columns:
+#     analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm', group_color_map=COLOR_MAP)
+# print("    Normalized decisions analysis done.")
+# doc.add_paragraph("TBD")
 
-#endregion # closes 3.4.1
+# #endregion # closes 3.4.1
 
-#region 3.4.2 Correct Decisions
+# #region 3.4.2 Correct Decisions
 
-doc.add_heading("3.4.2. Correct Decisions", level=3)
+# doc.add_heading("3.4.2. Correct Decisions", level=3)
 
-# Analyze total correct decisions
-print("    Analyzing correct decisions...")
-if 'correct_decisions' in df_all.columns:
-    analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions', group_color_map=COLOR_MAP)
-print("    Correct decisions analysis done.")
+# # Analyze total correct decisions
+# print("    Analyzing correct decisions...")
+# if 'correct_decisions' in df_all.columns:
+#     analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions', group_color_map=COLOR_MAP)
+# print("    Correct decisions analysis done.")
 
-# Calculate normalized correct decisions (correct decisions per tick)
-print("    Calculating normalized correct decisions...")
-df_all.flags.writeable = True
-if 'correct_decisions' in df_all.columns:
-    df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
-df_all.flags.writeable = False
+# # Calculate normalized correct decisions (correct decisions per tick)
+# print("    Calculating normalized correct decisions...")
+# df_all.flags.writeable = True
+# if 'correct_decisions' in df_all.columns:
+#     df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
+# df_all.flags.writeable = False
 
-# Analyze normalized correct decisions
-if 'correct_decisions_norm' in df_all.columns:
-    analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm', group_color_map=COLOR_MAP)
-print("    Normalized correct decisions analysis done.")
-doc.add_paragraph("TBD")
+# # Analyze normalized correct decisions
+# if 'correct_decisions_norm' in df_all.columns:
+#     analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm', group_color_map=COLOR_MAP)
+# print("    Normalized correct decisions analysis done.")
+# doc.add_paragraph("TBD")
 
-# Analyze correct decisions by direction
-if per_tick_included:
-    print("    Analyzing decision precision by direction...")
-    df_all = track_decision_precision(df_all_per_tick, df_all)
-    analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision', group_color_map=COLOR_MAP)
-    print("    Decision precision analysis done.")
-    doc.add_paragraph("TBD")
+# # Analyze correct decisions by direction
+# if per_tick_included:
+#     print("    Analyzing decision precision by direction...")
+#     df_all = track_decision_precision(df_all_per_tick, df_all)
+#     analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision', group_color_map=COLOR_MAP)
+#     print("    Decision precision analysis done.")
+#     doc.add_paragraph("TBD")
 
-#endregion # closes 3.4.2
+# #endregion # closes 3.4.2
 
-#endregion # closes 3.4
+# #endregion # closes 3.4
+
+# #endregion # closes 3 (remaining sub-regions TBD)
 
 #endregion # closes 3
 
-#region 4 Summary
+# #region 4 Summary
 
-doc.add_heading("4. Summary", level=1)
+# doc.add_heading("4. Summary", level=1)
 
-doc.add_paragraph("TBD")
+# doc.add_paragraph("TBD")
 
-#endregion # closes 4
+# #endregion # closes 4
 
 
-# ==================================================================================================================================================
-# SECTION E) WRAP UP
-# ==================================================================================================================================================
+# # ==================================================================================================================================================
+# # SECTION E) WRAP UP
+# # ==================================================================================================================================================
 
-print("\n=== SECTION E: WRAP UP ===")
+# print("\n=== SECTION E: WRAP UP ===")
 print("Saving report...")
 # Save the report
 report_path = Path(__file__).resolve().parent / f"report_{EXPERIMENT_NAME}.docx"

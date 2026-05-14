@@ -247,6 +247,60 @@ def save_modulation_to_hdf5(hdf5_path: Path, variant_id: int, modulation_array: 
         _write()
 
 
+def save_eta_to_hdf5(hdf5_path: Path, variant_id: int, eta: float, lock=None):
+    """Save eta (global plasticity factor) as a scalar dataset to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier (0-based)
+        eta: Global plasticity factor
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        group_name = f'variant_{variant_id}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            if 'eta' in grp:
+                del grp['eta']
+            grp.create_dataset('eta', data=np.float32(eta))
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
+
+
+def save_tonic_activations_to_hdf5(hdf5_path: Path, variant_id: int, tonic_activations: np.ndarray, lock=None):
+    """Save tonic activations vector to HDF5.
+    
+    Args:
+        hdf5_path: Path to HDF5 file
+        variant_id: Variant identifier (0-based)
+        tonic_activations: 1-D array of tonic activation values per neuron
+        lock: Optional multiprocessing.Lock() for synchronized parallel writes
+    """
+    def _write():
+        group_name = f'variant_{variant_id}'
+        with h5py.File(hdf5_path, 'a') as f:
+            if group_name not in f:
+                grp = f.create_group(group_name)
+            else:
+                grp = f[group_name]
+            if 'tonic_activations' in grp:
+                del grp['tonic_activations']
+            grp.create_dataset('tonic_activations', data=tonic_activations, compression='gzip')
+    
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
+
+
 def save_heatmaps_to_hdf5(hdf5_path: Path, variant_id: int, run_id: int, staying_heatmap: np.ndarray, lock=None):
     """Save heatmap (2D array) to HDF5.
     

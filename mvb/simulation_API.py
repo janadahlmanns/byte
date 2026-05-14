@@ -25,6 +25,8 @@ from simulate.hdf5_utils import (
     save_variant_summary_to_hdf5,
     save_wiring_to_hdf5,
     save_modulation_to_hdf5,
+    save_eta_to_hdf5,
+    save_tonic_activations_to_hdf5,
     save_heatmaps_to_hdf5,
     save_per_tick_to_hdf5,
     save_genome_properties_to_hdf5,
@@ -77,6 +79,7 @@ def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise,
         pass  # Exit simulation gracefully
     
     return world, worm, rec, pause_mgr
+
 def eval_variant(
     variant_id,
     brain_module_name,
@@ -178,6 +181,10 @@ def eval_variant(
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
 
+        # Extract scalar genome fields
+        eta = float(genome["eta"])
+        tonic_activations = np.array(genome["tonic_activations"], dtype=np.float32)
+
     # ============================================================
     # Create MetricsRecorder to track per-tick data (only if tracking enabled)
     # ============================================================
@@ -192,6 +199,8 @@ def eval_variant(
         summary_array = None
         wiring_array = None
         modulation_array = None
+        eta = None
+        tonic_activations = None
     
 
 
@@ -293,7 +302,7 @@ def eval_variant(
             summary_array[run_id]['seed_noise'] = seeds_noise_variant[run_id]
             summary_array[run_id]['seed_decision'] = seeds_decision_variant[run_id]
             if enable_per_tick_tracking:
-                per_tick_data = rec.per_tick_data[:rec.per_tick_count]
+                per_tick_data = rec.per_tick_data[:rec.per_tick_count].copy()
                 per_tick_all_runs[run_id] = per_tick_data
             
             if enable_heat_map_tracking:
@@ -310,6 +319,8 @@ def eval_variant(
         tracking_results['summary_array'] = summary_array
         tracking_results['wiring_array'] = wiring_array
         tracking_results['modulation_array'] = modulation_array
+        tracking_results['eta'] = eta
+        tracking_results['tonic_activations'] = tonic_activations
         
         if enable_per_tick_tracking:
             tracking_results['per_tick_all_runs'] = per_tick_all_runs
@@ -434,6 +445,8 @@ def run_variant_worker(
                 save_variant_summary_to_hdf5(hdf5_path, variant_id, summary_array)
                 save_wiring_to_hdf5(hdf5_path, variant_id, wiring_array)
                 save_modulation_to_hdf5(hdf5_path, variant_id, modulation_array)
+                save_eta_to_hdf5(hdf5_path, variant_id, tracking_results['eta'])
+                save_tonic_activations_to_hdf5(hdf5_path, variant_id, tracking_results['tonic_activations'])
                 
                 # Write accumulated per-tick data if any
                 if enable_per_tick_tracking:
