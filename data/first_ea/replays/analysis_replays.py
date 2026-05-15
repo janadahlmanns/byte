@@ -13,7 +13,8 @@ import h5py
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from scipy.stats import skew, kurtosis, shapiro, f_oneway, kruskal, mannwhitneyu, ttest_ind, studentized_range
+from scipy.stats import skew, kurtosis, shapiro, f_oneway, kruskal, mannwhitneyu, ttest_ind, studentized_range, ks_2samp
+from scipy.ndimage import gaussian_filter1d
 try:
     from scipy.integrate import trapezoid as trapz
 except ImportError:
@@ -308,6 +309,33 @@ def _lifetime_stats_by_group(df_summary: pd.DataFrame) -> dict:
             'cv':       (vals.std() / vals.mean()) * 100,
         }
     return result
+
+
+def describe_lifetime_statistics(df_summary: pd.DataFrame, doc) -> None:
+    """
+    Generate and add descriptive statistics table to the document.
+    
+    Parameters:
+    -----------
+    df_summary : pd.DataFrame
+        Summary data with 'group' and 'lifetime_ticks' columns.
+    doc : Word document object
+        Document to add the statistics table to.
+    """
+    _lifetime_stats = _lifetime_stats_by_group(df_summary)
+    _groups_ordered = list(df_summary['group'].unique())
+
+    table = doc.add_table(rows=len(_LIFETIME_STAT_ROWS) + 1, cols=len(_groups_ordered) + 1)
+    table.style = "Light Grid Accent 1"
+    _hdr = table.rows[0].cells
+    _hdr[0].text = "Statistic"
+    for _ci, _gname in enumerate(_groups_ordered, 1):
+        _hdr[_ci].text = _gname
+    for _ri, (label, stat_key, fmt) in enumerate(_LIFETIME_STAT_ROWS, 1):
+        _row = table.rows[_ri].cells
+        _row[0].text = label
+        for _ci, _gname in enumerate(_groups_ordered, 1):
+            _row[_ci].text = _fmt_stat(_lifetime_stats[_gname][stat_key], fmt)
 
 
 def _group_overview_stats(df_summary: pd.DataFrame) -> list[dict]:
@@ -674,10 +702,395 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         doc.add_paragraph()
 
 
+def plot_wiring(wiring_data: dict, modulation_data: dict) -> None:
+    """
+    Visualize wiring data for all groups, with two passes: effective weight and raw initial weight.
+    
+    Expects wiring_data arrays to already contain a 'weight_effective' column
+    (computed during data loading as weight_initial × reliability).
+    Creates a 2x2 grid of network plots per group, sampling up to 4 variants.
+    
+    Args:
+        wiring_data: Dict mapping group_name -> {variant_id -> structured array}
+        modulation_data: Dict mapping group_name -> {variant_id -> structured array}
+    """
+    if not wiring_data:
+        return
+    
+    net_positions, net_neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
+    
+    net_figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    net_figures_dir.mkdir(exist_ok=True)
+    
+    for _weight_col, _pass_label, _pass_tag in [
+        ('weight_effective', 'Effective Connection Strength (weight_initial × reliability)', 'effective'),
+        ('weight_initial',   'Raw Initial Weights (weight_initial)',                         'raw'),
+    ]:
+        doc.add_heading(_pass_label, level=3)
+        
+        for _grp_name, _grp_variants in wiring_data.items():
+            # Sample up to 4 variants evenly distributed across the group
+            _all_vids = sorted(_grp_variants.keys())
+            _n_all = len(_all_vids)
+            _n_pick = min(4, _n_all)
+            _indices = [int(np.floor(i)) for i in np.linspace(0, _n_all - 1, _n_pick)]
+            _vids = [_all_vids[i] for i in _indices]
+            
+            # Create 2x2 subplot figure
+            fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+            fig.subplots_adjust(hspace=0.05, wspace=0.1)
+            axes = axes.flatten()
+            
+            # Draw each sampled variant
+            for _i, _vid in enumerate(_vids):
+                _w = pd.DataFrame(_grp_variants[_vid])
+                _w['weight'] = _w[_weight_col]
+                _draw_wiring_panel(
+                    axes[_i], _w, modulation_data[_grp_name][_vid],
+                    net_positions, net_neuron_types,
+                    title=f'Variant {_vid}',
+                )
+            
+            # Hide unused subplots
+            for _i in range(len(_vids), 4):
+                axes[_i].axis('off')
+            
+            # Add shared legend at figure bottom
+            _legend_elements = [
+                mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['input_edge'],  linewidth=2, label='Input'),
+                mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['output_edge'], linewidth=2, label='Output'),
+                mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['hidden_edge'], linewidth=2, label='Hidden'),
+                plt.Line2D([0], [0], color=network_viz.COLORS['excitatory'], linewidth=2, linestyle='-', label='Excitatory'),
+                plt.Line2D([0], [0], color=network_viz.COLORS['inhibitory'], linewidth=2, linestyle='-', label='Inhibitory'),
+            ]
+            fig.legend(handles=_legend_elements, loc='lower center', ncol=5, fontsize=9,
+                       frameon=True, bbox_to_anchor=(0.5, 0.01))
+            fig.subplots_adjust(bottom=0.07)
+            
+            # Save figure and add to document
+            _fig_path = net_figures_dir / f'network_{_pass_tag}_{_grp_name.replace(" ", "_")}.png'
+            fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            doc.add_picture(str(_fig_path), width=6.5 * 914400)
+            doc.add_paragraph()
+
+
+def analyze_distribution_across_variants(wiring_data: dict, metric_col: str, x_label: str,
+                                         n_bins: int, group_color_map: dict = None) -> None:
+    """
+    Plot normalized frequency distributions of a metric pooled across all variants per group,
+    and run pairwise KS tests with Holm-Bonferroni correction between all group pairs.
+
+    The KS statistic D is used as the effect size (max absolute CDF difference, 0-1):
+      small ≥ 0.1, medium ≥ 0.3, large ≥ 0.5
+
+    Args:
+        wiring_data:     {group_name: {variant_id: structured array}} — arrays must contain metric_col.
+        metric_col:      Column name to extract from each variant's array. Also used for filenames.
+        x_label:         X-axis label.
+        n_bins:          Number of histogram bins.
+        group_color_map: Dict mapping group name -> hex color string.
+    """
+    all_groups = list(wiring_data.keys())
+    color_map  = group_color_map or {}
+
+    # --- Pool all values per group across variants ---
+    group_values = {}
+    for grp, variants in wiring_data.items():
+        group_values[grp] = np.concatenate(
+            [pd.DataFrame(arr)[metric_col].values for arr in variants.values()]
+        )
+
+    # --- Shared bin edges so all groups are comparable ---
+    all_vals    = np.concatenate(list(group_values.values()))
+    bin_edges   = np.linspace(all_vals.min(), all_vals.max(), n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # --- Plot ---
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for grp in all_groups:
+        counts, _ = np.histogram(group_values[grp], bins=bin_edges)
+        freq      = counts / counts.sum()                    # normalize to relative frequency
+        smoothed  = gaussian_filter1d(freq, sigma=1.0)       # slight smoothing
+        ax.plot(bin_centers, smoothed, linewidth=2, label=grp,
+                color=color_map.get(grp, None))
+
+    ax.set_xlabel(x_label, fontsize=12)
+    ax.set_ylabel('Relative Frequency', fontsize=12)
+    ax.set_title(f'Distribution of {x_label} across Variants', fontsize=14)
+    ax.legend(loc='best', fontsize=11)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    fig_path = figures_dir / f'distribution_{metric_col}.png'
+    fig.tight_layout()
+    fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # --- Pairwise KS tests with Holm-Bonferroni correction ---
+    if len(all_groups) < 2:
+        return
+
+    def _ks_effect_label(d: float) -> str:
+        if d >= 0.5:  return 'large'
+        if d >= 0.3:  return 'medium'
+        if d >= 0.1:  return 'small'
+        return 'negligible'
+
+    _pairs      = list(combinations(all_groups, 2))
+    _ks_results = []
+    for g0, g1 in _pairs:
+        stat, p = ks_2samp(group_values[g0], group_values[g1])
+        _ks_results.append({'group_a': g0, 'group_b': g1, 'ks': stat, 'p_raw': p})
+
+    _raw_ps                  = [r['p_raw'] for r in _ks_results]
+    _rejected, _p_corr, _, _ = multipletests(_raw_ps, method='holm')
+    for r, p_c, rej in zip(_ks_results, _p_corr, _rejected):
+        r['p_corrected'] = p_c
+        r['rejected']    = rej
+
+    doc.add_heading("Distribution Comparison (Pairwise KS tests, Holm-Bonferroni corrected)", level=3)
+    _ks_tbl = doc.add_table(rows=len(_ks_results) + 1, cols=6)
+    _ks_tbl.style = "Light Grid Accent 1"
+    _ks_hdr = _ks_tbl.rows[0].cells
+    _ks_hdr[0].text = "Group A"
+    _ks_hdr[1].text = "Group B"
+    _ks_hdr[2].text = "D (effect size)"
+    _ks_hdr[3].text = "Effect magnitude"
+    _ks_hdr[4].text = "p (raw)"
+    _ks_hdr[5].text = "p (corrected)"
+    for _ri, r in enumerate(_ks_results, 1):
+        _ks_row = _ks_tbl.rows[_ri].cells
+        _ks_row[0].text = r['group_a']
+        _ks_row[1].text = r['group_b']
+        _ks_row[2].text = f"{r['ks']:.4f}"
+        _ks_row[3].text = _ks_effect_label(r['ks'])
+        _ks_row[4].text = _fmt_pvalue(r['p_raw'])
+        _ks_row[5].text = _fmt_pvalue(r['p_corrected']) + (" *" if r['rejected'] else "")
+    doc.add_paragraph()
+
+    # --- Per-variant distributions (all variants from all groups in one figure, no pooling, no statistical tests) ---
+    doc.add_heading("Per-Variant Distributions", level=3)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    for grp in all_groups:
+        variants = wiring_data[grp]
+        grp_color = color_map.get(grp, None)
+        
+        # Plot each variant as a separate line using global bin edges
+        for var_id, arr in sorted(variants.items()):
+            var_values = pd.DataFrame(arr)[metric_col].values
+            counts, _ = np.histogram(var_values, bins=bin_edges)
+            freq = counts / counts.sum()
+            smoothed = gaussian_filter1d(freq, sigma=1.0)
+            ax.plot(bin_centers, smoothed, linewidth=1, alpha=0.5, color=grp_color)
+    
+    ax.set_xlabel(x_label, fontsize=12)
+    ax.set_ylabel('Relative Frequency', fontsize=12)
+    ax.set_title(f'Per-Variant Distribution of {x_label}', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add legend for group colors
+    from matplotlib.lines import Line2D
+    legend_elements = [Line2D([0], [0], color=color_map.get(grp, '#808080'), linewidth=2, label=grp)
+                       for grp in all_groups]
+    ax.legend(handles=legend_elements, loc='best', fontsize=10)
+    
+    fig_path = figures_dir / f'distribution_variants_{metric_col}.png'
+    fig.tight_layout()
+    fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+
+def analyze_per_variant(variant_data: pd.DataFrame, metric_col: str, y_label: str,
+                        group_color_map: dict = None) -> None:
+    """
+    Analyze variant-level metrics with jitter plot and optional boxplot overlay.
+    
+    For each group, plots individual variant values as jittered points.
+    If a group has more than 3 variants, overlays a boxplot.
+    Performs adaptive statistical tests comparing groups.
+    
+    Args:
+        variant_data: DataFrame with columns: group, type, variant, and metric_col
+        metric_col: Column name to analyze (e.g., 'eta')
+        y_label: Label for y-axis
+        group_color_map: Dict mapping group name -> hex color string
+    """
+    if variant_data is None or len(variant_data) == 0:
+        doc.add_paragraph(f"{y_label} data not available")
+        return
+    
+    if metric_col not in variant_data.columns:
+        doc.add_paragraph(f"{y_label} ({metric_col}) not found in variant data")
+        return
+    
+    all_groups = sorted(variant_data['group'].unique())
+    color_map = group_color_map or {}
+    
+    # --- Create jitter + boxplot figure ---
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Position each group on x-axis
+    group_positions = {grp: i for i, grp in enumerate(all_groups)}
+    
+    for grp in all_groups:
+        grp_data = variant_data[variant_data['group'] == grp][metric_col].values
+        x_pos = group_positions[grp]
+        color = color_map.get(grp, '#808080')
+        
+        # Jitter points
+        x_jitter = np.random.normal(x_pos, 0.04, size=len(grp_data))
+        ax.scatter(x_jitter, grp_data, alpha=0.6, s=80, color=color, label=grp, zorder=3)
+        
+        # Boxplot if more than 3 variants
+        if len(grp_data) > 3:
+            bp = ax.boxplot([grp_data], positions=[x_pos], widths=0.2,
+                           patch_artist=True, showfliers=False, zorder=2)
+            for patch in bp['boxes']:
+                patch.set_facecolor(color)
+                patch.set_alpha(0.3)
+            for whisker in bp['whiskers']:
+                whisker.set(color=color, linewidth=1.5)
+            for median in bp['medians']:
+                median.set(color=color, linewidth=2)
+    
+    ax.set_xticks(list(group_positions.values()))
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel(y_label, fontsize=12)
+    ax.set_title(f'{y_label} per Variant', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.legend(loc='best', fontsize=10)
+    
+    fig_path = figures_dir / f'per_variant_{metric_col}.png'
+    fig.tight_layout()
+    fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    doc.add_picture(str(fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+    
+    # --- Statistics: adaptive tests across groups ---
+    if len(all_groups) < 2:
+        return
+    
+    doc.add_heading(f"Statistical Comparison of {y_label}", level=3)
+    
+    group_values = {grp: variant_data[variant_data['group'] == grp][metric_col].values
+                    for grp in all_groups}
+    
+    # Shapiro-Wilk normality test per group
+    normality_results = {}
+    for grp in all_groups:
+        stat, p = shapiro(group_values[grp])
+        normality_results[grp] = {'stat': stat, 'p': p, 'normal': p >= 0.05}
+    
+    all_normal = all(normality_results[grp]['normal'] for grp in all_groups)
+    
+    # Omnibus test
+    if len(all_groups) == 2:
+        # Two groups: Welch's t-test or Mann-Whitney U
+        g0, g1 = all_groups
+        if all_normal:
+            stat, p_omnibus = ttest_ind(group_values[g0], group_values[g1], equal_var=False)
+            test_name = "Welch's t-test"
+            effect_col = "Cohen's d"
+            # Cohen's d
+            n0, n1 = len(group_values[g0]), len(group_values[g1])
+            pooled_std = np.sqrt(((n0-1)*np.std(group_values[g0], ddof=1)**2 + 
+                                 (n1-1)*np.std(group_values[g1], ddof=1)**2) / (n0+n1-2))
+            effect = (np.mean(group_values[g0]) - np.mean(group_values[g1])) / pooled_std if pooled_std > 0 else 0
+        else:
+            stat, p_omnibus = mannwhitneyu(group_values[g0], group_values[g1])
+            test_name = "Mann-Whitney U"
+            effect_col = "Rank-Biserial r"
+            n = len(group_values[g0]) + len(group_values[g1])
+            effect = 1 - (2 * stat) / (len(group_values[g0]) * len(group_values[g1]))
+        
+        doc.add_paragraph(f"{test_name}: p = {_fmt_pvalue(p_omnibus)}, {effect_col} = {effect:.4f}")
+    else:
+        # More than two groups: ANOVA or Kruskal-Wallis
+        if all_normal:
+            stat, p_omnibus = f_oneway(*[group_values[grp] for grp in all_groups])
+            test_name = "One-way ANOVA"
+            effect_col = "Eta-squared η²"
+            # Eta-squared
+            grand_mean = np.concatenate([group_values[grp] for grp in all_groups]).mean()
+            ss_between = sum(len(group_values[grp]) * (np.mean(group_values[grp]) - grand_mean)**2 
+                           for grp in all_groups)
+            ss_total = sum(np.sum((group_values[grp] - grand_mean)**2) for grp in all_groups)
+            effect = ss_between / ss_total if ss_total > 0 else 0
+        else:
+            stat, p_omnibus = kruskal(*[group_values[grp] for grp in all_groups])
+            test_name = "Kruskal-Wallis"
+            effect_col = "Ordinal Epsilon-squared ε²R"
+            n = sum(len(group_values[grp]) for grp in all_groups)
+            # Ordinal epsilon-squared (simplified)
+            effect = (stat - len(all_groups) + 1) / (n - len(all_groups))
+        
+        doc.add_paragraph(f"{test_name}: p = {_fmt_pvalue(p_omnibus)}, {effect_col} = {effect:.4f}")
+        
+        # Pairwise post-hoc tests if omnibus significant
+        if p_omnibus < 0.05:
+            doc.add_heading("Pairwise Comparisons (Holm-Bonferroni corrected)", level=4)
+            
+            _pairs = list(combinations(all_groups, 2))
+            _results = []
+            for g0, g1 in _pairs:
+                if all_normal:
+                    stat, p = ttest_ind(group_values[g0], group_values[g1], equal_var=False)
+                    n0, n1 = len(group_values[g0]), len(group_values[g1])
+                    pooled_std = np.sqrt(((n0-1)*np.std(group_values[g0], ddof=1)**2 + 
+                                         (n1-1)*np.std(group_values[g1], ddof=1)**2) / (n0+n1-2))
+                    effect = (np.mean(group_values[g0]) - np.mean(group_values[g1])) / pooled_std if pooled_std > 0 else 0
+                    effect_name = "Cohen's d"
+                else:
+                    stat, p = mannwhitneyu(group_values[g0], group_values[g1])
+                    n = len(group_values[g0]) + len(group_values[g1])
+                    effect = 1 - (2 * stat) / (len(group_values[g0]) * len(group_values[g1]))
+                    effect_name = "Rank-Biserial r"
+                
+                _results.append({'group_a': g0, 'group_b': g1, 'p_raw': p, 'effect': effect})
+            
+            _raw_ps = [r['p_raw'] for r in _results]
+            _rejected, _p_corr, _, _ = multipletests(_raw_ps, method='holm')
+            for r, p_c, rej in zip(_results, _p_corr, _rejected):
+                r['p_corrected'] = p_c
+                r['rejected'] = rej
+            
+            _tbl = doc.add_table(rows=len(_results) + 1, cols=5)
+            _tbl.style = "Light Grid Accent 1"
+            _hdr = _tbl.rows[0].cells
+            _hdr[0].text = "Group A"
+            _hdr[1].text = "Group B"
+            _hdr[2].text = effect_name
+            _hdr[3].text = "p (raw)"
+            _hdr[4].text = "p (corrected)"
+            
+            for _ri, r in enumerate(_results, 1):
+                _row = _tbl.rows[_ri].cells
+                _row[0].text = r['group_a']
+                _row[1].text = r['group_b']
+                _row[2].text = f"{r['effect']:.4f}"
+                _row[3].text = _fmt_pvalue(r['p_raw'])
+                _row[4].text = _fmt_pvalue(r['p_corrected']) + (" *" if r['rejected'] else "")
+            
+            doc.add_paragraph()
+
+
 def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Analyze a metric stratified by direction within groups.
-    Creates box plots and statistics for each group × direction combination.
+    Creates box plots and statistics for each group vs. direction combination.
     
     Args:
         df_data: DataFrame with 'group' column and direction columns (e.g., 'food_sensed_north', 'food_sensed_east', etc.)
@@ -1240,10 +1653,19 @@ def _logrank_test(df_summary: pd.DataFrame) -> dict:
     }
 
 
-def analyze_survival_race(df_summary: pd.DataFrame, group_color_map: dict = None) -> None:
+def analyze_survival_race(df_summary: pd.DataFrame, doc = None, group_color_map: dict = None) -> None:
     """
-    Plot cumulative survival for each (group, variant) pair.
-    Each line shows how many runs are still alive at each tick.
+    Analyze and report survival data: visualization, log-rank statistics (omnibus and pairwise),
+    and comparative tables.
+    
+    Parameters:
+    -----------
+    df_summary : pd.DataFrame
+        Summary data with 'group', 'variant', 'run_id', and 'lifetime_ticks' columns.
+    doc : Word document object (optional)
+        If provided, adds visualization and statistical tables to the document.
+    group_color_map : dict (optional)
+        Maps group names to hex color strings for visualization.
     """
     from matplotlib.lines import Line2D
 
@@ -1285,8 +1707,59 @@ def analyze_survival_race(df_summary: pd.DataFrame, group_color_map: dict = None
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
+    # Add visualization to document if provided
     doc.add_picture(str(output_path), width=6.5 * 914400)
     doc.add_paragraph()
+
+    # --- Omnibus log-rank test ---
+    _lr = _logrank_test(df_summary)
+
+    doc.add_heading("Omnibus", level=3)
+    _lr_table = doc.add_table(rows=len(_lr['groups']) + 1, cols=4)
+    _lr_table.style = "Light Grid Accent 1"
+    _lr_hdr = _lr_table.rows[0].cells
+    _lr_hdr[0].text = "Group"
+    _lr_hdr[1].text = "Observed deaths"
+    _lr_hdr[2].text = "Expected deaths"
+    _lr_hdr[3].text = "(O - E) / E"
+    for _ri, _gname in enumerate(_lr['groups'], 1):
+        _o = _lr['observed'][_gname]
+        _e = _lr['expected'][_gname]
+        _r = _lr_table.rows[_ri].cells
+        _r[0].text = _gname
+        _r[1].text = f"{_o:.0f}"
+        _r[2].text = f"{_e:.2f}"
+        _r[3].text = f"{(_o - _e) / _e * 100:.2f} %"
+
+    doc.add_paragraph()
+    _sig_omni = "significant" if _lr['p_value'] < 0.05 else "not significant"
+    doc.add_paragraph(
+        f"Omnibus log-rank test: \u03c7\u00b2({_lr['df']}) = {_lr['chi2']:.3f}, "
+        f"p = {_fmt_pvalue(_lr['p_value'])}. The difference between survival curves is {_sig_omni} "
+        f"at \u03b1 = 0.05."
+    )
+
+    # --- Pairwise log-rank tests (Holm-Bonferroni corrected) ---
+    _lr_pairs = _logrank_pairwise(df_summary)
+    if _lr_pairs:
+        doc.add_heading("Pairwise Comparisons (Holm-Bonferroni corrected)", level=3)
+        _pw_table = doc.add_table(rows=len(_lr_pairs) + 1, cols=5)
+        _pw_table.style = "Light Grid Accent 1"
+        _pw_hdr = _pw_table.rows[0].cells
+        _pw_hdr[0].text = "Group A"
+        _pw_hdr[1].text = "Group B"
+        _pw_hdr[2].text = "\u03c7\u00b2"
+        _pw_hdr[3].text = "p (raw)"
+        _pw_hdr[4].text = "p (corrected)"
+        for _ri, _pw in enumerate(_lr_pairs, 1):
+            _r = _pw_table.rows[_ri].cells
+            _r[0].text = _pw['group_a']
+            _r[1].text = _pw['group_b']
+            _r[2].text = f"{_pw['chi2']:.3f}"
+            _r[3].text = _fmt_pvalue(_pw['p_raw'])
+            _r[4].text = _fmt_pvalue(_pw['p_corrected']) + (" *" if _pw['rejected'] else "")
+        doc.add_paragraph()
+        print(f"  Pairwise: {len(_lr_pairs)} pair(s) tested with Holm-Bonferroni correction.")
 
 
 def analyze_wiring(wiring_data: dict, modulation_data: dict, runs_to_show: list, benchmark_name: str = "benchmark") -> None:
@@ -1695,9 +2168,11 @@ heatmap_available  = False
 
 # --- Accumulators (assembled into final structures after all files are loaded) ---
 _summary_parts  = []   # list[pd.DataFrame]  -->  df_summary
+_variant_parts  = []   # list[dict]  -->  variant_data (group, type, variant, eta, ...)
 _per_tick_parts = []   # list[pd.DataFrame]  -->  df_per_tick
 modulation_data = {}   # {group_name: {variant_id (int): np.ndarray}}
 wiring_data     = {}   # {group_name: {variant_id (int): np.ndarray}}
+tonic_activation_data = {}   # {group_name: {variant_id (int): np.ndarray}}
 heatmap_data    = {}   # {group_name: {variant_id (int): {run_id (int): np.ndarray}}}
 
 
@@ -1741,6 +2216,7 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
 
         modulation_data[group_name] = {}
         wiring_data[group_name]     = {}
+        tonic_activation_data[group_name] = {}
         if heatmap_available:
             heatmap_data[group_name] = {}
 
@@ -1758,9 +2234,18 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
             df_var.insert(0, 'group',   group_name)
             _summary_parts.append(df_var)
 
-            # --- 1.1b  Load dataset b) modulation and c) wiring ---
+            # --- 1.1b  Load dataset b) modulation, c) eta, d) wiring, e) tonic_activations ---
             modulation_data[group_name][variant_id] = vg['modulation'][:]
+            eta_value = vg['eta'][()] if 'eta' in vg else None  # Use [()] for scalar HDF5 datasets
+            # Append variant-level metadata (eta, and future metrics) to _variant_parts
+            _variant_parts.append({
+                'group': group_name,
+                'type': data_type,
+                'variant': variant_id,
+                'eta': eta_value,
+            })
             wiring_data[group_name][variant_id]     = vg['wiring'][:]
+            tonic_activation_data[group_name][variant_id] = vg['tonic_activations'][:] if 'tonic_activations' in vg else np.array([])
 
             # Check if we should load heatmap for this variant (limit to first 5)
             load_heatmap_for_this_variant = heatmap_available and heatmap_variant_count < 5
@@ -1828,8 +2313,25 @@ print(f"\ndf_summary:    {len(df_summary)} rows  |  groups: {df_summary['group']
 
 _n_modulation = sum(len(v) for v in modulation_data.values())
 _n_wiring     = sum(len(v) for v in wiring_data.values())
+_n_tonic      = sum(len(v) for v in tonic_activation_data.values())
 print(f"modulation_data: {len(modulation_data)} groups  |  {_n_modulation} total arrays")
 print(f"wiring_data:     {len(wiring_data)} groups  |  {_n_wiring} total arrays")
+print(f"tonic_activation_data: {len(tonic_activation_data)} groups  |  {_n_tonic} total arrays")
+
+variant_data = pd.DataFrame(_variant_parts) if _variant_parts else None
+if variant_data is not None:
+    print(f"variant_data:    {len(variant_data)} total variants")
+else:
+    print("variant_data:    not available")
+
+# --- Add weight_effective column to all wiring arrays ---
+# weight_effective = weight_initial × reliability; computed once here so all
+# downstream analysis functions can access it without recomputing.
+for _grp_variants in wiring_data.values():
+    for _vid, _arr in _grp_variants.items():
+        _df = pd.DataFrame(_arr)
+        _df['weight_effective'] = _df['weight_initial'] * _df['reliability']
+        _grp_variants[_vid] = _df.to_records(index=False)
 
 if per_tick_available:
     df_per_tick = pd.concat(_per_tick_parts, ignore_index=True)
@@ -1965,13 +2467,18 @@ This report employs adaptive statistical analysis based on data distribution and
 
 Normality is assessed using the Shapiro-Wilk test (alpha = 0.05) for each group independently. If any group fails the normality test, the analysis uses non-parametric methods.
 
-PER-TICK METRICS (TEMPORAL ANALYSIS)
+TIME SERIES
 
 For metrics tracked per simulation tick (e.g., energy), per-tick data are analyzed using the Area Under the Curve (AUC) method:
    • Each run's per-tick metric values (tick 0 to end of run) are integrated using the trapezoidal rule to produce a single AUC value per run
    • AUC values are then compared across groups using the same adaptive statistical framework as above (Welch's t-test/Mann-Whitney U for 2 groups, ANOVA/Kruskal-Wallis for >2 groups)
    • This approach is conservative and avoids temporal autocorrelation issues by summarizing the time-series into a single magnitude metric
    • Visualizations show individual run curves (low opacity) overlaid with group mean curves (bold) and 95% confidence bands (shaded)
+
+DISTRIBUTIONS
+
+Distrinutions are compared using the Kolmogorov-Smirnov (KS) test: with Holm-Bonferroni post hoc corrections, 
+and effect size measured by the KS D statistic (interpreted as small ≥ 0.1, medium ≥ 0.3, large ≥ 0.5).
 
 SURVIVAL CURVES
 
@@ -1989,21 +2496,7 @@ doc.add_paragraph()
 
 doc.add_heading("1.3. Descriptive Statistics per Group", level=2)
 
-# One wide table: Statistic | group_0 | group_1 | ...
-_lifetime_stats = _lifetime_stats_by_group(df_summary)
-_groups_ordered = list(df_summary['group'].unique())
-
-table = doc.add_table(rows=len(_LIFETIME_STAT_ROWS) + 1, cols=len(_groups_ordered) + 1)
-table.style = "Light Grid Accent 1"
-_hdr = table.rows[0].cells
-_hdr[0].text = "Statistic"
-for _ci, _gname in enumerate(_groups_ordered, 1):
-    _hdr[_ci].text = _gname
-for _ri, (label, stat_key, fmt) in enumerate(_LIFETIME_STAT_ROWS, 1):
-    _row = table.rows[_ri].cells
-    _row[0].text = label
-    for _ci, _gname in enumerate(_groups_ordered, 1):
-        _row[_ci].text = _fmt_stat(_lifetime_stats[_gname][stat_key], fmt)
+describe_lifetime_statistics(df_summary, doc)
 
 doc.add_paragraph()
 
@@ -2017,63 +2510,11 @@ doc.add_paragraph("space for EA results here")
 
 #region 2 Survival
 
-
 doc.add_heading("2. Survival", level=1)
 
-analyze_survival_race(df_summary, group_color_map=COLOR_MAP)
-_lr = _logrank_test(df_summary)
-
-# Omnibus: observed vs. expected table
-doc.add_heading("Omnibus", level=3)
-_lr_table = doc.add_table(rows=len(_lr['groups']) + 1, cols=4)
-_lr_table.style = "Light Grid Accent 1"
-_lr_hdr = _lr_table.rows[0].cells
-_lr_hdr[0].text = "Group"
-_lr_hdr[1].text = "Observed deaths"
-_lr_hdr[2].text = "Expected deaths"
-_lr_hdr[3].text = "(O - E) / E"
-for _ri, _gname in enumerate(_lr['groups'], 1):
-    _o = _lr['observed'][_gname]
-    _e = _lr['expected'][_gname]
-    _r = _lr_table.rows[_ri].cells
-    _r[0].text = _gname
-    _r[1].text = f"{_o:.0f}"
-    _r[2].text = f"{_e:.2f}"
-    _r[3].text = f"{(_o - _e) / _e * 100:.2f} %"
+analyze_survival_race(df_summary, doc=doc, group_color_map=COLOR_MAP)
 
 doc.add_paragraph()
-_sig_omni = "significant" if _lr['p_value'] < 0.05 else "not significant"
-doc.add_paragraph(
-    f"Omnibus log-rank test: \u03c7\u00b2({_lr['df']}) = {_lr['chi2']:.3f}, "
-    f"p = {_fmt_pvalue(_lr['p_value'])}. The difference between survival curves is {_sig_omni} "
-    f"at \u03b1 = 0.05."
-)
-
-
-# Pairwise (all group combinations, Holm-Bonferroni corrected)
-_lr_pairs = _logrank_pairwise(df_summary)
-if _lr_pairs:
-    doc.add_heading("Pairwise Comparisons (Holm-Bonferroni corrected)", level=3)
-    _pw_table = doc.add_table(rows=len(_lr_pairs) + 1, cols=5)
-    _pw_table.style = "Light Grid Accent 1"
-    _pw_hdr = _pw_table.rows[0].cells
-    _pw_hdr[0].text = "Group A"
-    _pw_hdr[1].text = "Group B"
-    _pw_hdr[2].text = "\u03c7\u00b2"
-    _pw_hdr[3].text = "p (raw)"
-    _pw_hdr[4].text = "p (corrected)"
-    for _ri, _pw in enumerate(_lr_pairs, 1):
-        _r = _pw_table.rows[_ri].cells
-        _r[0].text = _pw['group_a']
-        _r[1].text = _pw['group_b']
-        _r[2].text = f"{_pw['chi2']:.3f}"
-        _r[3].text = _fmt_pvalue(_pw['p_raw'])
-        _r[4].text = _fmt_pvalue(_pw['p_corrected']) + (" *" if _pw['rejected'] else "")
-    doc.add_paragraph()
-    print(f"  Pairwise: {len(_lr_pairs)} pair(s) tested with Holm-Bonferroni correction.")
-
-doc.add_paragraph()
-
 
 analyze_per_run(df_summary, 'lifetime_ticks', 'Survival Time [ticks]', 'lifetime', group_color_map=COLOR_MAP)
 
@@ -2086,57 +2527,19 @@ doc.add_heading("3. Genomes", level=1)
 
 doc.add_heading("3.1. Wiring", level=2)
 
-_net_figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
-_net_figures_dir.mkdir(exist_ok=True)
+plot_wiring(wiring_data, modulation_data)
 
-try:
-    _net_positions, _net_neuron_types = network_viz.load_network_viz_config(NETWORK_VIZ_CONFIG)
-except Exception:
-    _net_positions, _net_neuron_types = {}, {}
+analyze_distribution_across_variants(wiring_data, 'weight_effective', 'Effective Connection Weight', n_bins=40, group_color_map=COLOR_MAP)
+analyze_distribution_across_variants(wiring_data, 'weight_initial', 'Raw Connection Weight', n_bins=40, group_color_map=COLOR_MAP)
 
-for _pass, (_pass_label, _weight_fn) in enumerate([
-    ("Effective Connection Strength (weight_initial × reliability)",
-     lambda df: df['weight_initial'] * df['reliability']),
-    ("Raw Initial Weights (weight_initial)",
-     lambda df: df['weight_initial']),
-]):
-    doc.add_heading(_pass_label, level=3)
-    _pass_tag = 'effective' if _pass == 0 else 'raw'
-    for _grp_name, _grp_variants in wiring_data.items():
-        _all_vids = sorted(_grp_variants.keys())
-        _n_all = len(_all_vids)
-        _n_pick = min(4, _n_all)
-        _indices = [int(np.floor(i)) for i in np.linspace(0, _n_all - 1, _n_pick)]
-        _vids = [_all_vids[i] for i in _indices]
-        fig, axes = plt.subplots(2, 2, figsize=(13, 10))
-        fig.subplots_adjust(hspace=0.05, wspace=0.1)
-        axes = axes.flatten()
-        for _i, _vid in enumerate(_vids):
-            _w = pd.DataFrame(_grp_variants[_vid])
-            _w['weight'] = _weight_fn(_w)
-            _draw_wiring_panel(
-                axes[_i], _w, modulation_data[_grp_name][_vid],
-                _net_positions, _net_neuron_types,
-                title=f'Variant {_vid}',
-            )
-        for _i in range(len(_vids), 4):
-            axes[_i].axis('off')
-        # shared legend at figure bottom
-        _legend_elements = [
-            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['input_edge'],  linewidth=2, label='Input'),
-            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['output_edge'], linewidth=2, label='Output'),
-            mpatches.Patch(facecolor=network_viz.COLORS['neuron_fill'], edgecolor=network_viz.COLORS['hidden_edge'], linewidth=2, label='Hidden'),
-            plt.Line2D([0], [0], color=network_viz.COLORS['excitatory'], linewidth=2, linestyle='-', label='Excitatory'),
-            plt.Line2D([0], [0], color=network_viz.COLORS['inhibitory'], linewidth=2, linestyle='-', label='Inhibitory'),
-        ]
-        fig.legend(handles=_legend_elements, loc='lower center', ncol=5, fontsize=9,
-                   frameon=True, bbox_to_anchor=(0.5, 0.01))
-        fig.subplots_adjust(bottom=0.07)
-        _fig_path = _net_figures_dir / f'network_{_pass_tag}_{_grp_name.replace(" ", "_")}.png'
-        fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        doc.add_picture(str(_fig_path), width=6.5 * 914400)
-        doc.add_paragraph()
+doc.add_heading("3.2. Tonic Activation", level=2)
+
+analyze_distribution_across_variants(tonic_activation_data, 0, 'Tonic Activation', n_bins=20, group_color_map=COLOR_MAP)
+
+doc.add_heading("3.3. Plasticity", level=2)
+
+analyze_distribution_across_variants(modulation_data, 'modulation_weight', 'Modulatory Weight', n_bins=40, group_color_map=COLOR_MAP)
+analyze_per_variant(variant_data, 'eta', 'Learning rate eta', group_color_map=COLOR_MAP)
 
 #endregion 3 Genomes
 
