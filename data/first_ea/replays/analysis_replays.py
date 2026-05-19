@@ -59,7 +59,7 @@ EXPERIMENT_HDF5_FILES = [
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
 BENCHMARK_HDF5_FILES = [
-   # ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
+    ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
     ("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
     #("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
 ]
@@ -991,8 +991,12 @@ def analyze_per_variant(variant_data: pd.DataFrame, metric_col: str, y_label: st
     # Shapiro-Wilk normality test per group
     normality_results = {}
     for grp in all_groups:
-        stat, p = shapiro(group_values[grp])
-        normality_results[grp] = {'stat': stat, 'p': p, 'normal': p >= 0.05}
+        vals = group_values[grp]
+        if len(vals) < 3:
+            normality_results[grp] = {'stat': np.nan, 'p': np.nan, 'normal': False}
+        else:
+            stat, p = shapiro(vals)
+            normality_results[grp] = {'stat': stat, 'p': p, 'normal': p >= 0.05}
     
     all_normal = all(normality_results[grp]['normal'] for grp in all_groups)
     
@@ -2153,6 +2157,313 @@ def _draw_wiring_panel(ax, wiring_df, modulation_array, neuron_positions, neuron
     )
 
 
+def calculate_connectivity(per_neuron_data: dict, wiring_data: dict) -> None:
+    """
+    Add 'in_degree' and 'out_degree' fields to per_neuron_data in-place.
+
+    wiring_data already contains only active connections (abs(weight) > 0), so
+    in-degree = number of times a neuron ID appears in 'tgt',
+    out-degree = number of times it appears in 'src'.
+
+    The plain 1-D tonic-activation array stored for each variant is replaced with a
+    structured numpy array containing three fields:
+        'tonic_activation' (f4), 'in_degree' (i4), 'out_degree' (i4).
+
+    Args:
+        per_neuron_data: {group_name: {variant_id: np.ndarray}} — per-neuron tonic values.
+        wiring_data:     {group_name: {variant_id: structured array}} — active connections
+                         with at minimum fields 'src' and 'tgt'.
+    """
+    for grp, variants in per_neuron_data.items():
+        wiring_variants = wiring_data.get(grp, {})
+        for vid, tonic_arr in variants.items():
+            n_neurons  = len(tonic_arr)
+            in_degree  = np.zeros(n_neurons, dtype=np.int32)
+            out_degree = np.zeros(n_neurons, dtype=np.int32)
+
+            wiring_arr = wiring_variants.get(vid)
+            if wiring_arr is not None and len(wiring_arr) > 0:
+                wdf  = pd.DataFrame(wiring_arr)
+                tgts = wdf['tgt'].values.astype(int)
+                srcs = wdf['src'].values.astype(int)
+                np.add.at(in_degree,  tgts[(tgts >= 0) & (tgts < n_neurons)], 1)
+                np.add.at(out_degree, srcs[(srcs >= 0) & (srcs < n_neurons)], 1)
+
+            new_arr = np.zeros(n_neurons, dtype=[
+                ('tonic_activation', 'f4'),
+                ('in_degree',        'i4'),
+                ('out_degree',       'i4'),
+            ])
+            if n_neurons > 0:
+                new_arr['tonic_activation'] = np.asarray(tonic_arr, dtype='f4')
+            new_arr['in_degree']  = in_degree
+            new_arr['out_degree'] = out_degree
+            variants[vid] = new_arr
+
+
+def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_map: dict = None) -> None:
+    """
+    Analyse the direction from which the worm approached food before each consumption event.
+
+    Each row where food_consumed == 1 marks a consumption event; the 'movement' column on
+    that row is always 'stay'.  The function temporarily shifts 'movement' forward by one
+    tick within each (group, variant, run) so that the preceding movement aligns with the
+    consumption row.  It then counts how often N / E / S / W was the preceding move, per run.
+
+    Plot: jitter + box-plot, x-axis grouped by direction, hue = group.
+
+    Statistics: per-direction one-way tests (ANOVA if normally distributed, Kruskal-Wallis
+    otherwise) with Holm-Bonferroni correction across the four directions, plus pairwise
+    post-hoc for significant directions.
+
+    Note on two-way ANOVA: the fully correct omnibus test would be a two-way ANOVA
+    (group × direction) or its non-parametric equivalent, the Scheirer-Ray-Hare test.
+    Both require statsmodels / pingouin (not in this project).  The approach below —
+    per-direction one-way tests with Holm correction — provides equivalent interpretable
+    information at the cost of not having a single interaction p-value.
+
+    Args:
+        df_per_tick:     Per-tick tracking DataFrame (global df_per_tick).
+        group_color_map: Dict mapping group name -> hex colour string.
+    """
+    _DIRS = ['N', 'E', 'S', 'W']
+    _gcm  = group_color_map or {}
+
+    def _color_for(g: str) -> str:
+        return _gcm.get(g, '#808080')
+
+    # ── 1.  Build per-run direction counts ──────────────────────────────────────
+    # Shift movement within each run so that consumption rows show preceding move.
+    _tmp = df_per_tick[['group', 'variant', 'run', 'tick', 'movement', 'food_consumed']].copy()
+    # movement is stored as bytes in HDF5 — decode to str if needed
+    if _tmp['movement'].dtype == object and len(_tmp) > 0 and isinstance(_tmp['movement'].iloc[0], bytes):
+        _tmp['movement'] = _tmp['movement'].str.decode('utf-8')
+    _tmp['movement_prev'] = (
+        _tmp.groupby(['group', 'variant', 'run'])['movement']
+        .shift(1)
+    )
+    _consumed = _tmp[_tmp['food_consumed'] == 1].copy()
+
+    # Count per direction per run
+    _rows = []
+    for (_grp, _var, _run), _grp_df in _consumed.groupby(['group', 'variant', 'run']):
+        for _d in _DIRS:
+            _rows.append({
+                'group':     _grp,
+                'variant':   _var,
+                'run':       _run,
+                'direction': _d,
+                'count':     int((_grp_df['movement_prev'] == _d).sum()),
+            })
+    _df_counts = pd.DataFrame(_rows)
+
+    all_groups = sorted(_df_counts['group'].unique())
+    n_groups   = len(all_groups)
+
+    # ── 2.  Plot ─────────────────────────────────────────────────────────────────
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+
+    # x positions: groups in blocks, directions side-by-side within each group block
+    _dir_colors  = {'N': '#4e79a7', 'E': '#f28e2b', 'S': '#59a14f', 'W': '#e15759'}
+    _dir_width   = 0.7 / len(_DIRS)
+    _block_gap   = 1.0
+    _x_positions  = {}   # (group, direction) -> x
+    _block_centers = {}
+    for _gi, _g in enumerate(all_groups):
+        _block_start = _gi * (_block_gap + 0.7)
+        _block_centers[_g] = _block_start + 0.35 - _dir_width / 2
+        for _di, _d in enumerate(_DIRS):
+            _x_positions[(_g, _d)] = _block_start + _di * _dir_width
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _d in _DIRS:
+            _vals = _df_counts[(_df_counts['group'] == _g) & (_df_counts['direction'] == _d)]['count'].values
+            _x    = _x_positions[(_g, _d)]
+            _col  = _dir_colors[_d]
+            # jitter
+            _jit = _rng.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.4, s=10, zorder=1)
+            # box
+            if len(_vals) >= 2:
+                _bp = ax.boxplot(
+                    _vals,
+                    positions=[_x],
+                    widths=_dir_width * 0.8,
+                    patch_artist=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                )
+                _bp['boxes'][0].set_facecolor(_col)
+                _bp['boxes'][0].set_alpha(0.35)
+                _bp['medians'][0].set_color('black')
+
+    # Legend: directions
+    _legend_handles = [mpatches.Patch(color=_dir_colors[_d], label=_d) for _d in _DIRS]
+    ax.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Direction')
+
+    # x-axis ticks at group block centres
+    ax.set_xticks([_block_centers[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Consumption Events per Run', fontsize=12)
+    ax.set_title('Food Consumed — Preceding Direction of Approach (by Group)', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'food_direction_counts.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 3.  Statistics: per-direction one-way tests ──────────────────────────────
+    doc.add_heading('Statistical Comparison — Approach Direction (per-direction one-way tests, Holm-Bonferroni corrected across directions)', level=3)
+    doc.add_paragraph(
+        'For each direction, groups are compared using one-way ANOVA (normally distributed data) '
+        'or Kruskal-Wallis (non-normal).  Holm-Bonferroni correction is applied across the four '
+        'direction-wise omnibus p-values to control family-wise error rate.  '
+        'Pairwise post-hoc tests are reported only for directions with a significant omnibus result '
+        'after correction.'
+    )
+
+    # Collect omnibus results for all four directions first (needed for Holm correction)
+    _omnibus_rows = []  # one dict per direction
+    for _d in _DIRS:
+        _arrs = []
+        for _g in all_groups:
+            _v = _df_counts[(_df_counts['direction'] == _d) & (_df_counts['group'] == _g)]['count'].values
+            _arrs.append(_v)
+
+        # Normality — skip shapiro when n < 3 or all values identical (zero range)
+        _all_normal = True
+        for _v in _arrs:
+            if len(_v) < 3 or np.ptp(_v) == 0:
+                _all_normal = False
+            else:
+                _, _p_sw = shapiro(_v)
+                if _p_sw < 0.05:
+                    _all_normal = False
+
+        if n_groups == 2:
+            if _all_normal:
+                _stat, _p = ttest_ind(_arrs[0], _arrs[1], equal_var=False)
+                _test_name = "Welch's t-test"
+            else:
+                _stat, _p = mannwhitneyu(_arrs[0], _arrs[1], alternative='two-sided')
+                _test_name = 'Mann-Whitney U'
+        else:
+            if _all_normal:
+                _stat, _p = f_oneway(*_arrs)
+                _test_name = 'One-way ANOVA'
+            else:
+                # Kruskal-Wallis divides by zero when all values across groups are
+                # identical (all ties); short-circuit in that case.
+                _all_combined = np.concatenate(_arrs)
+                if np.ptp(_all_combined) == 0:
+                    _stat, _p = 0.0, 1.0
+                else:
+                    _stat, _p = kruskal(*_arrs)
+                _test_name = 'Kruskal-Wallis'
+
+        _omnibus_rows.append({
+            'direction':  _d,
+            'test':       _test_name,
+            'stat':       _stat,
+            'p_raw':      _p,
+            'all_normal': _all_normal,
+            'arrs':       _arrs,
+        })
+
+    # Holm-Bonferroni correction across the 4 directions
+    _raw_ps = [r['p_raw'] for r in _omnibus_rows]
+    _rejected, _p_corr, _, _ = multipletests(_raw_ps, method='holm')
+    for _r, _pc, _rej in zip(_omnibus_rows, _p_corr, _rejected):
+        _r['p_corrected'] = _pc
+        _r['rejected']    = _rej
+
+    # Omnibus table
+    _omni_tbl = doc.add_table(rows=len(_DIRS) + 1, cols=5)
+    _omni_tbl.style = 'Light Grid Accent 1'
+    _oh = _omni_tbl.rows[0].cells
+    _oh[0].text = 'Direction'
+    _oh[1].text = 'Test'
+    _oh[2].text = 'Statistic'
+    _oh[3].text = 'p (raw)'
+    _oh[4].text = 'p (Holm-corrected)'
+    for _ri, _r in enumerate(_omnibus_rows, 1):
+        _row = _omni_tbl.rows[_ri].cells
+        _row[0].text = _r['direction']
+        _row[1].text = _r['test']
+        _row[2].text = f"{_r['stat']:.4f}"
+        _row[3].text = f"{_r['p_raw']:.2e}"
+        _row[4].text = f"{_r['p_corrected']:.2e}" + (' *' if _r['rejected'] else '')
+    doc.add_paragraph()
+
+    # Post-hoc for significant directions
+    for _r in _omnibus_rows:
+        if not _r['rejected'] or n_groups < 2:
+            continue
+        _d         = _r['direction']
+        _all_norm  = _r['all_normal']
+        _arrs      = _r['arrs']
+
+        if n_groups == 2:
+            # omnibus IS the pairwise test
+            _g0, _g1 = all_groups
+            if _all_norm:
+                _n0, _n1  = len(_arrs[0]), len(_arrs[1])
+                _var0, _var1 = np.var(_arrs[0], ddof=1), np.var(_arrs[1], ddof=1)
+                _ps = np.sqrt(((_n0-1)*_var0 + (_n1-1)*_var1) / (_n0+_n1-2))
+                _es = (np.mean(_arrs[0]) - np.mean(_arrs[1])) / _ps if _ps > 0 else 0
+                _es_label = "Cohen's d"
+            else:
+                _es = 1 - (2 * _r['stat']) / (len(_arrs[0]) * len(_arrs[1]))
+                _es_label = 'Rank-Biserial r'
+            _ph_rows = [(_g0, _g1, _r['stat'], _r['p_corrected'], _es)]
+            _ph_name = _r['test']
+        else:
+            _ph_pairs = list(combinations(range(n_groups), 2))
+            _ph_raw   = []
+            for _i, _j in _ph_pairs:
+                if _all_norm:
+                    _s, _p = ttest_ind(_arrs[_i], _arrs[_j], equal_var=False)
+                    _n0, _n1 = len(_arrs[_i]), len(_arrs[_j])
+                    _v0, _v1 = np.var(_arrs[_i], ddof=1), np.var(_arrs[_j], ddof=1)
+                    _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
+                    _es = (np.mean(_arrs[_i]) - np.mean(_arrs[_j])) / _ps if _ps > 0 else 0
+                    _es_label = "Cohen's d"
+                else:
+                    _s, _p = mannwhitneyu(_arrs[_i], _arrs[_j], alternative='two-sided')
+                    _es = 1 - (2 * _s) / (len(_arrs[_i]) * len(_arrs[_j]))
+                    _es_label = 'Rank-Biserial r'
+                _ph_raw.append((all_groups[_i], all_groups[_j], _s, _p, _es))
+
+            _ph_rej, _ph_pc, _, _ = multipletests([x[3] for x in _ph_raw], method='holm')
+            _ph_rows = [(g1, g2, s, pc, es) for (g1, g2, s, _, es), pc in zip(_ph_raw, _ph_pc)]
+            _ph_name = ("Welch's t-test" if _all_norm else 'Mann-Whitney U') + ' (Holm-Bonferroni)'
+
+        doc.add_paragraph(f'Direction {_d} — post-hoc ({_ph_name}):', style='Heading 3' if False else 'Normal')
+        _ph_tbl = doc.add_table(rows=len(_ph_rows) + 1, cols=5)
+        _ph_tbl.style = 'Light Grid Accent 1'
+        _ph_h = _ph_tbl.rows[0].cells
+        _ph_h[0].text = 'Group A'
+        _ph_h[1].text = 'Group B'
+        _ph_h[2].text = 'Statistic'
+        _ph_h[3].text = 'p-value'
+        _ph_h[4].text = _es_label
+        for _ri, (_ga, _gb, _s, _p, _es) in enumerate(_ph_rows, 1):
+            _c = _ph_tbl.rows[_ri].cells
+            _c[0].text = _ga
+            _c[1].text = _gb
+            _c[2].text = f'{_s:.4f}'
+            _c[3].text = f'{_p:.2e}'
+            _c[4].text = f'{_es:.4f}'
+        doc.add_paragraph()
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
@@ -2172,7 +2483,7 @@ _variant_parts  = []   # list[dict]  -->  variant_data (group, type, variant, et
 _per_tick_parts = []   # list[pd.DataFrame]  -->  df_per_tick
 modulation_data = {}   # {group_name: {variant_id (int): np.ndarray}}
 wiring_data     = {}   # {group_name: {variant_id (int): np.ndarray}}
-tonic_activation_data = {}   # {group_name: {variant_id (int): np.ndarray}}
+per_neuron_data = {}   # {group_name: {variant_id (int): np.ndarray}}
 heatmap_data    = {}   # {group_name: {variant_id (int): {run_id (int): np.ndarray}}}
 
 
@@ -2216,7 +2527,7 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
 
         modulation_data[group_name] = {}
         wiring_data[group_name]     = {}
-        tonic_activation_data[group_name] = {}
+        per_neuron_data[group_name] = {}
         if heatmap_available:
             heatmap_data[group_name] = {}
 
@@ -2245,7 +2556,7 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
                 'eta': eta_value,
             })
             wiring_data[group_name][variant_id]     = vg['wiring'][:]
-            tonic_activation_data[group_name][variant_id] = vg['tonic_activations'][:] if 'tonic_activations' in vg else np.array([])
+            per_neuron_data[group_name][variant_id] = vg['tonic_activations'][:] if 'tonic_activations' in vg else np.array([])
 
             # Check if we should load heatmap for this variant (limit to first 5)
             load_heatmap_for_this_variant = heatmap_available and heatmap_variant_count < 5
@@ -2313,10 +2624,10 @@ print(f"\ndf_summary:    {len(df_summary)} rows  |  groups: {df_summary['group']
 
 _n_modulation = sum(len(v) for v in modulation_data.values())
 _n_wiring     = sum(len(v) for v in wiring_data.values())
-_n_tonic      = sum(len(v) for v in tonic_activation_data.values())
+_n_tonic      = sum(len(v) for v in per_neuron_data.values())
 print(f"modulation_data: {len(modulation_data)} groups  |  {_n_modulation} total arrays")
 print(f"wiring_data:     {len(wiring_data)} groups  |  {_n_wiring} total arrays")
-print(f"tonic_activation_data: {len(tonic_activation_data)} groups  |  {_n_tonic} total arrays")
+print(f"tonic_activation_data: {len(per_neuron_data)} groups  |  {_n_tonic} total arrays")
 
 variant_data = pd.DataFrame(_variant_parts) if _variant_parts else None
 if variant_data is not None:
@@ -2532,9 +2843,13 @@ plot_wiring(wiring_data, modulation_data)
 analyze_distribution_across_variants(wiring_data, 'weight_effective', 'Effective Connection Weight', n_bins=40, group_color_map=COLOR_MAP)
 analyze_distribution_across_variants(wiring_data, 'weight_initial', 'Raw Connection Weight', n_bins=40, group_color_map=COLOR_MAP)
 
+calculate_connectivity(per_neuron_data, wiring_data)
+analyze_distribution_across_variants(per_neuron_data, 'in_degree',  'In-Degree',  n_bins=20, group_color_map=COLOR_MAP)
+analyze_distribution_across_variants(per_neuron_data, 'out_degree', 'Out-Degree', n_bins=20, group_color_map=COLOR_MAP)
+
 doc.add_heading("3.2. Tonic Activation", level=2)
 
-analyze_distribution_across_variants(tonic_activation_data, 0, 'Tonic Activation', n_bins=20, group_color_map=COLOR_MAP)
+analyze_distribution_across_variants(per_neuron_data, 'tonic_activation', 'Tonic Activation', n_bins=20, group_color_map=COLOR_MAP)
 
 doc.add_heading("3.3. Plasticity", level=2)
 
@@ -2542,6 +2857,15 @@ analyze_distribution_across_variants(modulation_data, 'modulation_weight', 'Modu
 analyze_per_variant(variant_data, 'eta', 'Learning rate eta', group_color_map=COLOR_MAP)
 
 #endregion 3 Genomes
+
+#region 4 Food
+
+doc.add_heading("4. Food", level=1)
+analyze_per_run(df_summary, 'foods', 'Foods Consumed', 'foods', group_color_map=COLOR_MAP)
+analyze_per_tick_metric(df_per_tick, 'food_consumed', 'Food Consumed [per tick]', 'food_consumed', group_color_map=COLOR_MAP)
+analyze_foods_consumed_per_direction(df_per_tick, group_color_map=COLOR_MAP)
+
+#endregion 4 Food
 
 
 #endregion # closes 3.1
