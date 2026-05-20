@@ -365,58 +365,59 @@ def _group_overview_stats(df_summary: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def classify_effect_size(effect_size_value: float, effect_size_type: str) -> str:
+    """
+    Classify effect size as insignificant, small, medium, or large based on type.
+    Supports: "Cohen's d", "Rank-Biserial r", "Eta-squared", "Epsilon-squared".
+    """
+    es_abs = abs(effect_size_value)
+
+    if effect_size_type == "Cohen's d":
+        if es_abs < 0.2:
+            return "insignificant"
+        elif es_abs < 0.5:
+            return "small"
+        elif es_abs < 0.8:
+            return "medium"
+        else:
+            return "large"
+    elif effect_size_type == "Rank-Biserial r":
+        if es_abs < 0.11:
+            return "insignificant"
+        elif es_abs < 0.28:
+            return "small"
+        elif es_abs < 0.43:
+            return "medium"
+        else:
+            return "large"
+    elif effect_size_type == "Eta-squared":
+        if es_abs < 0.01:
+            return "insignificant"
+        elif es_abs < 0.06:
+            return "small"
+        elif es_abs < 0.14:
+            return "medium"
+        else:
+            return "large"
+    elif effect_size_type == "Epsilon-squared":
+        if es_abs < 0.01:
+            return "insignificant"
+        elif es_abs < 0.08:
+            return "small"
+        elif es_abs < 0.26:
+            return "medium"
+        else:
+            return "large"
+    else:
+        return "unknown"
+
+
 def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Box plot with jitter overlay per group, summary stats table, and comparative stats table.
     Groups: unsuccessful, successful, plus each benchmark/additional-experiment source as its own group.
     group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
-    # Helper function to classify effect sizes
-    def classify_effect_size(effect_size_value: float, effect_size_type: str) -> str:
-        """
-        Classify effect size as insignificant, small, medium, or large based on type.
-        """
-        es_abs = abs(effect_size_value)
-        
-        if effect_size_type == "Cohen's d":
-            if es_abs < 0.2:
-                return "insignificant"
-            elif es_abs < 0.5:
-                return "small"
-            elif es_abs < 0.8:
-                return "medium"
-            else:
-                return "large"
-        elif effect_size_type == "Rank-Biserial r":
-            if es_abs < 0.11:
-                return "insignificant"
-            elif es_abs < 0.28:
-                return "small"
-            elif es_abs < 0.43:
-                return "medium"
-            else:
-                return "large"
-        elif effect_size_type == "Eta-squared":
-            if es_abs < 0.01:
-                return "insignificant"
-            elif es_abs < 0.06:
-                return "small"
-            elif es_abs < 0.14:
-                return "medium"
-            else:
-                return "large"
-        elif effect_size_type == "Epsilon-squared":
-            if es_abs < 0.01:
-                return "insignificant"
-            elif es_abs < 0.08:
-                return "small"
-            elif es_abs < 0.26:
-                return "medium"
-            else:
-                return "large"
-        else:
-            return "unknown"
-    
     # Dynamically discover and extract all groups from the data
     all_unique_groups = sorted(df_data['group'].unique())
     
@@ -542,9 +543,7 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
         w, p = normality_results[g]
         norm_table.rows[row_idx].cells[1].text = f'{w:.4f}' if not np.isnan(w) else 'N/A'
         norm_table.rows[row_idx].cells[2].text = f'{p:.2e}' if not np.isnan(p) else 'N/A'
-    
-    doc.add_paragraph()
-    
+        
     # Determine which tests to use based on group count and normality
     group_arrays = [group_data[g] for g in group_order]
     n_groups = len(group_order)
@@ -594,7 +593,6 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     
     distribution_str = 'normally distributed' if all_normal else 'not normally distributed'
     doc.add_paragraph(f'Data is {distribution_str} (alpha=0.05).')
-    doc.add_paragraph()
     
     doc.add_paragraph(f'{omnibus_name} (omnibus test):', style='Heading 3')
     omnibus_table = doc.add_table(rows=2, cols=4)
@@ -2201,6 +2199,118 @@ def calculate_connectivity(per_neuron_data: dict, wiring_data: dict) -> None:
             variants[vid] = new_arr
 
 
+def plot_heatmap_overview() -> None:
+    """
+    For each group in heatmap_data, generate a composite figure with up to three panels
+    (first / middle / last variant selected via linspace).  Each panel contains:
+      - one average heatmap (square) + colorbar, centered on top
+      - four individual run heatmaps side-by-side, centered below
+    All panels use a fixed size; empty space is left when fewer than three variants exist.
+    One composite image per group is saved and inserted into the report.
+    """
+    if not heatmap_data:
+        return
+
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+
+    # --- Layout constants (all in inches) ---
+    N_PANELS  = 3       # always 3 panel columns (empty for missing variants)
+    N_RUNS    = 4       # individual run cells per panel
+
+    RUN_CELL  = 2.0     # each individual run plot: RUN_CELL × RUN_CELL inches (square)
+    GAP       = 30 / 150            # ~30 px gap at 150 dpi ≈ 0.20 in
+    PANEL_GAP = GAP                 # horizontal gap between variant panels
+    PANEL_W   = N_RUNS * RUN_CELL + (N_RUNS - 1) * GAP   # runs row total width incl. gaps
+    AVG_SIZE  = PANEL_W * 0.80             # avg heatmap square side
+    CBAR_W    = 0.22                        # colorbar width
+    CBAR_PAD  = 0.10                        # gap between avg heatmap and colorbar
+    AVG_SEC_W = AVG_SIZE + CBAR_PAD + CBAR_W  # total width of avg + colorbar section
+    AVG_X_OFF = (PANEL_W - AVG_SEC_W) / 2  # horizontal offset to center avg section
+
+    TITLE_H   = 0.90    # space above avg heatmap for title (tripled font needs more room)
+    LABEL_H   = 0.55    # space below run plots for run labels
+    GAP_V     = GAP     # vertical gap between runs row and avg plot
+
+    fig_w = N_PANELS * PANEL_W + (N_PANELS - 1) * PANEL_GAP
+    fig_h = TITLE_H + AVG_SIZE + GAP_V + RUN_CELL + LABEL_H
+
+    # Normalised y-coordinates (bottom-up):
+    run_b   = LABEL_H / fig_h
+    avg_b   = (LABEL_H + RUN_CELL + GAP_V) / fig_h
+    run_h_n = RUN_CELL / fig_h
+    avg_h_n = AVG_SIZE / fig_h
+    run_w_n = RUN_CELL / fig_w
+    avg_w_n = AVG_SIZE / fig_w
+    cbar_w_n = CBAR_W  / fig_w
+    cbar_h_n = AVG_SIZE / fig_h
+
+    for group_name, group_variants in sorted(heatmap_data.items()):
+        all_vids = sorted(group_variants.keys())
+        n_avail  = len(all_vids)
+        if n_avail == 0:
+            continue
+
+        # Linspace selection: first, floor-middle, last (deduplicated, order preserved)
+        if n_avail == 1:
+            selected_vids = [all_vids[0]]
+        elif n_avail == 2:
+            selected_vids = [all_vids[0], all_vids[-1]]
+        else:
+            mid_idx = int(np.floor((n_avail - 1) / 2))
+            selected_vids = [all_vids[0], all_vids[mid_idx], all_vids[-1]]
+
+        fig = plt.figure(figsize=(fig_w, fig_h))
+
+        for pi, vid in enumerate(selected_vids):
+            runs_dict = group_variants[vid]
+            run_ids   = sorted(runs_dict.keys())
+
+            panel_x0 = pi * (PANEL_W + PANEL_GAP)   # inches from figure left
+
+            # --- average heatmap (square, centered above runs row) ---
+            stack   = np.stack([runs_dict[r].astype(float) for r in run_ids], axis=0)
+            avg_map = stack.mean(axis=0)
+
+            avg_l = (panel_x0 + AVG_X_OFF) / fig_w
+            ax_avg = fig.add_axes([avg_l, avg_b, avg_w_n, avg_h_n])
+            im_avg = ax_avg.imshow(avg_map, origin='upper', aspect='equal',
+                                   cmap='hot', interpolation='nearest')
+            ax_avg.set_title(f'Average — variant {vid}\n({group_name})',
+                             fontsize=24, pad=6)
+            ax_avg.axis('off')
+
+            # colorbar flush against the avg heatmap
+            cbar_l = avg_l + avg_w_n + CBAR_PAD / fig_w
+            ax_cb  = fig.add_axes([cbar_l, avg_b, cbar_w_n, cbar_h_n])
+            fig.colorbar(im_avg, cax=ax_cb)
+            ax_cb.tick_params(labelsize=18)
+
+            # --- individual run heatmaps (small gap between cells) ---
+            for ri in range(N_RUNS):
+                run_l  = (panel_x0 + ri * (RUN_CELL + GAP)) / fig_w
+                ax_run = fig.add_axes([run_l, run_b, run_w_n, run_h_n])
+                if ri < len(run_ids):
+                    rid = run_ids[ri]
+                    ax_run.imshow(runs_dict[rid].astype(float), origin='upper',
+                                  aspect='equal', cmap='hot', interpolation='nearest')
+                    ax_run.set_xlabel(f'run {rid}', fontsize=21)
+                    ax_run.set_xticks([])
+                    ax_run.set_yticks([])
+                else:
+                    ax_run.axis('off')
+
+        # Save and insert into report
+        safe_group = group_name.replace(' ', '_').replace('/', '-')
+        fig_path = figures_dir / f'heatmap_overview_{safe_group}.png'
+        fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+        doc.add_heading(f'Heatmaps — {group_name}', level=3)
+        doc.add_picture(str(fig_path), width=6.5 * 914400)
+        doc.add_paragraph()
+
+
 def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_map: dict = None) -> None:
     """
     Analyse the direction from which the worm approached food before each consumption event.
@@ -2319,149 +2429,238 @@ def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
 
-    # ── 3.  Statistics: per-direction one-way tests ──────────────────────────────
-    doc.add_heading('Statistical Comparison — Approach Direction (per-direction one-way tests, Holm-Bonferroni corrected across directions)', level=3)
+    # ── 3.  Statistics: per-group one-way tests across directions ────────────────
+    doc.add_heading('Statistical Comparison — Directional Preference per Group', level=3)
     doc.add_paragraph(
-        'For each direction, groups are compared using one-way ANOVA (normally distributed data) '
-        'or Kruskal-Wallis (non-normal).  Holm-Bonferroni correction is applied across the four '
-        'direction-wise omnibus p-values to control family-wise error rate.  '
-        'Pairwise post-hoc tests are reported only for directions with a significant omnibus result '
-        'after correction.'
+        'For each group, the four directions (N/E/S/W) are compared as levels. '
+        'One-way ANOVA (normally distributed data) or Kruskal-Wallis (non-normal) tests '
+        'whether the group shows a directional preference. Pairwise post-hoc tests with '
+        'Tukey\'s HSD (normal) or Holm-Bonferroni (non-normal) correction are reported for '
+        'significant omnibus results.'
     )
 
-    # Collect omnibus results for all four directions first (needed for Holm correction)
-    _omnibus_rows = []  # one dict per direction
-    for _d in _DIRS:
-        _arrs = []
-        for _g in all_groups:
-            _v = _df_counts[(_df_counts['direction'] == _d) & (_df_counts['group'] == _g)]['count'].values
-            _arrs.append(_v)
+    for _g in all_groups:
+        doc.add_heading(f'Group: {_g}', level=4)
 
-        # Normality — skip shapiro when n < 3 or all values identical (zero range)
+        # Arrays: one per direction, values = per-run counts for this group
+        _arrs = [
+            _df_counts[(_df_counts['group'] == _g) & (_df_counts['direction'] == _d)]['count'].values
+            for _d in _DIRS
+        ]
+
+
+        # ── Normality testing (Shapiro-Wilk) ─────────────────────────────────
+        _norm_results = {}
         _all_normal = True
-        for _v in _arrs:
+        for _d, _v in zip(_DIRS, _arrs):
             if len(_v) < 3 or np.ptp(_v) == 0:
+                _norm_results[_d] = (np.nan, np.nan)
                 _all_normal = False
             else:
-                _, _p_sw = shapiro(_v)
+                _w_sw, _p_sw = shapiro(_v)
+                _norm_results[_d] = (_w_sw, _p_sw)
                 if _p_sw < 0.05:
                     _all_normal = False
 
-        if n_groups == 2:
-            if _all_normal:
-                _stat, _p = ttest_ind(_arrs[0], _arrs[1], equal_var=False)
-                _test_name = "Welch's t-test"
-            else:
-                _stat, _p = mannwhitneyu(_arrs[0], _arrs[1], alternative='two-sided')
-                _test_name = 'Mann-Whitney U'
+        doc.add_paragraph('Normality Testing (Shapiro-Wilk):', style='Heading 5')
+        _norm_tbl = doc.add_table(rows=len(_DIRS) + 1, cols=3)
+        _norm_tbl.style = 'Light Grid Accent 1'
+        _norm_tbl.rows[0].cells[0].text = 'Direction'
+        _norm_tbl.rows[0].cells[1].text = 'W statistic'
+        _norm_tbl.rows[0].cells[2].text = 'p-value'
+        for _ri, _d in enumerate(_DIRS, 1):
+            _w_sw, _p_sw = _norm_results[_d]
+            _norm_tbl.rows[_ri].cells[0].text = _d
+            _norm_tbl.rows[_ri].cells[1].text = f'{_w_sw:.4f}' if not np.isnan(_w_sw) else 'N/A'
+            _norm_tbl.rows[_ri].cells[2].text = f'{_p_sw:.2e}' if not np.isnan(_p_sw) else 'N/A'
+
+        _dist_str = 'normally distributed' if _all_normal else 'not normally distributed'
+        doc.add_paragraph(f'Data is {_dist_str} (alpha=0.05).')
+
+        # ── Omnibus test ──────────────────────────────────────────────────────
+        if _all_normal:
+            _stat, _p = f_oneway(*_arrs)
+            _test_name    = 'One-way ANOVA'
+            _grand        = np.mean(np.concatenate(_arrs))
+            _ss_b         = sum(len(a) * (np.mean(a) - _grand) ** 2 for a in _arrs)
+            _ss_t         = sum(np.sum((a - _grand) ** 2) for a in _arrs)
+            _es_omni      = _ss_b / _ss_t if _ss_t > 0 else 0.0
+            _es_type_omni = 'Eta-squared'
+            _es_col_omni  = 'η²'
         else:
-            if _all_normal:
-                _stat, _p = f_oneway(*_arrs)
-                _test_name = 'One-way ANOVA'
+            _all_combined = np.concatenate(_arrs)
+            if np.ptp(_all_combined) == 0:
+                _stat, _p = 0.0, 1.0
             else:
-                # Kruskal-Wallis divides by zero when all values across groups are
-                # identical (all ties); short-circuit in that case.
-                _all_combined = np.concatenate(_arrs)
-                if np.ptp(_all_combined) == 0:
-                    _stat, _p = 0.0, 1.0
-                else:
-                    _stat, _p = kruskal(*_arrs)
-                _test_name = 'Kruskal-Wallis'
+                _stat, _p = kruskal(*_arrs)
+            _test_name    = 'Kruskal-Wallis'
+            _N            = len(_all_combined)
+            _k            = len(_arrs)
+            _es_omni      = (_stat - _k + 1) / (_N - _k) if (_N - _k) > 0 else 0.0
+            _es_type_omni = 'Epsilon-squared'
+            _es_col_omni  = 'ε²'
 
-        _omnibus_rows.append({
-            'direction':  _d,
-            'test':       _test_name,
-            'stat':       _stat,
-            'p_raw':      _p,
-            'all_normal': _all_normal,
-            'arrs':       _arrs,
-        })
+        doc.add_paragraph(f'{_test_name} (omnibus test):', style='Heading 5')
+        _omni_tbl = doc.add_table(rows=2, cols=4)
+        _omni_tbl.style = 'Light Grid Accent 1'
+        _oh = _omni_tbl.rows[0].cells
+        _oh[0].text = 'Test Name'
+        _oh[1].text = 'Test Statistic'
+        _oh[2].text = 'p-value'
+        _oh[3].text = _es_col_omni
+        _ov = _omni_tbl.rows[1].cells
+        _ov[0].text = _test_name
+        _ov[1].text = f'{_stat:.4f}'
+        _ov[2].text = f'{_p:.2e}' + (' *' if _p < 0.05 else '')
+        _ov[3].text = f'{_es_omni:.4f} ({classify_effect_size(_es_omni, _es_type_omni)})'
 
-    # Holm-Bonferroni correction across the 4 directions
-    _raw_ps = [r['p_raw'] for r in _omnibus_rows]
-    _rejected, _p_corr, _, _ = multipletests(_raw_ps, method='holm')
-    for _r, _pc, _rej in zip(_omnibus_rows, _p_corr, _rejected):
-        _r['p_corrected'] = _pc
-        _r['rejected']    = _rej
-
-    # Omnibus table
-    _omni_tbl = doc.add_table(rows=len(_DIRS) + 1, cols=5)
-    _omni_tbl.style = 'Light Grid Accent 1'
-    _oh = _omni_tbl.rows[0].cells
-    _oh[0].text = 'Direction'
-    _oh[1].text = 'Test'
-    _oh[2].text = 'Statistic'
-    _oh[3].text = 'p (raw)'
-    _oh[4].text = 'p (Holm-corrected)'
-    for _ri, _r in enumerate(_omnibus_rows, 1):
-        _row = _omni_tbl.rows[_ri].cells
-        _row[0].text = _r['direction']
-        _row[1].text = _r['test']
-        _row[2].text = f"{_r['stat']:.4f}"
-        _row[3].text = f"{_r['p_raw']:.2e}"
-        _row[4].text = f"{_r['p_corrected']:.2e}" + (' *' if _r['rejected'] else '')
-    doc.add_paragraph()
-
-    # Post-hoc for significant directions
-    for _r in _omnibus_rows:
-        if not _r['rejected'] or n_groups < 2:
+        if _p >= 0.05:
+            doc.add_paragraph('Omnibus test not significant (p ≥ 0.05). No post-hoc testing performed.')
             continue
-        _d         = _r['direction']
-        _all_norm  = _r['all_normal']
-        _arrs      = _r['arrs']
 
-        if n_groups == 2:
-            # omnibus IS the pairwise test
-            _g0, _g1 = all_groups
-            if _all_norm:
-                _n0, _n1  = len(_arrs[0]), len(_arrs[1])
-                _var0, _var1 = np.var(_arrs[0], ddof=1), np.var(_arrs[1], ddof=1)
-                _ps = np.sqrt(((_n0-1)*_var0 + (_n1-1)*_var1) / (_n0+_n1-2))
-                _es = (np.mean(_arrs[0]) - np.mean(_arrs[1])) / _ps if _ps > 0 else 0
-                _es_label = "Cohen's d"
+        # ── Pairwise post-hoc ─────────────────────────────────────────────────
+        _k_dirs = len(_DIRS)  # 4
+        _N_dirs = sum(len(a) for a in _arrs)
+        _df_err = _N_dirs - _k_dirs
+
+        _ph_raw = []
+        for (_di, _da), (_dj, _db) in combinations(enumerate(_DIRS), 2):
+            _a, _b = _arrs[_di], _arrs[_dj]
+            if _all_normal:
+                _s, _pp = ttest_ind(_a, _b, equal_var=False)
+                _n0, _n1 = len(_a), len(_b)
+                _v0, _v1 = np.var(_a, ddof=1), np.var(_b, ddof=1)
+                _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
+                _es = (np.mean(_a) - np.mean(_b)) / _ps if _ps > 0 else 0.0
+                _ph_es_type  = "Cohen's d"
+                _ph_es_label = "Cohen's d"
             else:
-                _es = 1 - (2 * _r['stat']) / (len(_arrs[0]) * len(_arrs[1]))
-                _es_label = 'Rank-Biserial r'
-            _ph_rows = [(_g0, _g1, _r['stat'], _r['p_corrected'], _es)]
-            _ph_name = _r['test']
+                _s, _pp = mannwhitneyu(_a, _b, alternative='two-sided')
+                _es = 1 - (2 * _s) / (len(_a) * len(_b))
+                _ph_es_type  = 'Rank-Biserial r'
+                _ph_es_label = 'Rank-Biserial r'
+            _ph_raw.append((_da, _db, _s, _pp, _es))
+
+        if _all_normal:
+            _ph_rows = []
+            for (_da, _db, _s, _pp, _es) in _ph_raw:
+                _cp = float(studentized_range.sf(abs(_s), _k_dirs, _df_err))
+                _cp = min(_cp, 1.0)
+                _ph_rows.append((_da, _db, _s, _cp, _es))
+            _ph_name = "Welch's t-test (Tukey's HSD correction)"
         else:
-            _ph_pairs = list(combinations(range(n_groups), 2))
-            _ph_raw   = []
-            for _i, _j in _ph_pairs:
-                if _all_norm:
-                    _s, _p = ttest_ind(_arrs[_i], _arrs[_j], equal_var=False)
-                    _n0, _n1 = len(_arrs[_i]), len(_arrs[_j])
-                    _v0, _v1 = np.var(_arrs[_i], ddof=1), np.var(_arrs[_j], ddof=1)
-                    _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
-                    _es = (np.mean(_arrs[_i]) - np.mean(_arrs[_j])) / _ps if _ps > 0 else 0
-                    _es_label = "Cohen's d"
-                else:
-                    _s, _p = mannwhitneyu(_arrs[_i], _arrs[_j], alternative='two-sided')
-                    _es = 1 - (2 * _s) / (len(_arrs[_i]) * len(_arrs[_j]))
-                    _es_label = 'Rank-Biserial r'
-                _ph_raw.append((all_groups[_i], all_groups[_j], _s, _p, _es))
-
             _ph_rej, _ph_pc, _, _ = multipletests([x[3] for x in _ph_raw], method='holm')
-            _ph_rows = [(g1, g2, s, pc, es) for (g1, g2, s, _, es), pc in zip(_ph_raw, _ph_pc)]
-            _ph_name = ("Welch's t-test" if _all_norm else 'Mann-Whitney U') + ' (Holm-Bonferroni)'
+            _ph_rows = [(_da, _db, _s, _pc, _es)
+                        for (_da, _db, _s, _, _es), _pc in zip(_ph_raw, _ph_pc)]
+            _ph_name = 'Mann-Whitney U (Holm-Bonferroni correction)'
 
-        doc.add_paragraph(f'Direction {_d} — post-hoc ({_ph_name}):', style='Heading 3' if False else 'Normal')
+        doc.add_paragraph(f'Pairwise Post-Hoc ({_ph_name}):', style='Heading 5')
         _ph_tbl = doc.add_table(rows=len(_ph_rows) + 1, cols=5)
         _ph_tbl.style = 'Light Grid Accent 1'
         _ph_h = _ph_tbl.rows[0].cells
-        _ph_h[0].text = 'Group A'
-        _ph_h[1].text = 'Group B'
+        _ph_h[0].text = 'Direction A'
+        _ph_h[1].text = 'Direction B'
         _ph_h[2].text = 'Statistic'
         _ph_h[3].text = 'p-value'
-        _ph_h[4].text = _es_label
-        for _ri, (_ga, _gb, _s, _p, _es) in enumerate(_ph_rows, 1):
+        _ph_h[4].text = _ph_es_label
+        for _ri, (_da, _db, _s, _pp, _es) in enumerate(_ph_rows, 1):
             _c = _ph_tbl.rows[_ri].cells
-            _c[0].text = _ga
-            _c[1].text = _gb
+            _c[0].text = _da
+            _c[1].text = _db
             _c[2].text = f'{_s:.4f}'
-            _c[3].text = f'{_p:.2e}'
-            _c[4].text = f'{_es:.4f}'
-        doc.add_paragraph()
+            _c[3].text = f'{_pp:.2e}' + (' *' if _pp < 0.05 else '')
+            _c[4].text = f'{_es:.4f} ({classify_effect_size(_es, _ph_es_type)})'
+
+    # ── 4.  Normalised deviation plot — per variant ──────────────────────────────
+    # For each variant: pool all runs, sum direction counts, compute % deviation
+    # from expected (variant_total / 4).  One data point per (group, variant, direction).
+
+    # x-position layout: same block structure as the raw-counts plot above
+    _x_pos2 = {}
+    _block_ctrs2 = {}
+    for _gi, _g in enumerate(all_groups):
+        _bs = _gi * (_block_gap + 0.7)
+        _block_ctrs2[_g] = _bs + 0.35 - _dir_width / 2
+        for _di, _d in enumerate(_DIRS):
+            _x_pos2[(_g, _d)] = _bs + _di * _dir_width
+
+    # Sum direction counts across all runs within each (group, variant)
+    _df_var = (
+        _df_counts
+        .groupby(['group', 'variant', 'direction'])['count']
+        .sum()
+        .reset_index()
+    )
+    _df_var_pivot = _df_var.pivot_table(
+        index=['group', 'variant'],
+        columns='direction',
+        values='count',
+        fill_value=0,
+    ).reset_index()
+    _df_var_pivot['_total'] = _df_var_pivot[_DIRS].sum(axis=1)
+
+    _dev_var_rows = []
+    for _, _row in _df_var_pivot.iterrows():
+        _tot = _row['_total']
+        if _tot == 0:
+            continue
+        _expected = _tot / 4.0
+        for _d in _DIRS:
+            _dev_var_rows.append({
+                'group':     _row['group'],
+                'variant':   _row['variant'],
+                'direction': _d,
+                'deviation': (_row[_d] - _expected) / _expected * 100.0,
+            })
+    _df_dev_var = pd.DataFrame(_dev_var_rows)
+
+    fig3, ax3 = plt.subplots(figsize=(12, 7))
+    _rng3 = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _d in _DIRS:
+            _mask = (_df_dev_var['group'] == _g) & (_df_dev_var['direction'] == _d)
+            _vals = _df_dev_var.loc[_mask, 'deviation'].values
+            _x    = _x_pos2[(_g, _d)]   # same layout as first plot
+            _col  = _dir_colors[_d]
+
+            if len(_vals) == 0:
+                continue
+
+            # Jitter first (lower z-order), then bar on top
+            _jit = _rng3.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax3.scatter(_x + _jit, _vals, color=_col, alpha=0.5, s=14, zorder=1)
+
+            _mean_dev = float(np.mean(_vals))
+            ax3.bar(
+                _x, _mean_dev,
+                width=_dir_width * 0.85,
+                color=_col, alpha=0.45,
+                zorder=2,
+            )
+
+    ax3.axhline(0, color='black', linewidth=0.8, linestyle='--', zorder=0)
+    ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'+{v:.0f}%' if v > 0 else f'{v:.0f}%'))
+    ax3.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Direction')
+    ax3.set_xticks([_block_ctrs2[_g] for _g in all_groups])
+    ax3.set_xticklabels(all_groups, fontsize=11)
+    ax3.set_ylabel('Deviation from Expected Frequency (%)', fontsize=12)
+    ax3.set_title('Directional Approach Bias — Deviation from Equal Distribution, pooled per Variant (by Group)', fontsize=14)
+    ax3.grid(True, alpha=0.3, axis='y')
+
+    _fig3_path = figures_dir / 'food_direction_deviation_per_variant.png'
+    fig3.tight_layout()
+    fig3.savefig(str(_fig3_path), dpi=150, bbox_inches='tight')
+    plt.close(fig3)
+
+    doc.add_heading('Directional Approach Bias (% Deviation from Expected) — per Variant', level=3)
+    doc.add_paragraph(
+        'For each variant, all runs are pooled and the total food count per direction is summed. '
+        'The expected count per direction is the variant\'s total food count ÷ 4. '
+        'Bars show the mean deviation across variants; jitter shows individual variants.'
+    )
+    doc.add_picture(str(_fig3_path), width=6.5 * 914400)
+    doc.add_paragraph()
 
 
 # ==================================================================================================================================================
@@ -2531,10 +2730,16 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
         if heatmap_available:
             heatmap_data[group_name] = {}
 
-        # --- Limit heatmap loading to first 5 variants per group ---
-        heatmap_variant_count = 0
+        # --- Limit heatmap loading to first, middle (floor), and last variant ---
+        _n_vk = len(variant_keys)
+        if _n_vk == 1:
+            _hm_indices = {0}
+        elif _n_vk == 2:
+            _hm_indices = {0, _n_vk - 1}
+        else:
+            _hm_indices = {0, int(np.floor((_n_vk - 1) / 2)), _n_vk - 1}
 
-        for variant_key in variant_keys:
+        for _vi, variant_key in enumerate(variant_keys):
             variant_id = int(variant_key.split('_')[1])
             vg = f[variant_key]
 
@@ -2558,8 +2763,8 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
             wiring_data[group_name][variant_id]     = vg['wiring'][:]
             per_neuron_data[group_name][variant_id] = vg['tonic_activations'][:] if 'tonic_activations' in vg else np.array([])
 
-            # Check if we should load heatmap for this variant (limit to first 5)
-            load_heatmap_for_this_variant = heatmap_available and heatmap_variant_count < 5
+            # Only load heatmap for the selected first / middle / last variants
+            load_heatmap_for_this_variant = heatmap_available and _vi in _hm_indices
 
             # --- 1.3 / 1.4  Load d) per_tick and/or e) staying ---
             if per_tick_available or load_heatmap_for_this_variant:
@@ -2572,7 +2777,6 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
 
                 if load_heatmap_for_this_variant:
                     heatmap_data[group_name][variant_id] = {}
-                    heatmap_variant_count += 1
 
                 for run_key in run_keys:
                     run_id = int(run_key.split('_')[1])
@@ -2620,6 +2824,7 @@ for _bench_name, _bench_hdf5 in BENCHMARK_HDF5_FILES:
 
 # --- Assemble final data structures ---
 df_summary = pd.concat(_summary_parts, ignore_index=True)
+df_summary['distance_norm'] = df_summary['distance'] / df_summary['lifetime_ticks']
 print(f"\ndf_summary:    {len(df_summary)} rows  |  groups: {df_summary['group'].unique().tolist()}")
 
 _n_modulation = sum(len(v) for v in modulation_data.values())
@@ -2866,6 +3071,17 @@ analyze_per_tick_metric(df_per_tick, 'food_consumed', 'Food Consumed [per tick]'
 analyze_foods_consumed_per_direction(df_per_tick, group_color_map=COLOR_MAP)
 
 #endregion 4 Food
+
+#region 5 Movement
+
+doc.add_heading("5.Movement", level=1)
+analyze_per_run(df_summary, 'distance', 'Distance Traveled', 'distance', group_color_map=COLOR_MAP)
+analyze_per_run(df_summary, 'distance_norm', 'Distance Traveled (normalized by Lifetime)', 'distance_norm', group_color_map=COLOR_MAP)
+analyze_per_tick_metric(df_per_tick, 'manhattan_dist', 'Manhattan Distance from origin', 'manhattan_dist', group_color_map=COLOR_MAP)
+plot_heatmap_overview()
+#analyze_foods_consumed_per_direction(df_per_tick, group_color_map=COLOR_MAP)
+
+#endregion 5 Movement
 
 
 #endregion # closes 3.1
