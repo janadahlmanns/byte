@@ -3971,8 +3971,21 @@ doc.add_paragraph()
 
 doc.add_heading("1.4. EA results", level=2)
 
+# Add all PNG images from the parent data/first_ea folder with descriptions
+_ea_images = {
+    '2026-05-05_17-42-25_ea_from_random.png': 'EA evolved from random network initialization. Population size = 250, elite = 10. In generation 50: mean = 69.0, median = 74.22, max = 131.59.',
+    '2026-05-06_09-34-55_ea_from_lookup_soft.png': 'EA evolved from lookup soft initialization. Population size = 260, elite = 10. In generation 50: mean = 129.3, median = 136.4, max = 195.9.',
+    '2026-05-06_11-31-03_ea_from_lookup_hard.png': 'EA evolved from lookup hard initialization. Population size = 260, elite = 10. In generation 50: mean = 125.2, median = 134.5, max = 230.2.',
+}
 
-doc.add_paragraph("space for EA results here")
+_ea_dir = Path(__file__).resolve().parent.parent  # Go up from replays/ to first_ea/
+
+for _img_file, _description in _ea_images.items():
+    _img_path = _ea_dir / _img_file
+    if _img_path.exists():
+        doc.add_picture(str(_img_path), width=6.5 * 914400)
+        doc.add_paragraph(_description)
+        doc.add_paragraph()  # Add spacing between images
 
 
 #endregion # closes 1
