@@ -3767,46 +3767,45 @@ if per_tick_available:
     if df_per_tick['movement'].dtype == object and len(df_per_tick) > 0 and isinstance(df_per_tick['movement'].iloc[0], bytes):
         df_per_tick['movement'] = df_per_tick['movement'].str.decode('utf-8')
     
-    # Create lookahead column for food_consumed (within each run)
-    df_per_tick['food_consumed_next'] = (
-        df_per_tick.groupby(['group', 'variant', 'run'])['food_consumed'].shift(-1).fillna(0).astype(int)
-    )
+    # Create lagged columns for sensory data (previous tick's sensory input drives current tick's decision)
+    for _dir in ['N', 'E', 'S', 'W']:
+        _col = f'food_sensed_{_dir}'
+        df_per_tick[f'{_col}_prev'] = (
+            df_per_tick.groupby(['group', 'variant', 'run'])[_col].shift(1).fillna(0).astype(int)
+        )
     
     # Initialize correct column with 'incorrect' (default)
     df_per_tick['correct'] = 'incorrect'
     
-    # Process each row to determine decision correctness
-    for idx in df_per_tick.index:
-        movement = df_per_tick.loc[idx, 'movement']
-        
-        if movement == 'stay':
-            # Correct if food is consumed in the next tick
-            if df_per_tick.loc[idx, 'food_consumed_next'] == 1:
-                df_per_tick.loc[idx, 'correct'] = 'correct'
-            else:
-                df_per_tick.loc[idx, 'correct'] = 'incorrect'
-        elif movement in ['N', 'E', 'S', 'W']:
-            # Map movement direction to food_sensed column
-            food_sensed_col = f'food_sensed_{movement}'
-            food_sensed_val = df_per_tick.loc[idx, food_sensed_col]
-            
-            if food_sensed_val == 1:
-                # Food sensed in the movement direction = correct
-                df_per_tick.loc[idx, 'correct'] = 'correct'
-            else:
-                # Check if nothing was sensed in any direction
-                other_dirs = [d for d in ['N', 'E', 'S', 'W'] if d != movement]
-                other_sensed = [df_per_tick.loc[idx, f'food_sensed_{d}'] for d in other_dirs]
-                
-                if all(s == 0 for s in other_sensed):
-                    # Nothing sensed in any direction
-                    df_per_tick.loc[idx, 'correct'] = 'nothing_sensed'
-                else:
-                    # Food sensed but not in the movement direction = incorrect
-                    df_per_tick.loc[idx, 'correct'] = 'incorrect'
+    # Vectorized classification (much faster than row-by-row loop)
+    # For 'stay' movements: correct if food_consumed == 1 in the same tick
+    _is_stay = df_per_tick['movement'] == 'stay'
+    df_per_tick.loc[_is_stay & (df_per_tick['food_consumed'] == 1), 'correct'] = 'correct'
     
-    # Drop the lookahead column (no longer needed)
-    df_per_tick.drop(columns=['food_consumed_next'], inplace=True)
+    # For directional movements: check previous tick's sensory data
+    # First, identify which rows have nothing sensed in any direction (in prev tick)
+    _nothing_sensed_mask = (
+        (df_per_tick['food_sensed_N_prev'] == 0) &
+        (df_per_tick['food_sensed_E_prev'] == 0) &
+        (df_per_tick['food_sensed_S_prev'] == 0) &
+        (df_per_tick['food_sensed_W_prev'] == 0)
+    )
+    
+    # Process each direction
+    for _dir in ['N', 'E', 'S', 'W']:
+        _is_this_dir = df_per_tick['movement'] == _dir
+        _sensed_col = f'food_sensed_{_dir}_prev'
+        
+        # Correct: movement direction matches sensed food (in prev tick)
+        df_per_tick.loc[_is_this_dir & (df_per_tick[_sensed_col] == 1), 'correct'] = 'correct'
+        
+        # Nothing sensed: direction movement when nothing was sensed in any direction
+        df_per_tick.loc[_is_this_dir & _nothing_sensed_mask, 'correct'] = 'nothing_sensed'
+        # (else: stays 'incorrect' by default)
+    
+    # Drop the temporary lagged columns
+    df_per_tick.drop(columns=[f'food_sensed_{d}_prev' for d in ['N', 'E', 'S', 'W']], inplace=True)
+    
     
     print(f"df_per_tick:  {len(df_per_tick)} rows")
 else:
