@@ -2302,8 +2302,8 @@ def plot_heatmap_overview() -> None:
 
         # Save and insert into report
         safe_group = group_name.replace(' ', '_').replace('/', '-')
-        fig_path = figures_dir / f'heatmap_overview_{safe_group}.png'
-        fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+        fig_path = figures_dir / f'heatmap_{safe_group}.png'
+        fig.savefig(str(fig_path), dpi=150)
         plt.close(fig)
 
         doc.add_heading(f'Heatmaps — {group_name}', level=3)
@@ -2663,6 +2663,913 @@ def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_
     doc.add_paragraph()
 
 
+def analyze_movements_per_direction(df_per_tick: pd.DataFrame, group_color_map: dict = None) -> None:
+    """
+    Analyse movement patterns: count and compare directional preferences (N/E/S/W only).
+
+    Steps:
+      1. Count occurrences of each movement type (N/E/S/W) per run
+      2. Plot: jitter + box-plot, x-axis grouped by direction (4 directions), hue = group
+      3. Statistics: per-group one-way tests across all 4 directions
+      4. Directional bias plot: N/E/S/W, deviation from expected (total/4)
+
+    Args:
+        df_per_tick:     Per-tick tracking DataFrame (global df_per_tick).
+        group_color_map: Dict mapping group name -> hex colour string.
+    """
+    _DIRS = ['N', 'E', 'S', 'W']
+    _gcm  = group_color_map or {}
+
+    def _color_for(g: str) -> str:
+        return _gcm.get(g, '#808080')
+
+    if df_per_tick is None or len(df_per_tick) == 0:
+        return
+
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+
+    all_groups = sorted(df_per_tick['group'].unique())
+
+    doc.add_heading('Movement Analysis — Directional Preferences', level=2)
+
+    # ── 1.  Build per-run direction counts ──────────────────────────────────────
+    doc.add_heading('1. Directional Movement Distribution', level=3)
+
+    _tmp = df_per_tick[['group', 'variant', 'run', 'movement']].copy()
+    # Decode movement to str if needed
+    if _tmp['movement'].dtype == object and len(_tmp) > 0 and isinstance(_tmp['movement'].iloc[0], bytes):
+        _tmp['movement'] = _tmp['movement'].str.decode('utf-8')
+
+    # Count per direction per run
+    _rows = []
+    for (_grp, _var, _run), _grp_df in _tmp.groupby(['group', 'variant', 'run']):
+        for _d in _DIRS:
+            _rows.append({
+                'group':     _grp,
+                'variant':   _var,
+                'run':       _run,
+                'direction': _d,
+                'count':     int((_grp_df['movement'] == _d).sum()),
+            })
+    _df_counts = pd.DataFrame(_rows)
+
+    n_groups = len(all_groups)
+
+    # ── 3.  Plot ─────────────────────────────────────────────────────────────────
+    # x positions: groups in blocks, directions side-by-side within each group block
+    _dir_colors  = {'N': '#4e79a7', 'E': '#f28e2b', 'S': '#59a14f', 'W': '#e15759'}
+    _dir_width   = 0.7 / len(_DIRS)
+    _block_gap   = 1.0
+    _x_positions  = {}   # (group, direction) -> x
+    _block_centers = {}
+    for _gi, _g in enumerate(all_groups):
+        _block_start = _gi * (_block_gap + 0.7)
+        _block_centers[_g] = _block_start + 0.35 - _dir_width / 2
+        for _di, _d in enumerate(_DIRS):
+            _x_positions[(_g, _d)] = _block_start + _di * _dir_width
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _d in _DIRS:
+            _vals = _df_counts[(_df_counts['group'] == _g) & (_df_counts['direction'] == _d)]['count'].values
+            _x    = _x_positions[(_g, _d)]
+            _col  = _dir_colors[_d]
+            # jitter
+            _jit = _rng.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.4, s=10, zorder=1)
+            # box
+            if len(_vals) >= 2:
+                _bp = ax.boxplot(
+                    _vals,
+                    positions=[_x],
+                    widths=_dir_width * 0.8,
+                    patch_artist=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                )
+                _bp['boxes'][0].set_facecolor(_col)
+                _bp['boxes'][0].set_alpha(0.35)
+                _bp['medians'][0].set_color('black')
+
+    # Legend: directions
+    _legend_handles = [mpatches.Patch(color=_dir_colors[_d], label=_d) for _d in _DIRS]
+    ax.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Direction')
+
+    # x-axis ticks at group block centres
+    ax.set_xticks([_block_centers[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Movement Count per Run', fontsize=12)
+    ax.set_title('Movement Distribution by Direction (by Group)', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'movement_direction_counts.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 2.  Statistics: per-group one-way tests across all directions ──────────────────
+    doc.add_heading('3. Statistical Comparison — Directional Preference per Group', level=3)
+    doc.add_paragraph(
+        'For each group, the five movement types (N/E/S/W/stay) are compared as levels. '
+        'One-way ANOVA (normally distributed data) or Kruskal-Wallis (non-normal) tests '
+        'whether the group shows a directional preference. Pairwise post-hoc tests with '
+        'Tukey\'s HSD (normal) or Holm-Bonferroni (non-normal) correction are reported for '
+        'significant omnibus results.'
+    )
+
+    for _g in all_groups:
+        doc.add_heading(f'Group: {_g}', level=4)
+
+        # Arrays: one per direction, values = per-run counts for this group
+        _arrs = [
+            _df_counts[(_df_counts['group'] == _g) & (_df_counts['direction'] == _d)]['count'].values
+            for _d in _DIRS
+        ]
+
+        # ── Normality testing (Shapiro-Wilk) ─────────────────────────────────
+        _norm_results = {}
+        _all_normal = True
+        for _d, _v in zip(_DIRS, _arrs):
+            if len(_v) < 3 or np.ptp(_v) == 0:
+                _norm_results[_d] = (np.nan, np.nan)
+                _all_normal = False
+            else:
+                _w_sw, _p_sw = shapiro(_v)
+                _norm_results[_d] = (_w_sw, _p_sw)
+                if _p_sw < 0.05:
+                    _all_normal = False
+
+        doc.add_paragraph('Normality Testing (Shapiro-Wilk):', style='Heading 5')
+        _norm_tbl = doc.add_table(rows=len(_DIRS) + 1, cols=3)
+        _norm_tbl.style = 'Light Grid Accent 1'
+        _norm_tbl.rows[0].cells[0].text = 'Direction'
+        _norm_tbl.rows[0].cells[1].text = 'W statistic'
+        _norm_tbl.rows[0].cells[2].text = 'p-value'
+        for _ri, _d in enumerate(_DIRS, 1):
+            _w_sw, _p_sw = _norm_results[_d]
+            _norm_tbl.rows[_ri].cells[0].text = _d
+            _norm_tbl.rows[_ri].cells[1].text = f'{_w_sw:.4f}' if not np.isnan(_w_sw) else 'N/A'
+            _norm_tbl.rows[_ri].cells[2].text = f'{_p_sw:.2e}' if not np.isnan(_p_sw) else 'N/A'
+
+        _dist_str = 'normally distributed' if _all_normal else 'not normally distributed'
+        doc.add_paragraph(f'Data is {_dist_str} (alpha=0.05).')
+
+        # ── Omnibus test ──────────────────────────────────────────────────────
+        if _all_normal:
+            _stat, _p = f_oneway(*_arrs)
+            _test_name    = 'One-way ANOVA'
+            _grand        = np.mean(np.concatenate(_arrs))
+            _ss_b         = sum(len(a) * (np.mean(a) - _grand) ** 2 for a in _arrs)
+            _ss_t         = sum(np.sum((a - _grand) ** 2) for a in _arrs)
+            _es_omni      = _ss_b / _ss_t if _ss_t > 0 else 0.0
+            _es_type_omni = 'Eta-squared'
+            _es_col_omni  = 'η²'
+        else:
+            _all_combined = np.concatenate(_arrs)
+            if np.ptp(_all_combined) == 0:
+                _stat, _p = 0.0, 1.0
+            else:
+                _stat, _p = kruskal(*_arrs)
+            _test_name    = 'Kruskal-Wallis'
+            _N            = len(_all_combined)
+            _k            = len(_arrs)
+            _es_omni      = (_stat - _k + 1) / (_N - _k) if (_N - _k) > 0 else 0.0
+            _es_type_omni = 'Epsilon-squared'
+            _es_col_omni  = 'ε²'
+
+        doc.add_paragraph(f'{_test_name} (omnibus test):', style='Heading 5')
+        _omni_tbl = doc.add_table(rows=2, cols=4)
+        _omni_tbl.style = 'Light Grid Accent 1'
+        _oh = _omni_tbl.rows[0].cells
+        _oh[0].text = 'Test Name'
+        _oh[1].text = 'Test Statistic'
+        _oh[2].text = 'p-value'
+        _oh[3].text = _es_col_omni
+        _ov = _omni_tbl.rows[1].cells
+        _ov[0].text = _test_name
+        _ov[1].text = f'{_stat:.4f}'
+        _ov[2].text = f'{_p:.2e}' + (' *' if _p < 0.05 else '')
+        _ov[3].text = f'{_es_omni:.4f} ({classify_effect_size(_es_omni, _es_type_omni)})'
+
+        if _p >= 0.05:
+            doc.add_paragraph('Omnibus test not significant (p ≥ 0.05). No post-hoc testing performed.')
+            continue
+
+        # ── Pairwise post-hoc ─────────────────────────────────────────────────
+        _k_dirs = len(_DIRS)  # 5
+        _N_dirs = sum(len(a) for a in _arrs)
+        _df_err = _N_dirs - _k_dirs
+
+        _ph_raw = []
+        for (_di, _da), (_dj, _db) in combinations(enumerate(_DIRS), 2):
+            _a, _b = _arrs[_di], _arrs[_dj]
+            if _all_normal:
+                _s, _pp = ttest_ind(_a, _b, equal_var=False)
+                _n0, _n1 = len(_a), len(_b)
+                _v0, _v1 = np.var(_a, ddof=1), np.var(_b, ddof=1)
+                _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
+                _es = (np.mean(_a) - np.mean(_b)) / _ps if _ps > 0 else 0.0
+                _ph_es_type  = "Cohen's d"
+                _ph_es_label = "Cohen's d"
+            else:
+                _s, _pp = mannwhitneyu(_a, _b, alternative='two-sided')
+                _es = 1 - (2 * _s) / (len(_a) * len(_b))
+                _ph_es_type  = 'Rank-Biserial r'
+                _ph_es_label = 'Rank-Biserial r'
+            _ph_raw.append((_da, _db, _s, _pp, _es))
+
+        if _all_normal:
+            _ph_rows = []
+            for (_da, _db, _s, _pp, _es) in _ph_raw:
+                _cp = float(studentized_range.sf(abs(_s), _k_dirs, _df_err))
+                _cp = min(_cp, 1.0)
+                _ph_rows.append((_da, _db, _s, _cp, _es))
+            _ph_name = "Welch's t-test (Tukey's HSD correction)"
+        else:
+            _ph_rej, _ph_pc, _, _ = multipletests([x[3] for x in _ph_raw], method='holm')
+            _ph_rows = [(_da, _db, _s, _pc, _es)
+                        for (_da, _db, _s, _, _es), _pc in zip(_ph_raw, _ph_pc)]
+            _ph_name = 'Mann-Whitney U (Holm-Bonferroni correction)'
+
+        doc.add_paragraph(f'Pairwise Post-Hoc ({_ph_name}):', style='Heading 5')
+        _ph_tbl = doc.add_table(rows=len(_ph_rows) + 1, cols=5)
+        _ph_tbl.style = 'Light Grid Accent 1'
+        _ph_h = _ph_tbl.rows[0].cells
+        _ph_h[0].text = 'Movement A'
+        _ph_h[1].text = 'Movement B'
+        _ph_h[2].text = 'Statistic'
+        _ph_h[3].text = 'p-value'
+        _ph_h[4].text = _ph_es_label
+        for _ri, (_da, _db, _s, _pp, _es) in enumerate(_ph_rows, 1):
+            _c = _ph_tbl.rows[_ri].cells
+            _c[0].text = _da
+            _c[1].text = _db
+            _c[2].text = f'{_s:.4f}'
+            _c[3].text = f'{_pp:.2e}' + (' *' if _pp < 0.05 else '')
+            _c[4].text = f'{_es:.4f} ({classify_effect_size(_es, _ph_es_type)})'
+
+    # ── 3.  Directional bias plot — per variant (excluding 'stay') ─────────────
+    # For each variant: pool all runs, sum direction counts (only N/E/S/W),
+    # compute % deviation from expected (variant_total_motion / 4).
+
+    doc.add_heading('4. Directional Motion Bias (excluding "stay")', level=3)
+
+    # x-position layout: same block structure as the raw-counts plot above
+    _x_pos2 = {}
+    _block_ctrs2 = {}
+    for _gi, _g in enumerate(all_groups):
+        _bs = _gi * (_block_gap + 0.7)
+        _block_ctrs2[_g] = _bs + 0.35 - (_dir_width * 4) / 2  # center for 4 directions
+        for _di, _d in enumerate(_DIRS):
+            _x_pos2[(_g, _d)] = _bs + _di * _dir_width
+
+    # Sum direction counts across all runs within each (group, variant)
+    _df_var = (
+        _df_counts.groupby(['group', 'variant', 'direction'])['count']
+        .sum()
+        .reset_index()
+    )
+    _df_var_pivot = _df_var.pivot_table(
+        index=['group', 'variant'],
+        columns='direction',
+        values='count',
+        fill_value=0,
+    ).reset_index()
+    _df_var_pivot['_total'] = _df_var_pivot[_DIRS].sum(axis=1)
+
+    _dev_var_rows = []
+    for _, _row in _df_var_pivot.iterrows():
+        _tot = _row['_total']
+        if _tot == 0:
+            continue
+        _expected = _tot / 4.0
+        for _d in _DIRS:
+            _dev_var_rows.append({
+                'group':     _row['group'],
+                'variant':   _row['variant'],
+                'direction': _d,
+                'deviation': (_row[_d] - _expected) / _expected * 100.0,
+            })
+    _df_dev_var = pd.DataFrame(_dev_var_rows)
+
+    fig3, ax3 = plt.subplots(figsize=(12, 7))
+    _rng3 = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _d in _DIRS:
+            _mask = (_df_dev_var['group'] == _g) & (_df_dev_var['direction'] == _d)
+            _vals = _df_dev_var.loc[_mask, 'deviation'].values
+            _x    = _x_pos2[(_g, _d)]
+            _col  = _dir_colors[_d]
+
+            if len(_vals) == 0:
+                continue
+
+            # Jitter first (lower z-order), then bar on top
+            _jit = _rng3.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax3.scatter(_x + _jit, _vals, color=_col, alpha=0.5, s=14, zorder=1)
+
+            _mean_dev = float(np.mean(_vals))
+            ax3.bar(
+                _x, _mean_dev,
+                width=_dir_width * 0.85,
+                color=_col, alpha=0.45,
+                zorder=2,
+            )
+
+    ax3.axhline(0, color='black', linewidth=0.8, linestyle='--', zorder=0)
+    ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'+{v:.0f}%' if v > 0 else f'{v:.0f}%'))
+    _legend_handles = [mpatches.Patch(color=_dir_colors[_d], label=_d) for _d in _DIRS]
+    ax3.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Direction')
+    ax3.set_xticks([_block_ctrs2[_g] for _g in all_groups])
+    ax3.set_xticklabels(all_groups, fontsize=11)
+    ax3.set_ylabel('Deviation from Expected Frequency (%)', fontsize=12)
+    ax3.set_title('Directional Motion Bias — Deviation from Equal Distribution, pooled per Variant (by Group)', fontsize=14)
+    ax3.grid(True, alpha=0.3, axis='y')
+
+    _fig3_path = figures_dir / 'movement_direction_deviation_per_variant.png'
+    fig3.tight_layout()
+    fig3.savefig(str(_fig3_path), dpi=150, bbox_inches='tight')
+    plt.close(fig3)
+
+    doc.add_paragraph(
+        'For each variant, all runs are pooled and the total movement count per direction is summed. '
+        'The expected count per direction is the variant\'s total movement count ÷ 4. '
+        'Bars show the mean deviation across variants; jitter shows individual variants.'
+    )
+    doc.add_picture(str(_fig3_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+
+def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -> None:
+    """
+    Analyze decision correctness across groups and ticks (excluding tick 0).
+
+    A decision can be:
+      - 'correct': appropriate action for sensory input
+      - 'nothing_sensed': moved but no food sensed anywhere (uninformed)
+      - 'incorrect': wrong action given the sensory input
+
+    Steps:
+      1. Plot counts of each decision type per run, stratified by group
+      2. Plot counts excluding 'nothing_sensed'
+      3. Plot % distribution per variant (pooled runs)
+      4. Plot % distribution excluding 'nothing_sensed' from totals
+      5. Statistical tests: do groups differ in decision quality?
+
+    Args:
+        df_per_tick:     Per-tick tracking DataFrame with 'correct' column (global df_per_tick).
+        group_color_map: Dict mapping group name -> hex colour string.
+    """
+    if df_per_tick is None or len(df_per_tick) == 0 or 'correct' not in df_per_tick.columns:
+        return
+
+    figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
+    figures_dir.mkdir(exist_ok=True)
+
+    # Exclude tick 0 (no real decision made then)
+    df = df_per_tick[df_per_tick['tick'] > 0].copy()
+    
+    _DECISION_TYPES = ['correct', 'nothing_sensed', 'incorrect']
+    _DECISION_TYPES_INFORMED = ['correct', 'incorrect']
+    
+    _decision_colors = {
+        'correct': '#59a14f',
+        'nothing_sensed': '#999999',
+        'incorrect': '#e15759'
+    }
+
+    all_groups = sorted(df['group'].unique())
+    n_groups = len(all_groups)
+
+    doc.add_heading('Decision Analysis', level=2)
+
+    # ── 1. Build per-run decision counts ──────────────────────────────────────
+    doc.add_heading('1. Decision Counts per Run (All Decision Types)', level=3)
+
+    # Count per decision type per run
+    _rows = []
+    for (_grp, _var, _run), _grp_df in df.groupby(['group', 'variant', 'run']):
+        for _dt in _DECISION_TYPES:
+            _rows.append({
+                'group':        _grp,
+                'variant':      _var,
+                'run':          _run,
+                'decision_type': _dt,
+                'count':        int((_grp_df['correct'] == _dt).sum()),
+            })
+    _df_counts_all = pd.DataFrame(_rows)
+
+    # Plot 1: All decision types
+    _dir_width   = 0.7 / len(_DECISION_TYPES)
+    _block_gap   = 1.0
+    _x_positions  = {}
+    _block_centers = {}
+    for _gi, _g in enumerate(all_groups):
+        _block_start = _gi * (_block_gap + 0.7)
+        _block_centers[_g] = _block_start + 0.35 - _dir_width / 2
+        for _di, _dt in enumerate(_DECISION_TYPES):
+            _x_positions[(_g, _dt)] = _block_start + _di * _dir_width
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _dt in _DECISION_TYPES:
+            _vals = _df_counts_all[(_df_counts_all['group'] == _g) & (_df_counts_all['decision_type'] == _dt)]['count'].values
+            _x    = _x_positions[(_g, _dt)]
+            _col  = _decision_colors[_dt]
+            # jitter
+            _jit = _rng.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.4, s=10, zorder=1)
+            # box
+            if len(_vals) >= 2:
+                _bp = ax.boxplot(
+                    _vals,
+                    positions=[_x],
+                    widths=_dir_width * 0.8,
+                    patch_artist=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                )
+                _bp['boxes'][0].set_facecolor(_col)
+                _bp['boxes'][0].set_alpha(0.35)
+                _bp['medians'][0].set_color('black')
+
+    # Legend
+    _legend_handles = [mpatches.Patch(color=_decision_colors[_dt], label=_dt) for _dt in _DECISION_TYPES]
+    ax.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Decision Type')
+    ax.set_xticks([_block_centers[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Decision Count per Run', fontsize=12)
+    ax.set_title('Decision Type Distribution by Group (All Ticks ≥ 1)', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'decisions_n_all.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 2. Plot informed decisions only (excluding nothing_sensed) ──────────────
+    doc.add_heading('2. Decision Counts per Run (Informed Decisions Only)', level=3)
+
+    _dir_width_inf   = 0.7 / len(_DECISION_TYPES_INFORMED)
+    _x_positions_inf = {}
+    _block_centers_inf = {}
+    for _gi, _g in enumerate(all_groups):
+        _block_start = _gi * (_block_gap + 0.7)
+        _block_centers_inf[_g] = _block_start + 0.35 - _dir_width_inf / 2
+        for _di, _dt in enumerate(_DECISION_TYPES_INFORMED):
+            _x_positions_inf[(_g, _dt)] = _block_start + _di * _dir_width_inf
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _dt in _DECISION_TYPES_INFORMED:
+            _vals = _df_counts_all[(_df_counts_all['group'] == _g) & (_df_counts_all['decision_type'] == _dt)]['count'].values
+            _x    = _x_positions_inf[(_g, _dt)]
+            _col  = _decision_colors[_dt]
+            # jitter
+            _jit = _rng.uniform(-_dir_width_inf * 0.3, _dir_width_inf * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.4, s=10, zorder=1)
+            # box
+            if len(_vals) >= 2:
+                _bp = ax.boxplot(
+                    _vals,
+                    positions=[_x],
+                    widths=_dir_width_inf * 0.8,
+                    patch_artist=True,
+                    showfliers=False,
+                    manage_ticks=False,
+                )
+                _bp['boxes'][0].set_facecolor(_col)
+                _bp['boxes'][0].set_alpha(0.35)
+                _bp['medians'][0].set_color('black')
+
+    _legend_handles_inf = [mpatches.Patch(color=_decision_colors[_dt], label=_dt) for _dt in _DECISION_TYPES_INFORMED]
+    ax.legend(handles=_legend_handles_inf, loc='upper right', fontsize=10, title='Decision Type')
+    ax.set_xticks([_block_centers_inf[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Decision Count per Run', fontsize=12)
+    ax.set_title('Informed Decision Distribution by Group (Excluding "Nothing Sensed")', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'decisions_n_informed.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 3. Percentage distribution (all decision types, pooled per variant) ─────
+    doc.add_heading('3. Decision Type Distribution (% Per Variant, All Types)', level=3)
+
+    # Sum decision counts per variant across all runs
+    _df_var_all = (
+        _df_counts_all.groupby(['group', 'variant', 'decision_type'])['count']
+        .sum()
+        .reset_index()
+    )
+    _df_var_pivot_all = _df_var_all.pivot_table(
+        index=['group', 'variant'],
+        columns='decision_type',
+        values='count',
+        fill_value=0,
+    ).reset_index()
+    _df_var_pivot_all['_total'] = _df_var_pivot_all[_DECISION_TYPES].sum(axis=1)
+
+    _pct_rows_all = []
+    for _, _row in _df_var_pivot_all.iterrows():
+        _tot = _row['_total']
+        if _tot == 0:
+            continue
+        for _dt in _DECISION_TYPES:
+            _pct_rows_all.append({
+                'group':        _row['group'],
+                'variant':      _row['variant'],
+                'decision_type': _dt,
+                'percentage':   (_row[_dt] / _tot * 100.0) if _tot > 0 else 0.0,
+            })
+    _df_pct_all = pd.DataFrame(_pct_rows_all)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _dt in _DECISION_TYPES:
+            _mask = (_df_pct_all['group'] == _g) & (_df_pct_all['decision_type'] == _dt)
+            _vals = _df_pct_all.loc[_mask, 'percentage'].values
+            _x    = _x_positions[(_g, _dt)]
+            _col  = _decision_colors[_dt]
+
+            if len(_vals) == 0:
+                continue
+
+            _jit = _rng.uniform(-_dir_width * 0.3, _dir_width * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.5, s=14, zorder=1)
+
+            _mean_pct = float(np.mean(_vals))
+            ax.bar(
+                _x, _mean_pct,
+                width=_dir_width * 0.85,
+                color=_col, alpha=0.45,
+                zorder=2,
+            )
+
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.0f}%'))
+    ax.legend(handles=_legend_handles, loc='upper right', fontsize=10, title='Decision Type')
+    ax.set_xticks([_block_centers[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Percentage of Decisions (%)', fontsize=12)
+    ax.set_title('Decision Type Distribution by Group (% per Variant, All Types)', fontsize=14)
+    ax.set_ylim(0, 100)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'decisions_ratio_all.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 4. Percentage distribution (informed only, excluding nothing_sensed from totals) ─
+    doc.add_heading('4. Informed Decision Distribution (% Per Variant, Excluding "Nothing Sensed")', level=3)
+
+    # Filter to only informed decisions, then recalculate percentages
+    _df_var_inf = (
+        _df_counts_all[_df_counts_all['decision_type'].isin(_DECISION_TYPES_INFORMED)]
+        .groupby(['group', 'variant', 'decision_type'])['count']
+        .sum()
+        .reset_index()
+    )
+    _df_var_pivot_inf = _df_var_inf.pivot_table(
+        index=['group', 'variant'],
+        columns='decision_type',
+        values='count',
+        fill_value=0,
+    ).reset_index()
+    _df_var_pivot_inf['_total'] = _df_var_pivot_inf[_DECISION_TYPES_INFORMED].sum(axis=1)
+
+    _pct_rows_inf = []
+    for _, _row in _df_var_pivot_inf.iterrows():
+        _tot = _row['_total']
+        if _tot == 0:
+            continue
+        for _dt in _DECISION_TYPES_INFORMED:
+            _pct_rows_inf.append({
+                'group':        _row['group'],
+                'variant':      _row['variant'],
+                'decision_type': _dt,
+                'percentage':   (_row[_dt] / _tot * 100.0) if _tot > 0 else 0.0,
+            })
+    _df_pct_inf = pd.DataFrame(_pct_rows_inf)
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    _rng = np.random.default_rng(42)
+
+    for _g in all_groups:
+        for _dt in _DECISION_TYPES_INFORMED:
+            _mask = (_df_pct_inf['group'] == _g) & (_df_pct_inf['decision_type'] == _dt)
+            _vals = _df_pct_inf.loc[_mask, 'percentage'].values
+            _x    = _x_positions_inf[(_g, _dt)]
+            _col  = _decision_colors[_dt]
+
+            if len(_vals) == 0:
+                continue
+
+            _jit = _rng.uniform(-_dir_width_inf * 0.3, _dir_width_inf * 0.3, size=len(_vals))
+            ax.scatter(_x + _jit, _vals, color=_col, alpha=0.5, s=14, zorder=1)
+
+            _mean_pct = float(np.mean(_vals))
+            ax.bar(
+                _x, _mean_pct,
+                width=_dir_width_inf * 0.85,
+                color=_col, alpha=0.45,
+                zorder=2,
+            )
+
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f'{v:.0f}%'))
+    ax.legend(handles=_legend_handles_inf, loc='upper right', fontsize=10, title='Decision Type')
+    ax.set_xticks([_block_centers_inf[_g] for _g in all_groups])
+    ax.set_xticklabels(all_groups, fontsize=11)
+    ax.set_ylabel('Percentage of Informed Decisions (%)', fontsize=12)
+    ax.set_title('Informed Decision Distribution by Group (% of Informed Decisions Only)', fontsize=14)
+    ax.set_ylim(0, 100)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    _fig_path = figures_dir / 'decisions_ratio_informed.png'
+    fig.tight_layout()
+    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    doc.add_picture(str(_fig_path), width=6.5 * 914400)
+    doc.add_paragraph()
+
+    # ── 5. Statistical testing: Do groups differ in decision quality? ───────────
+    doc.add_heading('5. Statistical Comparison — Decision Quality Between Groups', level=3)
+
+    # Test 1: All three decision types
+    doc.add_heading('Test 1: All Decision Types (Correct vs Nothing_Sensed vs Incorrect)', level=4)
+    
+    doc.add_paragraph(
+        'We test whether the three groups show different distributions across all decision types. '
+        'Data are the % of each decision type per variant. '
+    )
+
+    for _dt in _DECISION_TYPES:
+        doc.add_heading(f'Decision Type: {_dt.upper()}', level=5)
+
+        _arrs = []
+        for _g in all_groups:
+            _mask = (_df_pct_all['group'] == _g) & (_df_pct_all['decision_type'] == _dt)
+            _vals = _df_pct_all.loc[_mask, 'percentage'].values
+            _arrs.append(_vals)
+
+        # Normality testing
+        _norm_results = {}
+        _all_normal = True
+        for _g, _v in zip(all_groups, _arrs):
+            if len(_v) < 3 or np.ptp(_v) == 0:
+                _norm_results[_g] = (np.nan, np.nan)
+                _all_normal = False
+            else:
+                _w_sw, _p_sw = shapiro(_v)
+                _norm_results[_g] = (_w_sw, _p_sw)
+                if _p_sw < 0.05:
+                    _all_normal = False
+
+        # Omnibus test
+        if _all_normal:
+            _stat, _p = f_oneway(*_arrs)
+            _test_name = 'One-way ANOVA'
+            _grand = np.mean(np.concatenate(_arrs))
+            _ss_b = sum(len(a) * (np.mean(a) - _grand) ** 2 for a in _arrs)
+            _ss_t = sum(np.sum((a - _grand) ** 2) for a in _arrs)
+            _es_omni = _ss_b / _ss_t if _ss_t > 0 else 0.0
+            _es_type_omni = 'Eta-squared'
+            _es_col_omni = 'η²'
+        else:
+            _all_combined = np.concatenate(_arrs)
+            if np.ptp(_all_combined) == 0:
+                _stat, _p = 0.0, 1.0
+            else:
+                _stat, _p = kruskal(*_arrs)
+            _test_name = 'Kruskal-Wallis'
+            _N = len(_all_combined)
+            _k = len(_arrs)
+            _es_omni = (_stat - _k + 1) / (_N - _k) if (_N - _k) > 0 else 0.0
+            _es_type_omni = 'Epsilon-squared'
+            _es_col_omni = 'ε²'
+
+        _omni_tbl = doc.add_table(rows=2, cols=4)
+        _omni_tbl.style = 'Light Grid Accent 1'
+        _oh = _omni_tbl.rows[0].cells
+        _oh[0].text = 'Test Name'
+        _oh[1].text = 'Test Statistic'
+        _oh[2].text = 'p-value'
+        _oh[3].text = _es_col_omni
+        _ov = _omni_tbl.rows[1].cells
+        _ov[0].text = _test_name
+        _ov[1].text = f'{_stat:.4f}'
+        _ov[2].text = f'{_p:.2e}' + (' *' if _p < 0.05 else '')
+        _ov[3].text = f'{_es_omni:.4f} ({classify_effect_size(_es_omni, _es_type_omni)})'
+
+        if _p < 0.05:
+            doc.add_paragraph(f'Result: Groups show SIGNIFICANT differences in {_dt} rates (p < 0.05) ✓')
+            
+            # ── Pairwise post-hoc (only if >2 groups) ────────────────────────────
+            if len(all_groups) > 2:
+                _k_groups = len(all_groups)
+                _N_groups = sum(len(a) for a in _arrs)
+                _df_err = _N_groups - _k_groups
+
+                _ph_raw = []
+                for (_gi, _ga), (_gj, _gb) in combinations(enumerate(all_groups), 2):
+                    _a, _b = _arrs[_gi], _arrs[_gj]
+                    if _all_normal:
+                        _s, _pp = ttest_ind(_a, _b, equal_var=False)
+                        _n0, _n1 = len(_a), len(_b)
+                        _v0, _v1 = np.var(_a, ddof=1), np.var(_b, ddof=1)
+                        _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
+                        _es = (np.mean(_a) - np.mean(_b)) / _ps if _ps > 0 else 0.0
+                        _ph_es_type  = "Cohen's d"
+                        _ph_es_label = "Cohen's d"
+                    else:
+                        _s, _pp = mannwhitneyu(_a, _b, alternative='two-sided')
+                        _es = 1 - (2 * _s) / (len(_a) * len(_b))
+                        _ph_es_type  = 'Rank-Biserial r'
+                        _ph_es_label = 'Rank-Biserial r'
+                    _ph_raw.append((_ga, _gb, _s, _pp, _es))
+
+                if _all_normal:
+                    _ph_rows = []
+                    for (_ga, _gb, _s, _pp, _es) in _ph_raw:
+                        _cp = float(studentized_range.sf(abs(_s), _k_groups, _df_err))
+                        _cp = min(_cp, 1.0)
+                        _ph_rows.append((_ga, _gb, _s, _cp, _es))
+                    _ph_name = "Welch's t-test (Tukey's HSD correction)"
+                else:
+                    _ph_rej, _ph_pc, _, _ = multipletests([x[3] for x in _ph_raw], method='holm')
+                    _ph_rows = [(_ga, _gb, _s, _pc, _es)
+                                for (_ga, _gb, _s, _, _es), _pc in zip(_ph_raw, _ph_pc)]
+                    _ph_name = 'Mann-Whitney U (Holm-Bonferroni correction)'
+
+                doc.add_paragraph(f'Pairwise Post-Hoc ({_ph_name}):', style='Heading 5')
+                _ph_tbl = doc.add_table(rows=len(_ph_rows) + 1, cols=5)
+                _ph_tbl.style = 'Light Grid Accent 1'
+                _ph_h = _ph_tbl.rows[0].cells
+                _ph_h[0].text = 'Group A'
+                _ph_h[1].text = 'Group B'
+                _ph_h[2].text = 'Statistic'
+                _ph_h[3].text = 'p-value'
+                _ph_h[4].text = _ph_es_label
+                for _ri, (_ga, _gb, _s, _pp, _es) in enumerate(_ph_rows, 1):
+                    _c = _ph_tbl.rows[_ri].cells
+                    _c[0].text = _ga
+                    _c[1].text = _gb
+                    _c[2].text = f'{_s:.4f}'
+                    _c[3].text = f'{_pp:.2e}' + (' *' if _pp < 0.05 else '')
+                    _c[4].text = f'{_es:.4f} ({classify_effect_size(_es, _ph_es_type)})'
+        else:
+            doc.add_paragraph(f'Result: No significant difference in {_dt} rates between groups (p ≥ 0.05)')
+
+        doc.add_paragraph()
+
+    # Test 2: Informed decisions only (correct vs incorrect)
+    doc.add_heading('Test 2: Informed Decisions Only (Correct vs Incorrect)', level=4)
+
+    doc.add_paragraph(
+        'We test whether the three groups show different rates of correct decisions among informed (non-uncertain) decisions only. '
+        'Data are the % of correct decisions among informed decisions, per variant. '
+    )
+
+    # Extract correct % from informed only
+    _df_correct_pct = _df_pct_inf[_df_pct_inf['decision_type'] == 'correct'].copy()
+
+    _arrs_correct = []
+    for _g in all_groups:
+        _mask = (_df_correct_pct['group'] == _g)
+        _vals = _df_correct_pct.loc[_mask, 'percentage'].values
+        _arrs_correct.append(_vals)
+
+    # Normality testing
+    _norm_results_correct = {}
+    _all_normal_correct = True
+    for _g, _v in zip(all_groups, _arrs_correct):
+        if len(_v) < 3 or np.ptp(_v) == 0:
+            _norm_results_correct[_g] = (np.nan, np.nan)
+            _all_normal_correct = False
+        else:
+            _w_sw, _p_sw = shapiro(_v)
+            _norm_results_correct[_g] = (_w_sw, _p_sw)
+            if _p_sw < 0.05:
+                _all_normal_correct = False
+
+    # Omnibus test
+    if _all_normal_correct:
+        _stat_c, _p_c = f_oneway(*_arrs_correct)
+        _test_name_c = 'One-way ANOVA'
+        _grand_c = np.mean(np.concatenate(_arrs_correct))
+        _ss_b_c = sum(len(a) * (np.mean(a) - _grand_c) ** 2 for a in _arrs_correct)
+        _ss_t_c = sum(np.sum((a - _grand_c) ** 2) for a in _arrs_correct)
+        _es_c = _ss_b_c / _ss_t_c if _ss_t_c > 0 else 0.0
+        _es_type_c = 'Eta-squared'
+        _es_col_c = 'η²'
+    else:
+        _all_combined_c = np.concatenate(_arrs_correct)
+        if np.ptp(_all_combined_c) == 0:
+            _stat_c, _p_c = 0.0, 1.0
+        else:
+            _stat_c, _p_c = kruskal(*_arrs_correct)
+        _test_name_c = 'Kruskal-Wallis'
+        _N_c = len(_all_combined_c)
+        _k_c = len(_arrs_correct)
+        _es_c = (_stat_c - _k_c + 1) / (_N_c - _k_c) if (_N_c - _k_c) > 0 else 0.0
+        _es_type_c = 'Epsilon-squared'
+        _es_col_c = 'ε²'
+
+    _omni_tbl_c = doc.add_table(rows=2, cols=4)
+    _omni_tbl_c.style = 'Light Grid Accent 1'
+    _oh_c = _omni_tbl_c.rows[0].cells
+    _oh_c[0].text = 'Test Name'
+    _oh_c[1].text = 'Test Statistic'
+    _oh_c[2].text = 'p-value'
+    _oh_c[3].text = _es_col_c
+    _ov_c = _omni_tbl_c.rows[1].cells
+    _ov_c[0].text = _test_name_c
+    _ov_c[1].text = f'{_stat_c:.4f}'
+    _ov_c[2].text = f'{_p_c:.2e}' + (' *' if _p_c < 0.05 else '')
+    _ov_c[3].text = f'{_es_c:.4f} ({classify_effect_size(_es_c, _es_type_c)})'
+
+    if _p_c < 0.05:
+        doc.add_paragraph('Result: Groups show SIGNIFICANT differences in correct decision rates (p < 0.05) ✓')
+        
+        # ── Pairwise post-hoc (only if >2 groups) ────────────────────────────
+        if len(all_groups) > 2:
+            _k_groups_c = len(all_groups)
+            _N_groups_c = sum(len(a) for a in _arrs_correct)
+            _df_err_c = _N_groups_c - _k_groups_c
+
+            _ph_raw_c = []
+            for (_gi, _ga), (_gj, _gb) in combinations(enumerate(all_groups), 2):
+                _a, _b = _arrs_correct[_gi], _arrs_correct[_gj]
+                if _all_normal_correct:
+                    _s, _pp = ttest_ind(_a, _b, equal_var=False)
+                    _n0, _n1 = len(_a), len(_b)
+                    _v0, _v1 = np.var(_a, ddof=1), np.var(_b, ddof=1)
+                    _ps = np.sqrt(((_n0-1)*_v0 + (_n1-1)*_v1) / (_n0+_n1-2))
+                    _es = (np.mean(_a) - np.mean(_b)) / _ps if _ps > 0 else 0.0
+                    _ph_es_type_c  = "Cohen's d"
+                    _ph_es_label_c = "Cohen's d"
+                else:
+                    _s, _pp = mannwhitneyu(_a, _b, alternative='two-sided')
+                    _es = 1 - (2 * _s) / (len(_a) * len(_b))
+                    _ph_es_type_c  = 'Rank-Biserial r'
+                    _ph_es_label_c = 'Rank-Biserial r'
+                _ph_raw_c.append((_ga, _gb, _s, _pp, _es))
+
+            if _all_normal_correct:
+                _ph_rows_c = []
+                for (_ga, _gb, _s, _pp, _es) in _ph_raw_c:
+                    _cp = float(studentized_range.sf(abs(_s), _k_groups_c, _df_err_c))
+                    _cp = min(_cp, 1.0)
+                    _ph_rows_c.append((_ga, _gb, _s, _cp, _es))
+                _ph_name_c = "Welch's t-test (Tukey's HSD correction)"
+            else:
+                _ph_rej_c, _ph_pc_c, _, _ = multipletests([x[3] for x in _ph_raw_c], method='holm')
+                _ph_rows_c = [(_ga, _gb, _s, _pc, _es)
+                              for (_ga, _gb, _s, _, _es), _pc in zip(_ph_raw_c, _ph_pc_c)]
+                _ph_name_c = 'Mann-Whitney U (Holm-Bonferroni correction)'
+
+            doc.add_paragraph(f'Pairwise Post-Hoc ({_ph_name_c}):', style='Heading 5')
+            _ph_tbl_c = doc.add_table(rows=len(_ph_rows_c) + 1, cols=5)
+            _ph_tbl_c.style = 'Light Grid Accent 1'
+            _ph_h_c = _ph_tbl_c.rows[0].cells
+            _ph_h_c[0].text = 'Group A'
+            _ph_h_c[1].text = 'Group B'
+            _ph_h_c[2].text = 'Statistic'
+            _ph_h_c[3].text = 'p-value'
+            _ph_h_c[4].text = _ph_es_label_c
+            for _ri, (_ga, _gb, _s, _pp, _es) in enumerate(_ph_rows_c, 1):
+                _c = _ph_tbl_c.rows[_ri].cells
+                _c[0].text = _ga
+                _c[1].text = _gb
+                _c[2].text = f'{_s:.4f}'
+                _c[3].text = f'{_pp:.2e}' + (' *' if _pp < 0.05 else '')
+                _c[4].text = f'{_es:.4f} ({classify_effect_size(_es, _ph_es_type_c)})'
+    else:
+        doc.add_paragraph('Result: No significant difference in correct decision rates between groups (p ≥ 0.05)')
+
+    doc.add_paragraph()
+
+
 # ==================================================================================================================================================
 # SECTION C) DATA LOADING
 # ==================================================================================================================================================
@@ -2854,6 +3761,53 @@ if per_tick_available:
     # Normalised tick position per run: tick 0 → 0 %, last tick → 100 %
     _max_tick_per_run = df_per_tick.groupby(['group', 'variant', 'run'])['tick'].transform('max')
     df_per_tick['ticks_norm'] = (df_per_tick['tick'] / _max_tick_per_run * 100).round(1)
+    
+    # --- Add 'correct' column: classify each decision as correct / nothing_sensed / incorrect ---
+    # Decode movement to str if needed
+    if df_per_tick['movement'].dtype == object and len(df_per_tick) > 0 and isinstance(df_per_tick['movement'].iloc[0], bytes):
+        df_per_tick['movement'] = df_per_tick['movement'].str.decode('utf-8')
+    
+    # Create lookahead column for food_consumed (within each run)
+    df_per_tick['food_consumed_next'] = (
+        df_per_tick.groupby(['group', 'variant', 'run'])['food_consumed'].shift(-1).fillna(0).astype(int)
+    )
+    
+    # Initialize correct column with 'incorrect' (default)
+    df_per_tick['correct'] = 'incorrect'
+    
+    # Process each row to determine decision correctness
+    for idx in df_per_tick.index:
+        movement = df_per_tick.loc[idx, 'movement']
+        
+        if movement == 'stay':
+            # Correct if food is consumed in the next tick
+            if df_per_tick.loc[idx, 'food_consumed_next'] == 1:
+                df_per_tick.loc[idx, 'correct'] = 'correct'
+            else:
+                df_per_tick.loc[idx, 'correct'] = 'incorrect'
+        elif movement in ['N', 'E', 'S', 'W']:
+            # Map movement direction to food_sensed column
+            food_sensed_col = f'food_sensed_{movement}'
+            food_sensed_val = df_per_tick.loc[idx, food_sensed_col]
+            
+            if food_sensed_val == 1:
+                # Food sensed in the movement direction = correct
+                df_per_tick.loc[idx, 'correct'] = 'correct'
+            else:
+                # Check if nothing was sensed in any direction
+                other_dirs = [d for d in ['N', 'E', 'S', 'W'] if d != movement]
+                other_sensed = [df_per_tick.loc[idx, f'food_sensed_{d}'] for d in other_dirs]
+                
+                if all(s == 0 for s in other_sensed):
+                    # Nothing sensed in any direction
+                    df_per_tick.loc[idx, 'correct'] = 'nothing_sensed'
+                else:
+                    # Food sensed but not in the movement direction = incorrect
+                    df_per_tick.loc[idx, 'correct'] = 'incorrect'
+    
+    # Drop the lookahead column (no longer needed)
+    df_per_tick.drop(columns=['food_consumed_next'], inplace=True)
+    
     print(f"df_per_tick:  {len(df_per_tick)} rows")
 else:
     df_per_tick = None
@@ -3074,261 +4028,23 @@ analyze_foods_consumed_per_direction(df_per_tick, group_color_map=COLOR_MAP)
 
 #region 5 Movement
 
-doc.add_heading("5.Movement", level=1)
+doc.add_heading("5. Movement", level=1)
 analyze_per_run(df_summary, 'distance', 'Distance Traveled', 'distance', group_color_map=COLOR_MAP)
 analyze_per_run(df_summary, 'distance_norm', 'Distance Traveled (normalized by Lifetime)', 'distance_norm', group_color_map=COLOR_MAP)
 analyze_per_tick_metric(df_per_tick, 'manhattan_dist', 'Manhattan Distance from origin', 'manhattan_dist', group_color_map=COLOR_MAP)
 plot_heatmap_overview()
-#analyze_foods_consumed_per_direction(df_per_tick, group_color_map=COLOR_MAP)
+analyze_movements_per_direction(df_per_tick, group_color_map=COLOR_MAP)
 
 #endregion 5 Movement
 
 
-#endregion # closes 3.1
+#region 6 Decisions
 
-# #region 3.2 Food Consumption
+doc.add_heading("6. Decisions", level=1)
+analyze_decisions(df_per_tick, group_color_map=COLOR_MAP)
 
-# print("  Analyzing food consumption...")
-# doc.add_heading("3.2. Food Consumption", level=2)
+#endregion 6 Decisions
 
-# analyze_per_run(df_all, 'foods', 'Foods Consumed', 'foods', group_color_map=COLOR_MAP)
-# print("  Food consumption analysis done.")
-
-
-# # Calculate normalized food consumption (foods per tick)
-# # Temporarily make df_all writable to add new column
-# df_all.flags.writeable = True
-# df_all['foods_norm'] = df_all['foods'] / df_all['lifetime_ticks']
-# df_all.flags.writeable = False
-
-# # Analyze normalized food consumption
-# analyze_per_run(df_all, 'foods_norm', 'Foods Consumed (normalized to life time)', 'foods_norm', group_color_map=COLOR_MAP)
-
-# doc.add_paragraph('The food consumption per tick shows, that EA solution don\'t just randomly find food at the end of their lifes and then life another 17 ticks. The random rate to survive would be 1 food / 17 ticks, which equals 0.05 foods/tick. The exact rate at which random surviving variants feed by chance. The hand-wired solution finds food with about double, the EA solutions with more than tripple that frquency. None of the networks have information about the current energy levels.', style='Normal')
-
-# # Food sensing per direction (from per-tick data)
-# if per_tick_included and len(df_all_per_tick) > 0:
-#     print("  Aggregating food sensing by direction from per-tick data...")
-#     # Check which direction columns exist in per-tick data
-#     per_tick_cols = df_all_per_tick.columns.tolist()
-#     # Map short direction names (N/E/S/W) to long names (north/east/south/west)
-#     direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west'}
-#     available_directions_pt = []
-#     for short_dir, long_dir in direction_map.items():
-#         col_name = f"food_sensed_{short_dir}"
-#         if col_name in per_tick_cols:
-#             available_directions_pt.append((short_dir, long_dir))
-    
-#     if available_directions_pt:
-#         # Aggregate per_tick food_sensed by direction, per run
-#         for short_dir, long_dir in available_directions_pt:
-#             col_name = f"food_sensed_{short_dir}"
-#             # Sum across all ticks for each (source, variant, run_id)
-#             agg_data = df_all_per_tick.groupby(['source', 'variant', 'run_id'])[col_name].sum().reset_index()
-#             agg_data.rename(columns={col_name: f'food_sensed_sum_{long_dir}'}, inplace=True)
-            
-#             # Merge back into df_all
-#             df_all.flags.writeable = True
-#             # Merge on source, variant, run_id (which are the index keys in df_all)
-#             df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
-#             # Normalize by lifetime_ticks
-#             df_all[f'food_sensed_norm_{long_dir}'] = df_all[f'food_sensed_sum_{long_dir}'] / df_all['lifetime_ticks']
-#             df_all.flags.writeable = False
-        
-#         # Analyze food sensing per direction
-#         print("  Analyzing food sensing by direction...")
-#         analyze_per_run_direction(df_all, 'food_sensed_norm', 'Food Sensed per direction (normalized to life time)', 'food_sensed', group_color_map=COLOR_MAP)
-#         print("  Food sensing analysis done.")
-#     else:
-#         print("  No direction-specific food_sensed columns found in per-tick data.")
-#         doc.add_paragraph("TBD - Food sensing by direction data not available")
-# else:
-#     print("  Per-tick data not available for food sensing direction analysis.")
-#     doc.add_paragraph("TBD - Per-tick data required for direction analysis")
-
-# doc.add_paragraph()
-
-# #endregion # closes 3.2
-
-# #region 3.3 Movement
-
-# print("  Analyzing movement...")
-# doc.add_heading("3.3. Movement", level=2)
-
-# #region 3.3.1 Movements Made
-
-# doc.add_heading("3.3.1. Movements Made", level=3)
-
-# # Calculate total movements (sum across all directions)
-# print("    Calculating total movements...")
-# df_all.flags.writeable = True
-# if 'moves_north' in df_all.columns:
-#     df_all['moves_total'] = df_all['moves_north'] + df_all['moves_south'] + df_all['moves_east'] + df_all['moves_west']
-# df_all.flags.writeable = False
-
-# # Analyze total movements
-# if 'moves_total' in df_all.columns:
-#     analyze_per_run(df_all, 'moves_total', 'Total Movements Made', 'moves_total', group_color_map=COLOR_MAP)
-# print("    Total movements analysis done.")
-
-# # Calculate normalized movements (movements per tick)
-# print("    Calculating normalized movements...")
-# df_all.flags.writeable = True
-# if 'moves_total' in df_all.columns:
-#     df_all['moves_norm'] = df_all['moves_total'] / df_all['lifetime_ticks']
-# df_all.flags.writeable = False
-
-# # Analyze normalized movements
-# if 'moves_norm' in df_all.columns:
-#     analyze_per_run(df_all, 'moves_norm', 'Movements Made (normalized to life time)', 'moves_norm', group_color_map=COLOR_MAP)
-# print("    Normalized movements analysis done.")
-# doc.add_paragraph("TBD")
-
-# # Movements per direction (from per-tick data)
-# if per_tick_included and len(df_all_per_tick) > 0:
-#     print("    Aggregating movements by direction from per-tick data...")
-#     # Movement data is in a single 'movement' column with values b'N'/b'E'/b'S'/b'W'/b'stay' (bytes)
-#     if 'movement' in df_all_per_tick.columns:
-#         # Convert movement column to string if it contains bytes
-#         if df_all_per_tick['movement'].dtype == 'object' and isinstance(df_all_per_tick['movement'].iloc[0], bytes):
-#             df_all_per_tick['movement'] = df_all_per_tick['movement'].str.decode('utf-8')
-        
-#         # Map short direction names (N/E/S/W) to long names (north/east/south/west)
-#         direction_map = {'N': 'north', 'E': 'east', 'S': 'south', 'W': 'west', 'stay': 'stay'}
-#         print(f"      df_all_per_tick shape: {df_all_per_tick.shape}")
-#         print(f"      df_all shape before aggregation: {df_all.shape}")
-#         print(f"      movement values: {sorted(df_all_per_tick['movement'].unique())}")
-        
-#         # Aggregate movements by direction, per run
-#         for short_dir, long_dir in direction_map.items():
-#             # Count occurrences of this direction across all ticks for each (source, variant, run_id)
-#             agg_data = df_all_per_tick[df_all_per_tick['movement'] == short_dir].groupby(['source', 'variant', 'run_id']).size().reset_index(name=f'moves_sum_{long_dir}')
-#             print(f"      {short_dir} ({long_dir}): {len(agg_data)} rows with data")
-            
-#             # Merge back into df_all
-#             df_all.flags.writeable = True
-#             df_all = df_all.merge(agg_data, on=['source', 'variant', 'run_id'], how='left')
-#             # Fill NaN (no movements in that direction) with 0
-#             df_all[f'moves_sum_{long_dir}'].fillna(0, inplace=True)
-#             # Normalize by lifetime_ticks
-#             df_all[f'moves_norm_{long_dir}'] = df_all[f'moves_sum_{long_dir}'] / df_all['lifetime_ticks']
-#             df_all.flags.writeable = False
-#             print(f"      Created moves_norm_{long_dir}: min={df_all[f'moves_norm_{long_dir}'].min():.4f}, max={df_all[f'moves_norm_{long_dir}'].max():.4f}, mean={df_all[f'moves_norm_{long_dir}'].mean():.4f}")
-        
-#         print(f"      df_all shape after aggregation: {df_all.shape}")
-#         print(f"      Columns: {[c for c in df_all.columns if 'moves_norm' in c]}")
-        
-#         # Analyze movements per direction
-#         print("    Analyzing movements by direction...")
-#         analyze_per_run_direction(df_all, 'moves_norm', 'Movements Made per direction (normalized to life time)', 'moves', group_color_map=COLOR_MAP)
-#         print("    Movements by direction analysis done.")
-#     else:
-#         print("    'movement' column not found in per-tick data.")
-#         doc.add_paragraph("TBD - Movements by direction data not available")
-# else:
-#     print("    Per-tick data not available for movements direction analysis.")
-#     doc.add_paragraph("TBD - Per-tick data required for direction analysis")
-
-# #endregion # closes 3.3.1
-
-# #region 3.3.2 Ground Covered
-
-# doc.add_heading("3.3.2. Ground Covered", level=3)
-
-# # Per-tick manhattan distance analysis
-# if per_tick_included:
-#     print("    Analyzing per-tick distance...")
-#     analyze_per_tick_metric(df_all_per_tick, 'manhattan_dist', 'Manhattan Distance [units]', 'distance', group_color_map=COLOR_MAP)
-#     print("    Per-tick distance analysis done.")
-# doc.add_paragraph("TBD")
-
-# # Heatmaps: staying and entering
-# if heatmap_data:
-#     print("    Analyzing heatmaps...")
-#     analyze_heatmaps(heatmap_data, df_all)
-#     print("    Heatmap analysis done.")
-# doc.add_paragraph("TBD")
-
-# #endregion # closes 3.3.2
-
-# #endregion # closes 3.3
-
-# #region 3.4 Decisions
-
-# print("  Analyzing decisions...")
-# doc.add_heading("3.4. Decisions", level=2)
-
-# #region 3.4.1 Decisions Made
-
-# doc.add_heading("3.4.1. Decisions Made", level=3)
-
-# # Analyze total decisions
-# print("    Analyzing total decisions...")
-# if 'decisions' in df_all.columns:
-#     analyze_per_run(df_all, 'decisions', 'no. decisions', 'decisions', group_color_map=COLOR_MAP)
-# print("    Total decisions analysis done.")
-
-# # Calculate normalized decisions (decisions per tick)
-# print("    Calculating normalized decisions...")
-# df_all.flags.writeable = True
-# if 'decisions' in df_all.columns:
-#     df_all['decisions_norm'] = df_all['decisions'] / df_all['lifetime_ticks']
-# df_all.flags.writeable = False
-
-# # Analyze normalized decisions
-# if 'decisions_norm' in df_all.columns:
-#     analyze_per_run(df_all, 'decisions_norm', 'decisions per tick', 'decisions_norm', group_color_map=COLOR_MAP)
-# print("    Normalized decisions analysis done.")
-# doc.add_paragraph("TBD")
-
-# #endregion # closes 3.4.1
-
-# #region 3.4.2 Correct Decisions
-
-# doc.add_heading("3.4.2. Correct Decisions", level=3)
-
-# # Analyze total correct decisions
-# print("    Analyzing correct decisions...")
-# if 'correct_decisions' in df_all.columns:
-#     analyze_per_run(df_all, 'correct_decisions', 'no. \'correct decisions\'', 'correct_decisions', group_color_map=COLOR_MAP)
-# print("    Correct decisions analysis done.")
-
-# # Calculate normalized correct decisions (correct decisions per tick)
-# print("    Calculating normalized correct decisions...")
-# df_all.flags.writeable = True
-# if 'correct_decisions' in df_all.columns:
-#     df_all['correct_decisions_norm'] = df_all['correct_decisions'] / df_all['lifetime_ticks']
-# df_all.flags.writeable = False
-
-# # Analyze normalized correct decisions
-# if 'correct_decisions_norm' in df_all.columns:
-#     analyze_per_run(df_all, 'correct_decisions_norm', '\'correct\' decisions per tick', 'correct_decisions_norm', group_color_map=COLOR_MAP)
-# print("    Normalized correct decisions analysis done.")
-# doc.add_paragraph("TBD")
-
-# # Analyze correct decisions by direction
-# if per_tick_included:
-#     print("    Analyzing decision precision by direction...")
-#     df_all = track_decision_precision(df_all_per_tick, df_all)
-#     analyze_per_run_direction(df_all, 'decision_precision', 'Decision Precision by Direction (fraction correct)', 'decision_precision', group_color_map=COLOR_MAP)
-#     print("    Decision precision analysis done.")
-#     doc.add_paragraph("TBD")
-
-# #endregion # closes 3.4.2
-
-# #endregion # closes 3.4
-
-# #endregion # closes 3 (remaining sub-regions TBD)
-
-#endregion # closes 3
-
-# #region 4 Summary
-
-# doc.add_heading("4. Summary", level=1)
-
-# doc.add_paragraph("TBD")
-
-# #endregion # closes 4
 
 
 # # ==================================================================================================================================================
