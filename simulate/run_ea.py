@@ -180,7 +180,7 @@ def check_ea_input_parameters(experiment_cfg):
         raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_method, mutation_seed.")
     
     # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method"]
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_strength"]
     for param in required_params:
         if param not in ea_cfg:
             raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
@@ -553,11 +553,12 @@ def main():
         ELITE_SIZE = ea_cfg["elite_size"]
         ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
         MUTATION_RATE = ea_cfg["mutation_rate"]
+        MUTATION_STRENGTH = ea_cfg["mutation_strength"]
         MUTATION_METHOD = ea_cfg["mutation_method"]
         mutation_function = load_mutation_method(MUTATION_METHOD)
         
         print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
-        print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
+        print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}, Mutation strength: {MUTATION_STRENGTH}")
         print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
         
         # Each generation produces POPULATION_SIZE - ELITE_SIZE offspring.
@@ -693,7 +694,7 @@ def main():
         genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
             for offspring_num in range(num_offspring):
-                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, rng_mutation)
+                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, MUTATION_STRENGTH, rng_mutation)
                 genomes_new.append(mutated_genome)
 
         # ============================================================
