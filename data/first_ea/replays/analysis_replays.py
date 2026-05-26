@@ -52,16 +52,16 @@ EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
 # Leave all but the first commented out if running a single-experiment analysis.
 EXPERIMENT_HDF5_FILES = [
     ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all"),
-    ("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all"),
-   # ("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
+    #("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all"),
+    #("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
 ]
 
 # Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
 # Leave as empty list [] if no benchmarks to compare
 BENCHMARK_HDF5_FILES = [
     ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
-    ("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
-    #("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
+    #("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
+    ("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
 ]
 
 # Network visualization configuration (e.g., '11' for network_viz_11.yaml)
