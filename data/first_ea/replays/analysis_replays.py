@@ -44,7 +44,7 @@ if _workspace_root:
 # =====================================================================
 
 # Experiment name
-EXPERIMENT_NAME = "first_ea"  # Used for file naming and report titles
+EXPERIMENT_NAME = "ea_from_random"  # Used for file naming and report titles
 
 # Experiment data: list of tuples (display_name, hdf5_filename_without_extension)
 # The FIRST entry is the primary experiment. All experiments are compared as whole groups.
@@ -71,15 +71,15 @@ RUNS_TO_SHOW_IN_DETAIL = [1,2,3]
 # Color scheme for visualizations
 # Experiment colors (green family): index 0 = 1st experiment, 1 = 2nd experiment, 2 = 3rd experiment
 EXPERIMENT_COLORS = [
-    "#0B3D2E",   # 1st experiment: dark forest green
-    "#1A6B4A",   # 2nd experiment: mid green
-    "#2D9E6B",   # 3rd experiment: lighter green
+    "#E69F00",   # 1st experiment: dark forest green
+    "#D4AF37",   # 2nd experiment: mid green
+    "#D38226",   # 3rd experiment: lighter green
 ]
 # Benchmark colors (red/pink family): index 0 = 1st benchmark, 1 = 2nd benchmark, 2 = 3rd benchmark
 BENCHMARK_COLORS = [
-    "#8B3A3A",   # 1st benchmark: wine red
-    "#C47070",   # 2nd benchmark: muted rose
-    "#F0E2E7",   # 3rd benchmark: light blush pink
+    "#56B4E9",   # 1st benchmark
+    "#0072B2",   # 2nd benchmark
+    "#4A7C8C",   # 3rd benchmark
 ]
 
 
@@ -412,6 +412,62 @@ def classify_effect_size(effect_size_value: float, effect_size_type: str) -> str
         return "unknown"
 
 
+def _get_ordered_groups_with_zorder(groups_input) -> tuple:
+    """
+    Order groups so benchmarks come first (in their BENCHMARK_HDF5_FILES order),
+    then experiments (in their EXPERIMENT_HDF5_FILES order).
+    
+    Returns a tuple: (ordered_groups_list, zorder_map_dict)
+    where zorder_map maps group_name -> z-order value (benchmarks low, experiments high).
+    
+    Args:
+        groups_input: List or array-like of group names
+    
+    Returns:
+        Tuple of (ordered_groups, zorder_dict)
+    """
+    # Convert to list if needed
+    if hasattr(groups_input, 'unique'):
+        groups_list = list(groups_input.unique())
+    else:
+        groups_list = list(groups_input)
+    
+    # Get benchmark and experiment names
+    benchmark_names = [name for name, _ in BENCHMARK_HDF5_FILES]
+    experiment_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
+    
+    # Separate groups into benchmarks and experiments
+    benchmarks_ordered = []
+    experiments_ordered = []
+    other_groups = []
+    
+    for group in groups_list:
+        if group in benchmark_names:
+            benchmarks_ordered.append(group)
+        elif group in experiment_names:
+            experiments_ordered.append(group)
+        else:
+            other_groups.append(group)
+    
+    # Sort within each category by their original list order
+    benchmarks_ordered.sort(key=lambda g: benchmark_names.index(g))
+    experiments_ordered.sort(key=lambda g: experiment_names.index(g))
+    
+    # Combine: benchmarks first, then experiments, then any others
+    ordered_groups = benchmarks_ordered + experiments_ordered + other_groups
+    
+    # Create z-order map: benchmarks have low z-order (drawn first), experiments high (drawn last)
+    zorder_map = {}
+    for i, group in enumerate(benchmarks_ordered):
+        zorder_map[group] = 1 + i
+    for i, group in enumerate(experiments_ordered):
+        zorder_map[group] = 100 + i
+    for i, group in enumerate(other_groups):
+        zorder_map[group] = 200 + i
+    
+    return ordered_groups, zorder_map
+
+
 def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filename_str: str, group_color_map: dict = None) -> None:
     """
     Box plot with jitter overlay per group, summary stats table, and comparative stats table.
@@ -419,7 +475,8 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     group_color_map: dict mapping original (lowercase) group names to hex color strings.
     """
     # Dynamically discover and extract all groups from the data
-    all_unique_groups = sorted(df_data['group'].unique())
+    # Order: benchmarks first, then experiments (so experiments are drawn on top)
+    all_unique_groups, zorder_map = _get_ordered_groups_with_zorder(df_data['group'].unique())
     
     group_data = {}
     group_order = []
@@ -443,8 +500,9 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     for i, g in enumerate(group_order):
         values = group_data[g]
         color = _color_for(g)
+        z = zorder_map.get(g, 50)
         jitter = np.random.default_rng(42).uniform(-0.15, 0.15, size=len(values))
-        ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=1)
+        ax.scatter(np.full(len(values), i) + jitter, values, color=color, alpha=0.4, s=8, zorder=z)
     
     # Box plots
     bp = ax.boxplot(
@@ -456,9 +514,12 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     )
     for i, g in enumerate(group_order):
         color = _color_for(g)
+        z = zorder_map.get(g, 50)
         bp['boxes'][i].set_facecolor(color)
         bp['boxes'][i].set_alpha(0.3)
+        bp['boxes'][i].set_zorder(z)
         bp['medians'][i].set_color('black')
+        bp['medians'][i].set_zorder(z)
     
     ax.set_xticks(positions)
     ax.set_xticklabels(group_order, fontsize=11)
@@ -470,7 +531,9 @@ def analyze_per_run(df_data: pd.DataFrame, metric_col: str, y_label: str, filena
     figures_dir.mkdir(exist_ok=True)
     output_path = figures_dir / f'groups_{filename_str}.png'
     fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(output_path, dpi=150)
     plt.close(fig)
     
     doc.add_picture(str(output_path), width=6.5 * 914400)
@@ -929,7 +992,7 @@ def analyze_per_variant(variant_data: pd.DataFrame, metric_col: str, y_label: st
         doc.add_paragraph(f"{y_label} ({metric_col}) not found in variant data")
         return
     
-    all_groups = sorted(variant_data['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(variant_data['group'].unique())
     color_map = group_color_map or {}
     
     # --- Create jitter + boxplot figure ---
@@ -945,15 +1008,16 @@ def analyze_per_variant(variant_data: pd.DataFrame, metric_col: str, y_label: st
         grp_data = variant_data[variant_data['group'] == grp][metric_col].values
         x_pos = group_positions[grp]
         color = color_map.get(grp, '#808080')
+        z = zorder_map.get(grp, 50)
         
         # Jitter points
         x_jitter = np.random.normal(x_pos, 0.04, size=len(grp_data))
-        ax.scatter(x_jitter, grp_data, alpha=0.6, s=80, color=color, label=grp, zorder=3)
+        ax.scatter(x_jitter, grp_data, alpha=0.6, s=80, color=color, label=grp, zorder=z)
         
         # Boxplot if more than 3 variants
         if len(grp_data) > 3:
             bp = ax.boxplot([grp_data], positions=[x_pos], widths=0.2,
-                           patch_artist=True, showfliers=False, zorder=2)
+                           patch_artist=True, showfliers=False, zorder=z-1)
             for patch in bp['boxes']:
                 patch.set_facecolor(color)
                 patch.set_alpha(0.3)
@@ -971,7 +1035,9 @@ def analyze_per_variant(variant_data: pd.DataFrame, metric_col: str, y_label: st
     
     fig_path = figures_dir / f'per_variant_{metric_col}.png'
     fig.tight_layout()
-    fig.savefig(str(fig_path), dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(str(fig_path), dpi=150)
     plt.close(fig)
     
     doc.add_picture(str(fig_path), width=6.5 * 914400)
@@ -1105,7 +1171,8 @@ def analyze_per_run_direction(df_data: pd.DataFrame, metric_base: str, y_label: 
     directions = ['north', 'east', 'south', 'west', 'stay']
     
     # Dynamically discover and extract all groups from the data
-    all_unique_groups = sorted(df_data['group'].unique())
+    # Order: benchmarks first, then experiments (so experiments are drawn on top)
+    all_unique_groups, zorder_map = _get_ordered_groups_with_zorder(df_data['group'].unique())
     
     # Prepare data: for each group and direction, collect normalized values
     group_direction_data = {}  # {(group_name, direction): [values]}
@@ -1673,15 +1740,8 @@ def analyze_survival_race(df_summary: pd.DataFrame, doc = None, group_color_map:
 
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    all_groups = list(df_summary['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(df_summary['group'].unique())
     _gcm = group_color_map or {}
-
-    # Z-order: experiments on top
-    _exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
-    zorder_map = {
-        g: (3 + _exp_names.index(g)) if g in _exp_names else 1
-        for g in all_groups
-    }
 
     for (group_name, variant_id), grp in df_summary.groupby(['group', 'variant']):
         survival_times = grp['lifetime_ticks'].to_numpy(dtype=float)
@@ -2054,7 +2114,7 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     if metric_name not in df_per_tick.columns:
         return
 
-    all_groups = sorted(df_per_tick['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(df_per_tick['group'].unique())
     figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
 
@@ -2072,8 +2132,9 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     for g in all_groups:
         gdf = tick_stats[tick_stats['group'] == g].sort_values('tick')
         color = COLOR_MAP.get(g, '#808080')
-        ax.plot(gdf['tick'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=3)
-        ax.fill_between(gdf['tick'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=2)
+        z = zorder_map.get(g, 50)
+        ax.plot(gdf['tick'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=z)
+        ax.fill_between(gdf['tick'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=z-1)
     ax.set_xlabel('Tick', fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
     ax.set_title(f'{y_label} over Time', fontsize=14)
@@ -2111,8 +2172,9 @@ def analyze_per_tick_metric(df_per_tick: pd.DataFrame, metric_name: str, y_label
     for g in all_groups:
         gdf = norm_stats[norm_stats['group'] == g].sort_values('ticks_norm')
         color = COLOR_MAP.get(g, '#808080')
-        ax.plot(gdf['ticks_norm'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=3)
-        ax.fill_between(gdf['ticks_norm'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=2)
+        z = zorder_map.get(g, 50)
+        ax.plot(gdf['ticks_norm'], gdf['mean'], color=color, linewidth=2.5, label=g, zorder=z)
+        ax.fill_between(gdf['ticks_norm'], gdf['ci_lo'], gdf['ci_hi'], color=color, alpha=0.2, zorder=z-1)
     ax.set_xlabel('Percentage of Lifespan (%)', fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
     ax.set_title(f'{y_label} across Lifespan (normalized)', fontsize=14)
@@ -2367,7 +2429,7 @@ def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_
             })
     _df_counts = pd.DataFrame(_rows)
 
-    all_groups = sorted(_df_counts['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(_df_counts['group'].unique())
     n_groups   = len(all_groups)
 
     # ── 2.  Plot ─────────────────────────────────────────────────────────────────
@@ -2424,7 +2486,9 @@ def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_
 
     _fig_path = figures_dir / 'food_direction_counts.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
@@ -2650,7 +2714,11 @@ def analyze_foods_consumed_per_direction(df_per_tick: pd.DataFrame, group_color_
 
     _fig3_path = figures_dir / 'food_direction_deviation_per_variant.png'
     fig3.tight_layout()
-    fig3.savefig(str(_fig3_path), dpi=150, bbox_inches='tight')
+    # Add 2x padding AFTER tight_layout, then save (without bbox_inches='tight' which would crop it)
+    _ymin, _ymax = ax3.get_ylim()
+    _yrange = _ymax - _ymin
+    ax3.set_ylim(_ymin, _ymax + _yrange / 3)
+    fig3.savefig(str(_fig3_path), dpi=150)
     plt.close(fig3)
 
     doc.add_heading('Directional Approach Bias (% Deviation from Expected) — per Variant', level=3)
@@ -2689,7 +2757,7 @@ def analyze_movements_per_direction(df_per_tick: pd.DataFrame, group_color_map: 
     figures_dir = Path(__file__).resolve().parent / f'figures_{EXPERIMENT_NAME}'
     figures_dir.mkdir(exist_ok=True)
 
-    all_groups = sorted(df_per_tick['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(df_per_tick['group'].unique())
 
     doc.add_heading('Movement Analysis — Directional Preferences', level=2)
 
@@ -2767,7 +2835,9 @@ def analyze_movements_per_direction(df_per_tick: pd.DataFrame, group_color_map: 
 
     _fig_path = figures_dir / 'movement_direction_counts.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
@@ -2994,7 +3064,11 @@ def analyze_movements_per_direction(df_per_tick: pd.DataFrame, group_color_map: 
 
     _fig3_path = figures_dir / 'movement_direction_deviation_per_variant.png'
     fig3.tight_layout()
-    fig3.savefig(str(_fig3_path), dpi=150, bbox_inches='tight')
+    # Add 2x padding AFTER tight_layout, then save (without bbox_inches='tight' which would crop it)
+    _ymin, _ymax = ax3.get_ylim()
+    _yrange = _ymax - _ymin
+    ax3.set_ylim(_ymin, _ymax + _yrange / 3)
+    fig3.savefig(str(_fig3_path), dpi=150)
     plt.close(fig3)
 
     doc.add_paragraph(
@@ -3044,7 +3118,7 @@ def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -
         'incorrect': '#e15759'
     }
 
-    all_groups = sorted(df['group'].unique())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(df['group'].unique())
     n_groups = len(all_groups)
 
     doc.add_heading('Decision Analysis', level=2)
@@ -3112,7 +3186,9 @@ def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -
 
     _fig_path = figures_dir / 'decisions_n_all.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
@@ -3164,7 +3240,9 @@ def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -
 
     _fig_path = figures_dir / 'decisions_n_informed.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(_ymin, _ymax + (_ymax - _ymin) / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
@@ -3230,12 +3308,15 @@ def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -
     ax.set_xticklabels(all_groups, fontsize=11)
     ax.set_ylabel('Percentage of Decisions (%)', fontsize=12)
     ax.set_title('Decision Type Distribution by Group (% per Variant, All Types)', fontsize=14)
-    ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3, axis='y')
 
     _fig_path = figures_dir / 'decisions_ratio_all.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    # Add 2x padding AFTER tight_layout, then save (without bbox_inches='tight' which would crop it)
+    _ymin, _ymax = ax.get_ylim()
+    _yrange = _ymax - _ymin
+    ax.set_ylim(_ymin, _ymax + _yrange / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()
@@ -3302,12 +3383,15 @@ def analyze_decisions(df_per_tick: pd.DataFrame, group_color_map: dict = None) -
     ax.set_xticklabels(all_groups, fontsize=11)
     ax.set_ylabel('Percentage of Informed Decisions (%)', fontsize=12)
     ax.set_title('Informed Decision Distribution by Group (% of Informed Decisions Only)', fontsize=14)
-    ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3, axis='y')
 
     _fig_path = figures_dir / 'decisions_ratio_informed.png'
     fig.tight_layout()
-    fig.savefig(str(_fig_path), dpi=150, bbox_inches='tight')
+    # Add 2x padding AFTER tight_layout, then save (without bbox_inches='tight' which would crop it)
+    _ymin, _ymax = ax.get_ylim()
+    _yrange = _ymax - _ymin
+    ax.set_ylim(_ymin, _ymax + _yrange / 3)
+    fig.savefig(str(_fig_path), dpi=150)
     plt.close(fig)
     doc.add_picture(str(_fig_path), width=6.5 * 914400)
     doc.add_paragraph()

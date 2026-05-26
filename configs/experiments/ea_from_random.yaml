@@ -3,8 +3,8 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_ea/"
-  simulation_name: "mutation_test"
+  output_folder: "data/first_regrow/"
+  simulation_name: "ea_from_random"
   simulation_seed: 1
   
   # Simulation runtime
@@ -14,7 +14,7 @@ experiment:
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 100
+  population_size: 260
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -25,7 +25,7 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 20
+    num_generations: 50
     elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
@@ -57,9 +57,9 @@ world:
 food:
   feeding_paradigm:
     initial: true
-    regrow: false
+    regrow: true
   initial_fraction_per_cell: 0.1
-  regrow_time: 200
+  regrow_time: 31
 
 worm:
   speed: 1

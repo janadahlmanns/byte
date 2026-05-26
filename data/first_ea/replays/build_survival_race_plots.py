@@ -157,11 +157,11 @@ PLOT_CONFIGS = [
         'y_max':     None,
         'filename':  'survival_race_buildup_3.png',
     },
-    # 4 – All three groups, x extends to accommodate EA data, y max = 1000
+    # 4 – All three groups, x extends to accommodate EA data, y range same as others
     {
         'groups_df': pd.concat([df_random, df_hardcoded, df_ea_random], ignore_index=True),
         'x_max':     x_max_ea,
-        'y_max':     1000,
+        'y_max':     None,
         'filename':  'survival_race_buildup_4.png',
     },
 ]

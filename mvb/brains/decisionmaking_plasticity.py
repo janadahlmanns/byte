@@ -119,7 +119,7 @@ class Connection:
             self.next_weight = self.weight
             return
         
-        # Calculate modulation (most expensive operation—now only done if w != 0)
+        # Calculate modulation 
         modulation_sum = sum(mod_weight * neuron.activity 
                             for neuron, mod_weight in self.modulating_inputs)
         

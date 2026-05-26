@@ -442,8 +442,8 @@ def plot_results(hdf5_path, save_path=None, show=False):
     iqr_vals = gen_stats_data['iqr']
     
     # Color scheme
-    primary_color = "#0B3D2E"      # Dark green
-    secondary_color = "#8B3A3A"    # Wine red
+    primary_color = "#D4AF37"      # Light Gold
+    secondary_color = "#E69F00"    # Dark Gold
     tertiary_color = "#4A7C8C"     # Grayish ice blue
     
     # Create figure
@@ -464,8 +464,8 @@ def plot_results(hdf5_path, save_path=None, show=False):
     ax.plot(generations, max_vals, '--', linewidth=2, color=tertiary_color)
     
     ax.set_xlabel('Generations', fontsize=12)
-    ax.set_ylabel('Lifespan [ticks]', fontsize=12)
-    ax.set_title('Lifespan Across Generations', fontsize=14)
+    ax.set_ylabel('Average Lifespan [ticks]', fontsize=12)
+    ax.set_title('Average Lifespan Across Generations', fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
     
