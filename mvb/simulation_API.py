@@ -25,6 +25,8 @@ from simulate.hdf5_utils import (
     save_variant_summary_to_hdf5,
     save_wiring_to_hdf5,
     save_modulation_to_hdf5,
+    save_eta_to_hdf5,
+    save_tonic_activations_to_hdf5,
     save_heatmaps_to_hdf5,
     save_per_tick_to_hdf5,
     save_genome_properties_to_hdf5,
@@ -77,6 +79,7 @@ def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise,
         pass  # Exit simulation gracefully
     
     return world, worm, rec, pause_mgr
+
 def eval_variant(
     variant_id,
     brain_module_name,
@@ -159,7 +162,7 @@ def eval_variant(
         summary_array = np.zeros(n_runs, dtype=dtype_summary)
 
         # Pre-allocate wiring array with columns for all run final weights
-        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4')]
+        dtype_wiring = [('src', 'i2'), ('tgt', 'i2'), ('weight_initial', 'f4'), ('reliability', 'f4')]
         for run_id in range(n_runs):
             dtype_wiring.append((f'weight_final_run_{run_id:04d}', 'f4'))
         wiring_array = np.zeros(len(connections_to_track), dtype=dtype_wiring)
@@ -168,6 +171,7 @@ def eval_variant(
             wiring_array[idx]['src'] = src
             wiring_array[idx]['tgt'] = tgt
             wiring_array[idx]['weight_initial'] = connection_weights[src, tgt, 0]
+            wiring_array[idx]['reliability'] = connection_weights[src, tgt, 1]
 
         # Pre-allocate modulation array
         dtype_modulation = [('target_src', 'i2'), ('target_tgt', 'i2'), ('modulator_src', 'i2'), ('modulation_weight', 'f4')]
@@ -177,6 +181,10 @@ def eval_variant(
             for mod_src, mod_weight in modulators:
                 modulation_list.append((target_src, target_tgt, mod_src, mod_weight))
         modulation_array = np.array(modulation_list, dtype=dtype_modulation) if modulation_list else np.array([], dtype=dtype_modulation)
+
+        # Extract scalar genome fields
+        eta = float(genome["eta"])
+        tonic_activations = np.array(genome["tonic_activations"], dtype=np.float32)
 
     # ============================================================
     # Create MetricsRecorder to track per-tick data (only if tracking enabled)
@@ -192,6 +200,8 @@ def eval_variant(
         summary_array = None
         wiring_array = None
         modulation_array = None
+        eta = None
+        tonic_activations = None
     
 
 
@@ -293,7 +303,7 @@ def eval_variant(
             summary_array[run_id]['seed_noise'] = seeds_noise_variant[run_id]
             summary_array[run_id]['seed_decision'] = seeds_decision_variant[run_id]
             if enable_per_tick_tracking:
-                per_tick_data = rec.per_tick_data[:rec.per_tick_count]
+                per_tick_data = rec.per_tick_data[:rec.per_tick_count].copy()
                 per_tick_all_runs[run_id] = per_tick_data
             
             if enable_heat_map_tracking:
@@ -310,6 +320,8 @@ def eval_variant(
         tracking_results['summary_array'] = summary_array
         tracking_results['wiring_array'] = wiring_array
         tracking_results['modulation_array'] = modulation_array
+        tracking_results['eta'] = eta
+        tracking_results['tonic_activations'] = tonic_activations
         
         if enable_per_tick_tracking:
             tracking_results['per_tick_all_runs'] = per_tick_all_runs
@@ -434,6 +446,8 @@ def run_variant_worker(
                 save_variant_summary_to_hdf5(hdf5_path, variant_id, summary_array)
                 save_wiring_to_hdf5(hdf5_path, variant_id, wiring_array)
                 save_modulation_to_hdf5(hdf5_path, variant_id, modulation_array)
+                save_eta_to_hdf5(hdf5_path, variant_id, tracking_results['eta'])
+                save_tonic_activations_to_hdf5(hdf5_path, variant_id, tracking_results['tonic_activations'])
                 
                 # Write accumulated per-tick data if any
                 if enable_per_tick_tracking:
@@ -499,7 +513,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     # ============================================================
     
     if ENABLE_PER_RUN_TRACKING:
-        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME)
+        # In replay mode, skip timestamp prefix; otherwise add timestamp
+        skip_timestamp = replay_info is not None
+        hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME, skip_timestamp=skip_timestamp)
         print(f"[batch] writing to {hdf5_path}\n")
         create_hdf5_file(hdf5_path, cfg)
         

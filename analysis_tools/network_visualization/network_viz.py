@@ -722,37 +722,15 @@ def draw_network(neurons: Dict[int, Dict],
                zorder=7)
     
     # ===== Finalize Plot =====
-    ax.set_aspect('equal')
     ax.axis('off')
     
     if title:
-        ax.set_title(title, fontsize=18, fontweight='bold', pad=20)
+        ax.set_title(title, fontsize=10, fontweight='bold', pad=4)
     
-    # Create legend - horizontal at bottom
-    legend_elements = [
-        mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['input_edge'], 
-                      linewidth=2, label='Input'),
-        mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['output_edge'], 
-                      linewidth=2, label='Output'),
-        mpatches.Patch(facecolor=COLORS['neuron_fill'], edgecolor=COLORS['hidden_edge'], 
-                      linewidth=2, label='Hidden'),
-        plt.Line2D([0], [0], color=COLORS['excitatory'], linewidth=2, 
-                   linestyle='-', label='Excitatory'),
-        plt.Line2D([0], [0], color=COLORS['inhibitory'], linewidth=2,
-                   linestyle='-', label='Inhibitory'),
-    ]
-    
-    ax.legend(handles=legend_elements, loc='lower center', 
-             bbox_to_anchor=(0.5, -0.12), ncol=5, fontsize=8, frameon=True)
-    
-    # Adjust layout to make room for legend at bottom
-    if ax.figure is not None:
-        ax.figure.subplots_adjust(bottom=0.15)
-    
-    # Adjust limits to fit all elements with extra space at bottom for legend
+    # Adjust limits to fit all elements including neuron circles
     all_x = [pos[0] for pos in positions.values()]
     all_y = [pos[1] for pos in positions.values()]
-    margin = 0.15
+    margin = 0.35
     ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
     ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
     

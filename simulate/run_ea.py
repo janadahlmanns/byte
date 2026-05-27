@@ -180,7 +180,7 @@ def check_ea_input_parameters(experiment_cfg):
         raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_method, mutation_seed.")
     
     # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method"]
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_strength"]
     for param in required_params:
         if param not in ea_cfg:
             raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
@@ -442,8 +442,8 @@ def plot_results(hdf5_path, save_path=None, show=False):
     iqr_vals = gen_stats_data['iqr']
     
     # Color scheme
-    primary_color = "#0B3D2E"      # Dark green
-    secondary_color = "#8B3A3A"    # Wine red
+    primary_color = "#D4AF37"      # Light Gold
+    secondary_color = "#E69F00"    # Dark Gold
     tertiary_color = "#4A7C8C"     # Grayish ice blue
     
     # Create figure
@@ -464,8 +464,8 @@ def plot_results(hdf5_path, save_path=None, show=False):
     ax.plot(generations, max_vals, '--', linewidth=2, color=tertiary_color)
     
     ax.set_xlabel('Generations', fontsize=12)
-    ax.set_ylabel('Lifespan [ticks]', fontsize=12)
-    ax.set_title('Lifespan Across Generations', fontsize=14)
+    ax.set_ylabel('Average Lifespan [ticks]', fontsize=12)
+    ax.set_title('Average Lifespan Across Generations', fontsize=14)
     ax.legend(fontsize=11, loc='best')
     ax.grid(True, alpha=0.3)
     
@@ -553,11 +553,12 @@ def main():
         ELITE_SIZE = ea_cfg["elite_size"]
         ELITE_SELECTION_METRIC = ea_cfg["elite_selection_metric"]
         MUTATION_RATE = ea_cfg["mutation_rate"]
+        MUTATION_STRENGTH = ea_cfg["mutation_strength"]
         MUTATION_METHOD = ea_cfg["mutation_method"]
         mutation_function = load_mutation_method(MUTATION_METHOD)
         
         print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
-        print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}")
+        print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}, Mutation strength: {MUTATION_STRENGTH}")
         print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
         
         # Each generation produces POPULATION_SIZE - ELITE_SIZE offspring.
@@ -693,7 +694,7 @@ def main():
         genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
             for offspring_num in range(num_offspring):
-                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, rng_mutation)
+                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, MUTATION_STRENGTH, rng_mutation)
                 genomes_new.append(mutated_genome)
 
         # ============================================================
@@ -740,7 +741,7 @@ def main():
     print_results(hdf5_path, NUM_GENERATIONS, ELITE_SIZE)
     
     # Generate and save results plot
-    plot_save_path = str(Path(hdf5_path).with_name(Path(hdf5_path).stem + "_results.png"))
+    plot_save_path = str(Path(hdf5_path).with_name(Path(hdf5_path).stem + ".png"))
     plot_results(hdf5_path, save_path=plot_save_path, show=False)
     
     # Ask user if they want to view it interactively

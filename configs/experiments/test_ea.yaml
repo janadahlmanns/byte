@@ -28,7 +28,8 @@ experiment:
     num_generations: 1
     elite_size: 100
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
-    mutation_rate: 0.1  # Fraction of connections to mutate per individual
+    mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
+    mutation_strength: 0.2    # Gaussian std for all mutations (weights, reliability, eta, tonic activations)
     mutation_method: simple  # Options: 'simple'
 
   # Visualization

@@ -9,12 +9,12 @@ experiment:
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 3
+  n_runs: 1
   evolutionary_algorithm_enabled: false
 
   # Genome generation for first generation
   genome_type: "lookup_hard"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 2
+  population_size: 1
   #   # Genome type specific parameters - random
   # random_genome:
   #   wiring_randomization_seed: 1
@@ -25,9 +25,9 @@ experiment:
 
   # Visualization
   viz_enabled: true
-  viz_fps: 4
+  viz_fps: 8
   viz_brain_enabled: true 
-  viz_brain_fps: 4
+  viz_brain_fps: 8
   
   # Data tracking
   enable_per_run_tracking: true
