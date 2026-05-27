@@ -44,42 +44,43 @@ if _workspace_root:
 # =====================================================================
 
 # Experiment name
-EXPERIMENT_NAME = "ea_from_random"  # Used for file naming and report titles
+EXPERIMENT_NAME = "first_ea_from_random"  # Used for file naming and report titles
 
-# Experiment data: list of tuples (display_name, hdf5_filename_without_extension)
+# Experiment data: list of tuples (display_name, hdf5_filename_without_extension, color_index)
 # The FIRST entry is the primary experiment. All experiments are compared as whole groups.
 # Additional entries are treated the same way — each is its own group.
 # Leave all but the first commented out if running a single-experiment analysis.
+# color_index references EXPERIMENT_COLORS; if the index is out of range a color is auto-generated.
 EXPERIMENT_HDF5_FILES = [
-    ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all"),
-    #("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all"),
-    #("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all"),
+    ("EA from Random", "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all", 1),
+    #("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all", 1),
+    #("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all", 2),
 ]
 
-# Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension)
+# Benchmark data (optional): List of tuples (benchmark_display_name, hdf5_filename_without_extension, color_index)
 # Leave as empty list [] if no benchmarks to compare
+# color_index references BENCHMARK_COLORS; if the index is out of range a color is auto-generated.
 BENCHMARK_HDF5_FILES = [
-    ("Random", "2026-05-05_17-29-22_random_genomes_all_runs_all"),
-    #("Soft-Coded", "2026-05-05_17-28-28_lookup_soft_genomes_all_runs_all"),
-    ("Hard-Coded", "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all"),
+    ("Random", "2026-05-27_09-57-28_2026-05-05_17-42-25_ea_from_random_BM_random", 0),
+    #("Soft-Coded", "2026-05-27_10-00-35_2026-05-05_17-42-25_ea_from_random_BM_lookup_soft", 1),
+    ("Hard-Coded", "2026-05-27_10-00-48_2026-05-05_17-42-25_ea_from_random_BM_lookup_hard", 1),
 ]
 
 # Network visualization configuration (e.g., '11' for network_viz_11.yaml)
 NETWORK_VIZ_CONFIG = "11"
-RUNS_TO_SHOW_IN_DETAIL = [1,2,3]
 
 # Color scheme for visualizations
-# Experiment colors (green family): index 0 = 1st experiment, 1 = 2nd experiment, 2 = 3rd experiment
+# Experiment colors:
 EXPERIMENT_COLORS = [
-    "#E69F00",   # 1st experiment: dark forest green
-    "#D4AF37",   # 2nd experiment: mid green
-    "#D38226",   # 3rd experiment: lighter green
+    "#ddd55f", 
+    "#b38219",   
+    "#705915",  
 ]
-# Benchmark colors (red/pink family): index 0 = 1st benchmark, 1 = 2nd benchmark, 2 = 3rd benchmark
+# Benchmark colors:
 BENCHMARK_COLORS = [
-    "#56B4E9",   # 1st benchmark
-    "#0072B2",   # 2nd benchmark
-    "#4A7C8C",   # 3rd benchmark
+    "#aad5ee",   
+    "#336f99",   
+    "#2b3b5f",  
 ]
 
 
@@ -346,7 +347,7 @@ def _group_overview_stats(df_summary: pd.DataFrame) -> list[dict]:
         group, type, hdf5_filename, n_variants, n_runs, runs_per_variant
     """
     # Build filename lookup: group_name -> hdf5 filename string (from user config)
-    _filename_lookup = {name: hdf5 for name, hdf5 in EXPERIMENT_HDF5_FILES + BENCHMARK_HDF5_FILES}
+    _filename_lookup = {name: hdf5 for name, hdf5, *_ in EXPERIMENT_HDF5_FILES + BENCHMARK_HDF5_FILES}
 
     rows = []
     for group_name in df_summary['group'].unique():
@@ -433,8 +434,8 @@ def _get_ordered_groups_with_zorder(groups_input) -> tuple:
         groups_list = list(groups_input)
     
     # Get benchmark and experiment names
-    benchmark_names = [name for name, _ in BENCHMARK_HDF5_FILES]
-    experiment_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
+    benchmark_names = [name for name, *_ in BENCHMARK_HDF5_FILES]
+    experiment_names = [name for name, *_ in EXPERIMENT_HDF5_FILES]
     
     # Separate groups into benchmarks and experiments
     benchmarks_ordered = []
@@ -852,7 +853,7 @@ def analyze_distribution_across_variants(wiring_data: dict, metric_col: str, x_l
         n_bins:          Number of histogram bins.
         group_color_map: Dict mapping group name -> hex color string.
     """
-    all_groups = list(wiring_data.keys())
+    all_groups, zorder_map = _get_ordered_groups_with_zorder(list(wiring_data.keys()))
     color_map  = group_color_map or {}
 
     # --- Pool all values per group across variants ---
@@ -877,7 +878,7 @@ def analyze_distribution_across_variants(wiring_data: dict, metric_col: str, x_l
         freq      = counts / counts.sum()                    # normalize to relative frequency
         smoothed  = gaussian_filter1d(freq, sigma=1.0)       # slight smoothing
         ax.plot(bin_centers, smoothed, linewidth=2, label=grp,
-                color=color_map.get(grp, None))
+                color=color_map.get(grp, None), zorder=zorder_map.get(grp, 50))
 
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel('Relative Frequency', fontsize=12)
@@ -948,7 +949,8 @@ def analyze_distribution_across_variants(wiring_data: dict, metric_col: str, x_l
             counts, _ = np.histogram(var_values, bins=bin_edges)
             freq = counts / counts.sum()
             smoothed = gaussian_filter1d(freq, sigma=1.0)
-            ax.plot(bin_centers, smoothed, linewidth=1, alpha=0.5, color=grp_color)
+            ax.plot(bin_centers, smoothed, linewidth=1, alpha=0.5, color=grp_color,
+                    zorder=zorder_map.get(grp, 50))
     
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel('Relative Frequency', fontsize=12)
@@ -3798,18 +3800,18 @@ def _process_hdf5_file(hdf5_path: Path, group_name: str, data_type: str,
 
 
 # --- Step 1: First experiment file — probes for d/e availability ---
-_first_exp_name, _first_exp_hdf5 = EXPERIMENT_HDF5_FILES[0]
+_first_exp_name, _first_exp_hdf5, *_ = EXPERIMENT_HDF5_FILES[0]
 print(f"Loading first experiment '{_first_exp_name}' (availability probe)...")
 _process_hdf5_file(_find_hdf5_file(_first_exp_hdf5), _first_exp_name, 'experiment',
                    check_availability=True)
 
 # --- Step 2: Remaining experiment files ---
-for _exp_name, _exp_hdf5 in EXPERIMENT_HDF5_FILES[1:]:
+for _exp_name, _exp_hdf5, *_ in EXPERIMENT_HDF5_FILES[1:]:
     print(f"Loading experiment '{_exp_name}'...")
     _process_hdf5_file(_find_hdf5_file(_exp_hdf5), _exp_name, 'experiment')
 
 # --- Step 3: Benchmark files ---
-for _bench_name, _bench_hdf5 in BENCHMARK_HDF5_FILES:
+for _bench_name, _bench_hdf5, *_ in BENCHMARK_HDF5_FILES:
     print(f"Loading benchmark '{_bench_name}'...")
     _process_hdf5_file(_find_hdf5_file(_bench_hdf5), _bench_name, 'benchmark')
 
@@ -3909,19 +3911,19 @@ else:
 
 # ==================================================================================================================================================
 # Build COLOR_MAP: maps every group name to a hex color string.
-# Experiments (all entries in EXPERIMENT_HDF5_FILES) use EXPERIMENT_COLORS[0], [1], [2], ...
-# Benchmarks use BENCHMARK_COLORS[0], [1], [2], ...
-# Beyond 3 entries of either type, colors are auto-generated in the same hue family.
+# Each entry in EXPERIMENT_HDF5_FILES / BENCHMARK_HDF5_FILES carries a color_index that
+# selects directly from EXPERIMENT_COLORS / BENCHMARK_COLORS.
+# If color_index is out of range, a color is auto-generated in the same hue family.
 # ==================================================================================================================================================
 import colorsys as _colorsys
 
 COLOR_MAP: dict = {}
 
 # All experiments (EXPERIMENT_HDF5_FILES)
-_all_exp_names = [name for name, _ in EXPERIMENT_HDF5_FILES]
-for _i, _exp_name in enumerate(_all_exp_names):
-    if _i < len(EXPERIMENT_COLORS):
-        COLOR_MAP[_exp_name] = EXPERIMENT_COLORS[_i]
+_all_exp_names = [name for name, *_ in EXPERIMENT_HDF5_FILES]
+for _i, (_exp_name, _exp_hdf5, _exp_color_idx) in enumerate(EXPERIMENT_HDF5_FILES):
+    if _exp_color_idx < len(EXPERIMENT_COLORS):
+        COLOR_MAP[_exp_name] = EXPERIMENT_COLORS[_exp_color_idx]
     else:
         # Auto-generate a greenish color (hue ~120° / 0.33)
         _h = 0.33
@@ -3934,10 +3936,9 @@ for _i, _exp_name in enumerate(_all_exp_names):
 COLOR_MAP['experiment'] = COLOR_MAP.get(_all_exp_names[0], EXPERIMENT_COLORS[0])
 
 # Benchmarks (BENCHMARK_HDF5_FILES)
-_benchmark_names = [name for name, _ in BENCHMARK_HDF5_FILES]
-for _i, _bench_name in enumerate(_benchmark_names):
-    if _i < len(BENCHMARK_COLORS):
-        COLOR_MAP[_bench_name] = BENCHMARK_COLORS[_i]
+for _i, (_bench_name, _bench_hdf5, _bench_color_idx) in enumerate(BENCHMARK_HDF5_FILES):
+    if _bench_color_idx < len(BENCHMARK_COLORS):
+        COLOR_MAP[_bench_name] = BENCHMARK_COLORS[_bench_color_idx]
     else:
         # Auto-generate a reddish color (hue ~0° / 0.0)
         _h = 0.0

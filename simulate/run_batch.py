@@ -203,6 +203,71 @@ def validate_viz_flags(n_variants, n_runs, viz_enabled, viz_brain_enabled):
     return viz_enabled, viz_brain_enabled
 
 
+def unflatten_config_from_hdf5(flat_dict):
+    """Reconstruct nested config dict from HDF5's granular flattened attributes."""
+    import ast
+
+    def deserialize_value(val):
+        if not isinstance(val, str):
+            return val
+        if val.startswith(('[', '{', '(')):
+            try:
+                return ast.literal_eval(val)
+            except (ValueError, SyntaxError):
+                pass
+        if val.startswith(('[', '{')):
+            try:
+                return json.loads(val)
+            except Exception:
+                pass
+        return val
+
+    result = {'world': {}, 'food': {}, 'worm': {}, 'brain': {}}
+
+    for flat_key, value in flat_dict.items():
+        if not flat_key.startswith(('world_', 'food_', 'worm_', 'brain_')):
+            continue
+        value = deserialize_value(value)
+        parts = flat_key.split('_', 1)
+        section = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+        if section not in result:
+            continue
+
+        if section == 'food' and rest.startswith('feeding_paradigm_'):
+            result[section].setdefault('feeding_paradigm', {})[rest.replace('feeding_paradigm_', '')] = value
+        elif section == 'worm' and rest.startswith('decisionmaking_'):
+            result[section].setdefault('decisionmaking', {})[rest.replace('decisionmaking_', '')] = value
+        elif section == 'worm' and rest.startswith('sensors_'):
+            result[section].setdefault('sensors', {})[rest.replace('sensors_', '')] = value
+        elif section == 'brain' and rest.startswith('sensory_mapping_'):
+            result[section].setdefault('sensory_mapping', {})[rest.replace('sensory_mapping_', '')] = value
+        elif section == 'brain' and rest.startswith('output_mapping_'):
+            idx_str = rest.replace('output_mapping_', '')
+            try:
+                result[section].setdefault('output_mapping', {})[int(idx_str)] = value
+            except ValueError:
+                result[section].setdefault('output_mapping', {})[idx_str] = value
+        else:
+            result[section][rest] = value
+
+    return result
+
+
+def load_and_reconstruct_hdf5_cfg(hdf5_path):
+    """Read flattened config attributes from an HDF5 file and return as nested dict."""
+    with h5py.File(hdf5_path, 'r') as f:
+        hdf5_cfg_flat = {}
+        for attr_name, attr_value in f.attrs.items():
+            if isinstance(attr_value, str) and attr_value.startswith('['):
+                try:
+                    attr_value = json.loads(attr_value)
+                except Exception:
+                    pass
+            hdf5_cfg_flat[attr_name] = attr_value
+    return unflatten_config_from_hdf5(hdf5_cfg_flat)
+
+
 # ============================================================
 # main
 # ============================================================
@@ -232,308 +297,238 @@ def main():
         print("  python -m simulate.run_batch --config plasticity_batch")
         print("="*80 + "\n")
         sys.exit(1)
-    
+
     experiment_cfg = cfg["experiment"]
-    
+
     # ============================================================
-    # SPECIAL HANDLING FOR REPLAY MODE (genome_type: "from_file")
+    # 2. DETECT EXECUTION MODE
     # ============================================================
-    
+    # Modes:
+    #   REPLAY    – genome_type: "from_file"  AND simulation_seed: "from_file"
+    #               Exact reproduction of a past simulation run.
+    #   BENCHMARK – genome_type: <de novo>   AND simulation_seed: "from_file"
+    #               Fresh genomes run on the same world seeds as a reference experiment.
+    #   NORMAL    – genome_type: <de novo>   AND simulation_seed: <integer>
+    #               Fully fresh simulation, nothing loaded from file.
+    #
+    # Warning case: genome_type: "from_file" AND simulation_seed: <integer>
+    #               Asks user whether to switch to seeds-from-file or cancel.
+
     GENOME_TYPE = experiment_cfg["genome_type"]
-    pre_computed_seeds_dict = None  # Will be populated in from_file mode
-    
-    if GENOME_TYPE.lower() == "from_file":
+    SIMULATION_SEED_RAW = experiment_cfg.get("simulation_seed", 1)
+    GENOME_FROM_FILE = GENOME_TYPE.lower() == "from_file"
+    SEEDS_FROM_FILE = str(SIMULATION_SEED_RAW).lower() == "from_file"
+
+    pre_computed_seeds_dict = None
+    replay_info = None
+
+    # ============================================================
+    # 3. WARNING: genome from file but seeds NOT from file
+    # ============================================================
+    if GENOME_FROM_FILE and not SEEDS_FROM_FILE:
         print("\n" + "="*80)
-        print("[REPLAY MODE] Loading genomes, config, and seeds from HDF5 file")
+        print("[WARNING] Inconsistent configuration detected:")
         print("="*80)
-        
-        # ============================================================
-        # 2c. PARSE SELECTION PARAMETERS (DO FIRST)
-        # ============================================================
-        from_file_cfg = experiment_cfg.get("from_file_genome", {})
+        print(f"  genome_type      = 'from_file'")
+        print(f"  simulation_seed  = {SIMULATION_SEED_RAW!r}  (not 'from_file')")
+        print()
+        print("  Loading genomes from file but using fresh seeds means this run will NOT")
+        print("  reproduce the original simulation. This is almost certainly a mistake.")
+        print()
+        print("  [1] Cancel — fix the configuration and try again")
+        print("  [2] Load seeds from file as well (full replay mode)")
+        print("="*80)
+        while True:
+            response = input("\nEnter your choice (1 or 2): ").strip()
+            if response == '1':
+                print("[EXIT] Execution stopped.")
+                return
+            elif response == '2':
+                print("[INFO] Switching to full replay mode (seeds loaded from file).")
+                SEEDS_FROM_FILE = True
+                break
+            else:
+                print("[ERROR] Invalid choice. Enter 1 or 2.")
+
+    # ============================================================
+    # 4. LOAD FROM HDF5 (replay mode or benchmark mode)
+    # ============================================================
+    if SEEDS_FROM_FILE:
+        print("\n" + "="*80)
+        if GENOME_FROM_FILE:
+            print("[REPLAY MODE] Loading genomes, config, and seeds from HDF5 file")
+        else:
+            print("[BENCHMARK MODE] Loading simulation parameters and run_seeds from HDF5 file")
+        print("="*80)
+
+        from_file_cfg = experiment_cfg.get("from_file_source", {})
         file_folder = from_file_cfg.get("file_folder")
         filename = from_file_cfg.get("filename")
-        genome_ID = from_file_cfg.get("genome_ID", "all")
-        runs_to_load = from_file_cfg.get("runs_to_load", "all")
-        
         if not file_folder or not filename:
-            raise ValueError("[ERROR] 'from_file_genome' section missing 'file_folder' or 'filename'")
-        
-        # Resolve HDF5 path
+            raise ValueError("[ERROR] 'from_file_source' section missing 'file_folder' or 'filename'")
+
         hdf5_source_path = str(Path(file_folder) / f"{filename}.h5")
         if not Path(hdf5_source_path).exists():
             raise FileNotFoundError(f"[ERROR] HDF5 source file not found: {hdf5_source_path}")
-    
-        
-        # ============================================================
-        # LOAD FULL CONFIG FROM HDF5 ATTRIBUTES (ONLY SOURCE)
-        # ============================================================
-        
-        # Read flattened config from HDF5
-        with h5py.File(hdf5_source_path, 'r') as f:
-            hdf5_cfg_flat = {}
-            for attr_name, attr_value in f.attrs.items():
-                # Convert JSON-encoded lists back to lists
-                if isinstance(attr_value, str):
-                    if attr_value.startswith('['):
-                        try:
-                            attr_value = json.loads(attr_value)
-                        except:
-                            pass
-                hdf5_cfg_flat[attr_name] = attr_value
-        
-        # Reconstruct nested structure from flattened config
-        def unflatten_config_from_hdf5(flat_dict):
-            """Reconstruct nested dict from HDF5's granular flattened keys."""
-            import ast
-            
-            def deserialize_value(val):
-                """Parse Python repr strings and JSON back to proper types."""
-                if not isinstance(val, str):
-                    return val
-                
-                # Try to parse as Python literal (for lists, dicts, etc.)
-                if val.startswith(('[', '{', '(')):
-                    try:
-                        return ast.literal_eval(val)
-                    except (ValueError, SyntaxError):
-                        pass
-                
-                # Try to parse as JSON
-                if val.startswith(('[', '{')):
-                    try:
-                        return json.loads(val)
-                    except:
-                        pass
-                
-                return val
-            
-            result = {
-                'world': {},
-                'food': {},
-                'worm': {},
-                'brain': {},
-            }
-            
-            for flat_key, value in flat_dict.items():
-                if not flat_key.startswith(('world_', 'food_', 'worm_', 'brain_')):
-                    continue  # Skip experiment and other top-level keys
-                
-                # Deserialize the value first
-                value = deserialize_value(value)
-                
-                # Parse section and remaining key parts
-                parts = flat_key.split('_', 1)
-                section = parts[0]
-                rest = parts[1] if len(parts) > 1 else ""
-                
-                if section not in result:
-                    continue
-                
-                # Handle nested structures for complex config values
-                if section == 'food' and rest.startswith('feeding_paradigm_'):
-                    # Reconstruct food.feeding_paradigm dict
-                    if 'feeding_paradigm' not in result[section]:
-                        result[section]['feeding_paradigm'] = {}
-                    subkey = rest.replace('feeding_paradigm_', '')
-                    result[section]['feeding_paradigm'][subkey] = value
-                
-                elif section == 'worm' and rest.startswith('decisionmaking_'):
-                    # Reconstruct worm.decisionmaking dict
-                    if 'decisionmaking' not in result[section]:
-                        result[section]['decisionmaking'] = {}
-                    subkey = rest.replace('decisionmaking_', '')
-                    result[section]['decisionmaking'][subkey] = value
-                
-                elif section == 'worm' and rest.startswith('sensors_'):
-                    # Reconstruct worm.sensors dict
-                    if 'sensors' not in result[section]:
-                        result[section]['sensors'] = {}
-                    subkey = rest.replace('sensors_', '')
-                    result[section]['sensors'][subkey] = value
-                
-                elif section == 'brain' and rest.startswith('sensory_mapping_'):
-                    # Reconstruct brain.sensory_mapping dict
-                    if 'sensory_mapping' not in result[section]:
-                        result[section]['sensory_mapping'] = {}
-                    subkey = rest.replace('sensory_mapping_', '')
-                    result[section]['sensory_mapping'][subkey] = value
-                
-                elif section == 'brain' and rest.startswith('output_mapping_'):
-                    # Reconstruct brain.output_mapping indexed dict
-                    if 'output_mapping' not in result[section]:
-                        result[section]['output_mapping'] = {}
-                    idx_str = rest.replace('output_mapping_', '')
-                    try:
-                        idx = int(idx_str)
-                        result[section]['output_mapping'][idx] = value
-                    except ValueError:
-                        result[section]['output_mapping'][idx_str] = value
-                
-                else:
-                    # Simple scalar values - remove section prefix
-                    key = rest
-                    result[section][key] = value
-            
-            return result
-        
-        reconstructed_cfg = unflatten_config_from_hdf5(hdf5_cfg_flat)
-        
-        # Copy reconstructed config into main cfg object
+
+        # Reconstruct world/food/worm/brain config from HDF5 attributes
+        reconstructed_cfg = load_and_reconstruct_hdf5_cfg(hdf5_source_path)
         for section in ['world', 'food', 'worm', 'brain']:
             if section in reconstructed_cfg and reconstructed_cfg[section]:
                 cfg[section] = reconstructed_cfg[section]
-        
-        # Validate that all required sections were reconstructed
+
         required_sections = ['world', 'food', 'worm', 'brain']
         missing_sections = [s for s in required_sections if s not in cfg or not cfg[s]]
-        
         if missing_sections:
-            print("[ERROR] Could not reconstruct all required config sections from HDF5!")
+            print(f"[ERROR] Could not reconstruct config sections from HDF5: {missing_sections}")
             sys.exit(1)
-                
-        # Track whether "all" was specified for filename construction
-        genome_id_is_all = (genome_ID == "all")
-        runs_to_load_is_all = (runs_to_load == "all")
-        
-        # Parse genome_ID selection
-        if genome_ID == "all":
-            # Will determine below after loading HDF5
-            selected_elite_ids = None
-        elif isinstance(genome_ID, int):
-            selected_elite_ids = [genome_ID]
-        elif isinstance(genome_ID, list):
-            selected_elite_ids = genome_ID
-        else:
-            raise ValueError(f"[ERROR] genome_ID must be 'all', int, or list. Got: {genome_ID}")
-        
-        # Parse runs_to_load selection
-        if runs_to_load == "all":
-            runs_indices = None  # Will determine from HDF5
-        elif isinstance(runs_to_load, list):
-            runs_indices = runs_to_load
-        else:
-            raise ValueError(f"[ERROR] runs_to_load must be 'all' or list. Got: {runs_to_load}")
-        
-        # ============================================================
-        # 2b. LOAD MIXED YAML + HDF5 PARAMETERS
-        # ============================================================
+
+        # Load run-level seeds and metadata from HDF5
         with h5py.File(hdf5_source_path, 'r') as f:
-            # Get max_ticks from HDF5
-            max_ticks_hdf5 = int(f.attrs.get('experiment_max_ticks', experiment_cfg.get("max_ticks")))
-            n_runs_hdf5 = int(f.attrs.get('experiment_n_runs', experiment_cfg.get("n_runs")))
-            population_size_hdf5 = int(f.attrs.get('experiment_population_size', 1))
-            
-            # Determine selected_elite_ids if "all" was specified
-            if selected_elite_ids is None:
-                available_elites = [key for key in f['elite_genomes'].keys() if key.startswith('elite_')]
-                selected_elite_ids = [int(k.split('_')[1]) for k in sorted(available_elites)]
-            
-            # Determine runs_indices if "all" was specified
-            if runs_indices is None:
-                runs_indices = list(range(n_runs_hdf5))
-            
-            # ============================================================
-            # 2d. LOAD FULL SEED ARRAYS FROM HDF5
-            # ============================================================
+            max_ticks_hdf5 = int(f.attrs.get('experiment_max_ticks', experiment_cfg.get("max_ticks", 2000)))
+            n_runs_hdf5 = int(f.attrs.get('experiment_n_runs', experiment_cfg.get("n_runs", 1)))
             run_seeds_full = f['elite_genomes/run_seeds'][:]
-            
-            elite_seeds_noise_full = {}
-            elite_seeds_decision_full = {}
-            for elite_id in selected_elite_ids:
-                elite_group_name = f"elite_genomes/elite_{elite_id}"
-                if elite_group_name not in f:
-                    raise ValueError(f"[ERROR] Elite {elite_id} not found in {hdf5_source_path}")
-                
-                elite_seeds_noise_full[elite_id] = f[f'{elite_group_name}/seeds_noise'][:]
-                elite_seeds_decision_full[elite_id] = f[f'{elite_group_name}/seeds_decision'][:]
-                
+
+            if GENOME_FROM_FILE:
+                # Also load per-elite seeds for replay mode
+                genome_ID = from_file_cfg.get("genome_ID", "all")
+                runs_to_load = from_file_cfg.get("runs_to_load", "all")
+
+                if genome_ID == "all":
+                    available_elites = [key for key in f['elite_genomes'].keys() if key.startswith('elite_')]
+                    selected_elite_ids = [int(k.split('_')[1]) for k in sorted(available_elites)]
+                elif isinstance(genome_ID, int):
+                    selected_elite_ids = [genome_ID]
+                elif isinstance(genome_ID, list):
+                    selected_elite_ids = genome_ID
+                else:
+                    raise ValueError(f"[ERROR] genome_ID must be 'all', int, or list. Got: {genome_ID}")
+
+                if runs_to_load == "all":
+                    runs_indices = list(range(n_runs_hdf5))
+                elif isinstance(runs_to_load, list):
+                    runs_indices = runs_to_load
+                else:
+                    raise ValueError(f"[ERROR] runs_to_load must be 'all' or list. Got: {runs_to_load}")
+
+                elite_seeds_noise_full = {}
+                elite_seeds_decision_full = {}
+                for elite_id in selected_elite_ids:
+                    elite_group_name = f"elite_genomes/elite_{elite_id}"
+                    if elite_group_name not in f:
+                        raise ValueError(f"[ERROR] Elite {elite_id} not found in {hdf5_source_path}")
+                    elite_seeds_noise_full[elite_id] = f[f'{elite_group_name}/seeds_noise'][:]
+                    elite_seeds_decision_full[elite_id] = f[f'{elite_group_name}/seeds_decision'][:]
+
         # ============================================================
-        # 2e. SLICE SEEDS FOR SELECTED RUNS & GENOMES
+        # 4a. REPLAY MODE: genomes and seeds both from file
         # ============================================================
-        pre_computed_seeds_dict = {}
-        for new_variant_id, elite_id in enumerate(selected_elite_ids):
-            run_seeds_subset = run_seeds_full[runs_indices]
-            noise_seeds_subset = elite_seeds_noise_full[elite_id][runs_indices]
-            decision_seeds_subset = elite_seeds_decision_full[elite_id][runs_indices]
-            
-            pre_computed_seeds_dict[new_variant_id] = {
-                'run_seeds': run_seeds_subset,
-                'noise_seeds': noise_seeds_subset,
-                'decision_seeds': decision_seeds_subset,
+        if GENOME_FROM_FILE:
+            genome_id_is_all = (genome_ID == "all")
+            runs_to_load_is_all = (runs_to_load == "all")
+
+            pre_computed_seeds_dict = {}
+            for new_variant_id, elite_id in enumerate(selected_elite_ids):
+                pre_computed_seeds_dict[new_variant_id] = {
+                    'run_seeds': run_seeds_full[runs_indices],
+                    'noise_seeds': elite_seeds_noise_full[elite_id][runs_indices],
+                    'decision_seeds': elite_seeds_decision_full[elite_id][runs_indices],
+                }
+
+            genome_generator = load_genome_generator(GENOME_TYPE)
+            genomes = []
+            for new_variant_id, elite_id in enumerate(selected_elite_ids):
+                genome = genome_generator(cfg, elite_id=elite_id, hdf5_path=hdf5_source_path)
+                genomes.append(genome)
+
+            N_VARIANTS = len(selected_elite_ids)
+            N_RUNS = len(runs_indices)
+            MAX_TICKS = max_ticks_hdf5
+
+            VIZ_ENABLED = experiment_cfg["viz_enabled"]
+            VIZ_FPS = experiment_cfg["viz_fps"]
+            VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
+            VIZ_BRAIN_FPS = experiment_cfg["viz_brain_fps"]
+            ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
+            ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
+            ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
+
+            genome_id_str = "all" if genome_id_is_all else (
+                "-".join(str(x) for x in selected_elite_ids) if len(selected_elite_ids) > 1
+                else str(selected_elite_ids[0])
+            )
+            runs_str = "all" if runs_to_load_is_all else (
+                "-".join(str(x) for x in runs_indices) if len(runs_indices) > 1
+                else str(runs_indices[0])
+            )
+            EXPERIMENT_FOLDER = str(Path(file_folder))
+            SIMULATION_NAME = f"{filename}_genomes_{genome_id_str}_runs_{runs_str}"
+            WIRING_RANDOMIZATION_SEED = 0
+            SIMULATION_SEED = 0
+
+            replay_info = {
+                'source_path': hdf5_source_path,
+                'source_filename': filename,
+                'genome_ids': genome_id_str,
+                'runs_to_load': runs_str,
             }
-        
+
         # ============================================================
-        # 2f. LOAD GENOMES FROM HDF5
+        # 4b. BENCHMARK MODE: seeds from file, genomes de novo
         # ============================================================
-        genome_generator = load_genome_generator(GENOME_TYPE)
-        genomes = []
-        for new_variant_id, elite_id in enumerate(selected_elite_ids):
-            genome = genome_generator(cfg, elite_id=elite_id, hdf5_path=hdf5_source_path)
-            genomes.append(genome)
-        
-        # ============================================================
-        # 2g. SET N_VARIANTS, N_RUNS, AND OTHER PARAMETERS
-        # ============================================================
-        N_VARIANTS = len(selected_elite_ids)
-        N_RUNS = len(runs_indices)
-        MAX_TICKS = max_ticks_hdf5
-        
-        # VIZ & tracking flags from YAML (not HDF5)
-        VIZ_ENABLED = experiment_cfg["viz_enabled"]
-        VIZ_FPS = experiment_cfg["viz_fps"]
-        VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
-        VIZ_BRAIN_FPS = experiment_cfg["viz_brain_fps"]
-        ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
-        ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
-        ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
-        
-        # Construct output folder: file_folder/replays/filename_genomes_{IDs}_runs_{indices}.h5
-        # Use "all" in filename if that was specified in YAML
-        if genome_id_is_all:
-            genome_id_str = "all"
         else:
-            genome_id_str = "-".join(str(x) for x in selected_elite_ids) if len(selected_elite_ids) > 1 else str(selected_elite_ids[0])
-        
-        if runs_to_load_is_all:
-            runs_str = "all"
-        else:
-            runs_str = "-".join(str(x) for x in runs_indices) if len(runs_indices) > 1 else str(runs_indices[0])
-        
-        replay_filename = f"{filename}_genomes_{genome_id_str}_runs_{runs_str}"
-        EXPERIMENT_FOLDER = str(Path(file_folder) / "replays")
-        SIMULATION_NAME = replay_filename
-                
-        # For from_file mode, WIRING_RANDOMIZATION_SEED and SIMULATION_SEED are unused
-        WIRING_RANDOMIZATION_SEED = 0
-        SIMULATION_SEED = 0
-        
-        # Prepare replay metadata for HDF5 genome_properties dataset
-        replay_info = {
-            'source_path': hdf5_source_path,
-            'source_filename': filename,
-            'genome_ids': genome_id_str,
-            'runs_to_load': runs_str,
-        }
-        
+            genome_generator = load_genome_generator(GENOME_TYPE)
+            if GENOME_TYPE.lower() == "random":
+                WIRING_RANDOMIZATION_SEED = experiment_cfg["random_genome"]["wiring_randomization_seed"]
+            else:
+                WIRING_RANDOMIZATION_SEED = 0
+
+            N_VARIANTS = experiment_cfg["population_size"]
+            N_RUNS = n_runs_hdf5
+            MAX_TICKS = max_ticks_hdf5
+
+            VIZ_ENABLED = experiment_cfg["viz_enabled"]
+            VIZ_FPS = experiment_cfg["viz_fps"]
+            VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
+            VIZ_BRAIN_FPS = experiment_cfg["viz_brain_fps"]
+            ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
+            ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
+            ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
+
+            # Output folder = source file folder; name encodes the origin + BM label
+            EXPERIMENT_FOLDER = str(Path(file_folder))
+            SIMULATION_NAME = f"{filename}_BM_{experiment_cfg['simulation_name']}"
+            # Seed noise/decision RNGs from the wiring seed so benchmarks are reproducible
+            SIMULATION_SEED = WIRING_RANDOMIZATION_SEED
+
+            # Stash the file's run_seeds; pre_computed_seeds_dict is built after the
+            # RNG streams are initialised (step 7) so that noise/decision seeds are real arrays.
+            bm_run_seeds = run_seeds_full
+
+            # replay_info being non-None tells eval_generation to skip the timestamp prefix.
+            # It also records the source file in the HDF5 output.
+            replay_info = {
+                'source_path': hdf5_source_path,
+                'source_filename': filename,
+                'genome_ids': 'benchmark',
+                'runs_to_load': 'all',
+            }
+
+    # ============================================================
+    # 5. NORMAL MODE: nothing from file
+    # ============================================================
     else:
-        # ============================================================
-        # NORMAL MODE (generate fresh genomes)
-        # ============================================================
-        replay_info = None  # Only replay mode has replay_info
         genome_generator = load_genome_generator(GENOME_TYPE)
-        
-        # Get wiring randomization seed from genome-type-specific config
+
         if GENOME_TYPE.lower() == "random":
             WIRING_RANDOMIZATION_SEED = experiment_cfg["random_genome"]["wiring_randomization_seed"]
         else:
-            # For lookup or other genome types, wiring seed is not used
             WIRING_RANDOMIZATION_SEED = 0
-        
+
         N_VARIANTS = experiment_cfg["population_size"]
         MAX_TICKS = experiment_cfg["max_ticks"]
         N_RUNS = experiment_cfg["n_runs"]
-        
+
         VIZ_ENABLED = experiment_cfg["viz_enabled"]
         VIZ_FPS = experiment_cfg["viz_fps"]
         VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
@@ -541,29 +536,28 @@ def main():
         ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
         ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
         ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
-        
+
         EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
         SIMULATION_NAME = experiment_cfg["simulation_name"]
         SIMULATION_SEED = experiment_cfg["simulation_seed"]
 
-    # Extract brain_module_name from config (used in both replay and normal modes)
+    # Extract brain_module_name from config (used in all modes)
     brain_module_name = str(cfg["worm"]["decisionmaking"]["version"])
 
     # ============================================================
-    # 2. VALIDATION & USER CHECKS
+    # 6. VALIDATION & USER CHECKS
     # ============================================================
-    # Check for genome_type vs config consistency
     has_brain_config = cfg["worm"]["decisionmaking"]["brain"]
     if GENOME_TYPE.lower() == "none" and has_brain_config:
         raise ValueError(f"Config specifies brain: true but GENOME_TYPE is 'none'. Please set GENOME_TYPE in the 'experiment' section.")
-    
+
     validation_result = validate_tracking_flags(ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING)
     should_continue, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING, ENABLE_HEAT_MAP_TRACKING = validation_result
     if not should_continue:
         return
-    
+
     VIZ_ENABLED, VIZ_BRAIN_ENABLED = validate_viz_flags(N_VARIANTS, N_RUNS, VIZ_ENABLED, VIZ_BRAIN_ENABLED)
-    
+
     # Extract config components for worker
     grid_width = cfg["world"]["grid_width"]
     grid_height = cfg["world"]["grid_height"]
@@ -573,47 +567,50 @@ def main():
     worm_metabolic_rate = cfg["worm"]["metabolic_rate"]
     worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = cfg.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
-    
+
     # Use config subsections directly (no wrapping)
     feeding_cfg = cfg["food"]
     brain_cfg = cfg["brain"]
-    
+
     # ============================================================
-    # 3. SPLIT OFF CONTINUOUS RNG STREAMS 
+    # 7. SPLIT OFF CONTINUOUS RNG STREAMS
     # ============================================================
-    
-    if GENOME_TYPE.lower() == "from_file":
-        # In replay mode, we don't use these RNGs (seeds are pre-computed from HDF5)
-        # Create dummy RNGs to satisfy eval_generation signature
-        seed_seq_sim = np.random.SeedSequence(0)
-        streams_sim = seed_seq_sim.spawn(3)
-        rng_noise = np.random.default_rng(streams_sim[0])
-        rng_decision = np.random.default_rng(streams_sim[1])
-        rng_world = np.random.default_rng(streams_sim[2])
-    else:
-        # Normal mode: spawn 3 independent RNG streams from simulation_seed
-        seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
-        streams_sim = seed_seq_sim.spawn(3)
-        rng_noise = np.random.default_rng(streams_sim[0])
-        rng_decision = np.random.default_rng(streams_sim[1])
-        rng_world = np.random.default_rng(streams_sim[2])
-    
+    # Replay mode:    SIMULATION_SEED = 0 (RNGs unused; all seeds from pre_computed_seeds_dict).
+    # Benchmark mode: SIMULATION_SEED = WIRING_RANDOMIZATION_SEED; rng_noise/rng_decision used
+    #                 for per-variant seeds; rng_world unused (run_seeds from file).
+    # Normal mode:    SIMULATION_SEED from YAML; all three RNGs used.
+    seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
+    streams_sim = seed_seq_sim.spawn(3)
+    rng_noise = np.random.default_rng(streams_sim[0])
+    rng_decision = np.random.default_rng(streams_sim[1])
+    rng_world = np.random.default_rng(streams_sim[2])
+
+    # Benchmark mode: now that RNGs are ready, build pre_computed_seeds_dict.
+    # run_seeds come from the source HDF5; noise/decision seeds are generated fresh
+    # so each benchmark variant gets its own independent stochastic stream.
+    if SEEDS_FROM_FILE and not GENOME_FROM_FILE:
+        pre_computed_seeds_dict = {}
+        for variant_id in range(N_VARIANTS):
+            pre_computed_seeds_dict[variant_id] = {
+                'run_seeds': bm_run_seeds,
+                'noise_seeds': rng_noise.integers(0, 2**32, size=N_RUNS, dtype=np.uint32),
+                'decision_seeds': rng_decision.integers(0, 2**32, size=N_RUNS, dtype=np.uint32),
+            }
+
     # ============================================================
-    # 4. GENERATE GENOMES (normal mode only; from_file already loaded)
+    # 8. GENERATE GENOMES (de novo modes; replay loads from HDF5 above)
     # ============================================================
-    if GENOME_TYPE.lower() != "from_file":
-        # Generate all genomes before dispatching workers
+    if not GENOME_FROM_FILE:
         genomes = []
         for variant_id in range(N_VARIANTS):
             genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
             genomes.append(genome)
-    # else: genomes already loaded from HDF5 in from_file block above
-
+    # else: genomes already loaded from HDF5 in replay mode block above
 
     all_lifespans, run_seeds_generated = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, 
-                                    pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info)                             
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg,
+                                    pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info)
 
 
 if __name__ == "__main__":
