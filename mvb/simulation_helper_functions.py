@@ -16,7 +16,6 @@ import numpy as np
 import h5py
 
 from mvb.world import World
-from mvb.feeding import seed_food
 from mvb.worm import Worm
 from mvb.world_renderer_qt import QtRenderer
 from mvb.brain_renderer_qt import BrainQtRenderer

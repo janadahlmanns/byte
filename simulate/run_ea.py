@@ -615,8 +615,9 @@ def main():
     worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = cfg["worm"]["sensors"]["active"]
     
-    # Use config subsections directly (no wrapping)
-    feeding_cfg = cfg["food"]
+    sorted_phases = sorted(cfg["food"], key=lambda p: p["phase_from"])
+    initial_feeding_cfg = sorted_phases[0]
+    switch_phases = sorted_phases[1:]
     brain_cfg = cfg["brain"]
     
     # Create HDF5 file early to catch file system errors before experiment runs
@@ -658,7 +659,7 @@ def main():
 
     lifespans, run_seeds_gen0 = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
 
 
     # ============================================================
@@ -706,7 +707,7 @@ def main():
 
         lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
 
         # ============================================================
         # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)

@@ -3,14 +3,14 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_ea/"
-  simulation_name: "random"
+  output_folder: "data/temp/"
+  simulation_name: "test_task_switching"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 300
-  evolutionary_algorithm_enabled: false
+  n_runs: 5
+  evolutionary_algorithm_enabled: true
 
   # Genome generation for first generation
   genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
@@ -25,8 +25,8 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 1
-    elite_size: 100
+    num_generations: 15
+    elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
     mutation_strength: 0.2    # Gaussian std for all mutations (weights, reliability, eta, tonic activations)
@@ -55,11 +55,18 @@ world:
   - 26
 
 food:
-  feeding_paradigm:
-    initial: true
-    regrow: false
-  initial_fraction_per_cell: 0.1
-  regrow_time: 3000
+  - phase_from: 0
+    feeding_paradigm:
+      initial: true
+      regrow: false
+    initial_fraction_per_cell: 0.4
+    regrow_time: 200
+  - phase_from: 40
+    feeding_paradigm:
+      initial: true
+      regrow: true
+    initial_fraction_per_cell: 0.1
+    regrow_time: 4
 
 worm:
   speed: 1

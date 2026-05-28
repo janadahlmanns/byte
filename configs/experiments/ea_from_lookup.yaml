@@ -55,11 +55,12 @@ world:
   - 26
 
 food:
-  feeding_paradigm:
-    initial: true
-    regrow: false
-  initial_fraction_per_cell: 0.1
-  regrow_time: 3000
+  - phase_from: 0
+    feeding_paradigm:
+      initial: true
+      regrow: false
+    initial_fraction_per_cell: 0.1
+    regrow_time: 3000
 
 worm:
   speed: 1

@@ -106,6 +106,7 @@ def eval_variant(
     seeds_decision_variant,
     max_ticks,
     sensor_cfg,
+    switch_phases=None,
 ):
     """Execute all runs for a single variant and return tracking results.
     
@@ -240,8 +241,11 @@ def eval_variant(
         # ============================================================
         # Reset worm & simulation, reset world with the according run rng 
         # ============================================================
+        world.rng_world_run = rng_world_run
+        world.feeding_cfg = feeding_cfg
+        world.switch_phases = list(switch_phases) if switch_phases else []
         world.reset_food()
-        seed_food(world, feeding_cfg, rng_world_run)
+        seed_food(world, feeding_cfg)
         worm.reset()
         if rec is not None:
             rec.reset()
@@ -355,6 +359,7 @@ def run_variant_worker(
     sensor_cfg,
     feeding_cfg,
     brain_cfg,
+    switch_phases,
     seeds_noise_variant,
     seeds_decision_variant,
     run_seeds,
@@ -422,6 +427,7 @@ def run_variant_worker(
         seeds_decision_variant,
         max_ticks,
         sensor_cfg,
+        switch_phases=switch_phases,
     )
 
     # ============================================================
@@ -466,7 +472,7 @@ def run_variant_worker(
 
 def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                 ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, pre_computed_seeds_dict=None, replay_info=None):
+                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, pre_computed_seeds_dict=None, replay_info=None, switch_phases=None):
     """Execute all variants for a generation and return lifespan data.
     
     Args:
@@ -594,6 +600,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                     'sensor_cfg': sensor_cfg,
                     'feeding_cfg': feeding_cfg,
                     'brain_cfg': brain_cfg,
+                    'switch_phases': switch_phases if switch_phases is not None else [],
                     'seeds_noise_variant': seeds_noise_variant,
                     'seeds_decision_variant': seeds_decision_variant,
                     'run_seeds': run_seeds,
@@ -644,6 +651,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                         'sensor_cfg': sensor_cfg,
                         'feeding_cfg': feeding_cfg,
                         'brain_cfg': brain_cfg,
+                        'switch_phases': switch_phases if switch_phases is not None else [],
                         'seeds_noise_variant': seeds_noise_variant,
                         'seeds_decision_variant': seeds_decision_variant,
                         'run_seeds': run_seeds,

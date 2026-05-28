@@ -4,16 +4,15 @@ from .world import World
 
 # --- individual behaviors ---
 
-def setup_food_initially(world: World, cfg: dict, rng: np.random.Generator):
+def setup_food_initially(world: World, cfg: dict):
     """Fill the world with initial food based on fraction.
     
     Args:
         world: World instance
         cfg: Feed config dict with keys: initial_fraction_per_cell, feeding_paradigm, regrow_time
-        rng: Random number generator
     """
     p = cfg["initial_fraction_per_cell"]
-    world.food = (rng.random(world.food.shape) < p).astype(np.int8)
+    world.food = (world.rng_world_run.random(world.food.shape) < p).astype(np.int8)
     world.regrow_timer.fill(0)
 
 
@@ -53,24 +52,33 @@ def on_eat(world: World, cfg: dict, y: int, x: int) -> bool:
 
 # --- high-level API used by sim/world ---
 
-def seed_food(world: World, cfg: dict, rng: np.random.Generator):
+def seed_food(world: World, cfg: dict):
     """Seed food according to config (only if 'initial' enabled).
     
     Args:
         world: World instance
         cfg: Feed config dict with keys: feeding_paradigm, initial_fraction_per_cell
-        rng: Random number generator
     """
     if cfg["feeding_paradigm"].get("initial", False):
-        setup_food_initially(world, cfg, rng)
+        setup_food_initially(world, cfg)
 
 
 def feeding_tick(world: World, cfg: dict):
-    """Per-tick update. Only regrows if 'regrow' enabled.
-    
+    """Per-tick update. Handles phase transitions and regrowth.
+
+    If a phase transition is due this tick (world.ticks == next phase's phase_from),
+    re-seeds the food grid with the new phase config and updates world.feeding_cfg.
+    Otherwise runs the normal regrow logic if enabled.
+
     Args:
         world: World instance
-        cfg: Feed config dict
+        cfg: Feed config dict for the current phase
     """
+    if world.switch_phases and world.ticks == world.switch_phases[0]["phase_from"]:
+        new_cfg = world.switch_phases.pop(0)
+        seed_food(world, new_cfg)
+        world.feeding_cfg = new_cfg
+        return
+
     if cfg["feeding_paradigm"].get("regrow", False):
         tick_regrow(world, cfg)

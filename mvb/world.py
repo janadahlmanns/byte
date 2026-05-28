@@ -10,6 +10,8 @@ class World:
         self.ticks = 0
         self.food = np.zeros((self.height, self.width), dtype=np.int8) # food grid: 0/1 per cell for v1
         self.regrow_timer = np.zeros_like(self.food, dtype=np.int16) # regrowth timer map (same shape as food grid)
+        self.switch_phases = []      # phase transition schedule; set to a fresh list copy per run by eval_variant
+        self.rng_world_run = None    # rng_world_run for this run; set per run by eval_variant for phase re-seeding
 
     def reset_food(self):
         self.food.fill(0)

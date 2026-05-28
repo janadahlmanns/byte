@@ -224,8 +224,18 @@ def unflatten_config_from_hdf5(flat_dict):
 
     result = {'world': {}, 'food': {}, 'worm': {}, 'brain': {}}
 
+    # New format: food phases stored as a single JSON list under the bare 'food' key.
+    # load_and_reconstruct_hdf5_cfg already parses JSON strings starting with '[',
+    # so the value here is either a Python list or a JSON string.
+    if 'food' in flat_dict:
+        food_raw = flat_dict['food']
+        if isinstance(food_raw, list):
+            result['food'] = food_raw
+        elif isinstance(food_raw, str):
+            result['food'] = deserialize_value(food_raw)
+
     for flat_key, value in flat_dict.items():
-        if not flat_key.startswith(('world_', 'food_', 'worm_', 'brain_')):
+        if not flat_key.startswith(('world_', 'worm_', 'brain_')):
             continue
         value = deserialize_value(value)
         parts = flat_key.split('_', 1)
@@ -234,9 +244,7 @@ def unflatten_config_from_hdf5(flat_dict):
         if section not in result:
             continue
 
-        if section == 'food' and rest.startswith('feeding_paradigm_'):
-            result[section].setdefault('feeding_paradigm', {})[rest.replace('feeding_paradigm_', '')] = value
-        elif section == 'worm' and rest.startswith('decisionmaking_'):
+        if section == 'worm' and rest.startswith('decisionmaking_'):
             result[section].setdefault('decisionmaking', {})[rest.replace('decisionmaking_', '')] = value
         elif section == 'worm' and rest.startswith('sensors_'):
             result[section].setdefault('sensors', {})[rest.replace('sensors_', '')] = value
@@ -568,8 +576,9 @@ def main():
     worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = cfg.get("worm", {}).get("sensors", {}).get("active", ["current_field"])
 
-    # Use config subsections directly (no wrapping)
-    feeding_cfg = cfg["food"]
+    sorted_phases = sorted(cfg["food"], key=lambda p: p["phase_from"])
+    initial_feeding_cfg = sorted_phases[0]
+    switch_phases = sorted_phases[1:]
     brain_cfg = cfg["brain"]
 
     # ============================================================
@@ -609,8 +618,8 @@ def main():
 
     all_lifespans, run_seeds_generated = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg,
-                                    pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info)
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg,
+                                    pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info, switch_phases=switch_phases)
 
 
 if __name__ == "__main__":
