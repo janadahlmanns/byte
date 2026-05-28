@@ -59,7 +59,7 @@ BASIC WORKFLOW (NEW FEATURE)
    (edit files)
 
    git status 
-   git add . 
+   git add .
    git commit -m "Describe what you did"
 
 4) Push branch (first time only)
