@@ -4,35 +4,35 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "test_lookup_hard"
+  simulation_name: "test_batch"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 1
+  n_runs: 300
   evolutionary_algorithm_enabled: false
 
   # Genome generation for first generation
-  genome_type: "lookup_hard"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 1
-  #   # Genome type specific parameters - random
-  # random_genome:
-  #   wiring_randomization_seed: 1
-  #   connectivity_degree_excitatory: 0.1
-  #   connectivity_degree_inhibitory: 0.1
-  #   modulation_degree_potentiation: 0.1
-  #   modulation_degree_depression: 0.1
+  genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 15
+    # Genome type specific parameters - random
+  random_genome:
+    wiring_randomization_seed: 1
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.1
+    modulation_degree_potentiation: 0.1
+    modulation_degree_depression: 0.1
 
   # Visualization
-  viz_enabled: true
-  viz_fps: 8
-  viz_brain_enabled: true 
-  viz_brain_fps: 8
+  viz_enabled: false
+  viz_fps: 4
+  viz_brain_enabled: false 
+  viz_brain_fps: 4
   
   # Data tracking
   enable_per_run_tracking: true
-  enable_per_tick_tracking: false
-  enable_heat_map_tracking: false
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
   
 
 # ============================================================
@@ -44,14 +44,13 @@ world:
   start_pos:
   - 26
   - 26
-  generation_seed: 1
 
 food:
   feeding_paradigm:
     initial: true
-    regrow: false
-  initial_fraction_per_cell: 0.1
-  regrow_time: 3000
+    regrow: true
+  initial_fraction_per_cell: 0.05
+  regrow_time: 20
 
 worm:
   speed: 1
