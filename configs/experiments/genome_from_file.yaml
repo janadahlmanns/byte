@@ -2,14 +2,25 @@
 # EXPERIMENT CONFIGURATION
 # ============================================================
 experiment:
-  # Genome generation
-  genome_type: "from_file" # Options: "random", "lookup"m "from_file"
-   # Genome type specific parameters - from_file
-  from_file_genome:
-    file_folder: "data/first_ea/"
-    filename: "2026-05-06_11-31-03_ea_from_lookup_hard"
-    genome_ID: 'all'  # "all" or a list of genome indices to load from the file
-    runs_to_load: 'all'  # "all" or a list of run indices to load from the file
+  # Genome source and seed source are independent:
+  #   genome_type: "from_file"  →  load genomes from HDF5
+  #   simulation_seed: "from_file"  →  load run_seeds + all simulation parameters from HDF5
+  #
+  # Modes:
+  #   REPLAY    – genome_type: "from_file"  + simulation_seed: "from_file"
+  #   BENCHMARK – genome_type: <de novo>   + simulation_seed: "from_file"
+  #   NORMAL    – genome_type: <de novo>   + simulation_seed: <integer>
+
+  genome_type: "from_file"      # Options: "random", "lookup_soft", "lookup_hard", "from_file"
+  simulation_seed: "from_file"  # Options: integer, "from_file"
+
+  # Source file for genomes, seeds, and all simulation parameters.
+  # Required when genome_type: "from_file" OR simulation_seed: "from_file".
+  from_file_source:
+    file_folder: "data/first_regrow/"
+    filename: "2026-05-26_12-31-02_ea_from_random"
+    genome_ID: 'all'   # "all" or a list of genome indices — only used in replay mode
+    runs_to_load: 'all' # "all" or a list of run indices  — only used in replay mode
 
   # Visualization
   viz_enabled: false
@@ -21,5 +32,3 @@ experiment:
   enable_per_run_tracking: true
   enable_per_tick_tracking: true
   enable_heat_map_tracking: true
-  
-

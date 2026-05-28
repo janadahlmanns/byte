@@ -31,15 +31,15 @@ EXPERIMENT_NAME = "first_ea"
 
 # Group colors (colorblind-friendly)
 COLOR_MAP = {
-    "Random":         "#56B4E9",
-    "Hard-Coded":     "#0072B2",
-    "EA from Random": "#E69F00",
+    "Random":         "#aad5ee",
+    "Hard-Coded":     "#336f99",
+    "EA from Random": "#b38219",
 }
 
 # HDF5 file names (without .h5 extension) – expected next to this script
 HDF5_FILES = {
-    "Random":         "2026-05-05_17-29-22_random_genomes_all_runs_all",
-    "Hard-Coded":     "2026-05-05_17-28-53_lookup_hard_genomes_all_runs_all",
+    "Random":         "2026-05-27_09-57-28_2026-05-05_17-42-25_ea_from_random_BM_random",
+    "Hard-Coded":     "2026-05-27_10-00-48_2026-05-05_17-42-25_ea_from_random_BM_lookup_hard",
     "EA from Random": "2026-05-05_17-42-25_ea_from_random_genomes_all_runs_all",
 }
 

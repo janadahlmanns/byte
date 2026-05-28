@@ -1,0 +1,7 @@
+
+aad5ee,     light blue
+336f99,     middle blue
+2b3b5f,     dark blue
+ddd55f,     light gold
+b38219,     middle gold
+705915,     dark gold

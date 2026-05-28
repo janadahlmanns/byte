@@ -240,7 +240,7 @@ class MetricsRecorder:
                 ]
                 for src, tgt in connections_to_track:
                     dtype_fields.append((f'{src}_{tgt}', 'f4'))
-                kwargs['per_tick_data'] = np.zeros(max_ticks, dtype=dtype_fields)
+                kwargs['per_tick_data'] = np.zeros(max_ticks + 1, dtype=dtype_fields)
             
             if enable_heat_map_tracking:
                 staying_heatmap = np.zeros((grid_height, grid_width), dtype=np.int32)
