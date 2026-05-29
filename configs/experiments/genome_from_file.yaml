@@ -17,13 +17,13 @@ experiment:
   # Source file for genomes, seeds, and all simulation parameters.
   # Required when genome_type: "from_file" OR simulation_seed: "from_file".
   from_file_source:
-    file_folder: "data/temp/"
-    filename: "2026-05-28_12-03-59_test_task_switching"
+    file_folder: "data/first_regrow/"
+    filename: "2026-05-26_12-31-02_ea_from_random"
     genome_ID: 'all'   # "all" or a list of genome indices — only used in replay mode
     runs_to_load: 'all' # "all" or a list of run indices  — only used in replay mode
 
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 8
   viz_brain_enabled: false 
   viz_brain_fps: 8

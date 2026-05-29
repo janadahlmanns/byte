@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "test_batch"
+  simulation_name: "test_batch2"
   simulation_seed: 1
   
   # Simulation runtime
@@ -50,13 +50,13 @@ food:
     feeding_paradigm:
       initial: true
       regrow: false
-    initial_fraction_per_cell: 0.4
+    initial_fraction_per_cell: 0.1
     regrow_time: 200
   - phase_from: 40
     feeding_paradigm:
       initial: true
       regrow: true
-    initial_fraction_per_cell: 0.1
+    initial_fraction_per_cell: 0.05
     regrow_time: 4
 
 worm:

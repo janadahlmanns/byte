@@ -3,8 +3,8 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/first_regrow/"
-  simulation_name: "ea_from_random"
+  output_folder: "data/temp/"
+  simulation_name: "bugfix_overflow"
   simulation_seed: 1
   
   # Simulation runtime
@@ -25,7 +25,7 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 50
+    num_generations: 10
     elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
@@ -61,6 +61,7 @@ food:
       regrow: true
     initial_fraction_per_cell: 0.1
     regrow_time: 31
+
 
 worm:
   speed: 1
