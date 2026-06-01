@@ -12,26 +12,21 @@
 # ============================================================
 experiment:
   # Naming: appended to source filename as <filename>_BM_<simulation_name>
-  simulation_name: "random"
+  simulation_name: "lookup_hard"
 
   # "from_file" triggers benchmark mode: loads all simulation parameters and
   # run_seeds from the source HDF5 file specified in from_file_source below.
   simulation_seed: "from_file"
 
   # Genome generation (de novo)
-  genome_type: "random"    # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 260
-  random_genome:
-    wiring_randomization_seed: 1
-    connectivity_degree_excitatory: 0.1
-    connectivity_degree_inhibitory: 0.1
-    modulation_degree_potentiation: 0.1
-    modulation_degree_depression: 0.1
+  genome_type: "lookup_hard"    # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 1
+
 
   # Source file for simulation parameters and run_seeds
   from_file_source:
-    file_folder: "data/first_regrow/"
-    filename: "2026-05-26_12-31-02_ea_from_random"
+    file_folder: "data/flex_task/"
+    filename: "2026-05-29_09-47-15_ea_from_random"
     # genome_ID and runs_to_load are not used in benchmark mode
 
   # Visualization

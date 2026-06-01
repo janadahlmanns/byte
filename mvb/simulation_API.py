@@ -519,8 +519,8 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     # ============================================================
     
     if ENABLE_PER_RUN_TRACKING:
-        # In replay mode, skip timestamp prefix; otherwise add timestamp
-        skip_timestamp = replay_info is not None
+        # In replay/benchmark mode, skip timestamp prefix; test and normal modes add timestamp
+        skip_timestamp = replay_info is not None and replay_info.get('mode') != 'test'
         hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME, skip_timestamp=skip_timestamp)
         print(f"[batch] writing to {hdf5_path}\n")
         create_hdf5_file(hdf5_path, cfg)

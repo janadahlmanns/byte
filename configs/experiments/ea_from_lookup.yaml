@@ -15,13 +15,6 @@ experiment:
   # Genome generation for first generation
   genome_type: "lookup_hard"  # Options: "random", "lookup_soft", "lookup_hard"
   population_size: 260
-    # Genome type specific parameters - random
-  random_genome:
-    wiring_randomization_seed: 1
-    connectivity_degree_excitatory: 0.1
-    connectivity_degree_inhibitory: 0.1
-    modulation_degree_potentiation: 0.1
-    modulation_degree_depression: 0.1
 
   # evolutionary algorithm
   evolutionary_algorithm:

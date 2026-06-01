@@ -8,22 +8,28 @@ experiment:
   #
   # Modes:
   #   REPLAY    – genome_type: "from_file"  + simulation_seed: "from_file"
+  #               Exact reproduction: genomes, seeds, and world/worm/brain config all from HDF5.
   #   BENCHMARK – genome_type: <de novo>   + simulation_seed: "from_file"
+  #               Fresh genomes run on the same world seeds as a reference experiment.
   #   NORMAL    – genome_type: <de novo>   + simulation_seed: <integer>
+  #               Fully fresh simulation, nothing loaded from file.
+  #   TEST      – genome_type: "from_file"  + simulation_seed: <integer>
+  #               Genome(s) loaded from file, run on a fresh simulation defined by this YAML.
+  #               Requires the full world/food/worm/brain sections to be set below.
 
   genome_type: "from_file"      # Options: "random", "lookup_soft", "lookup_hard", "from_file"
-  simulation_seed: "from_file"  # Options: integer, "from_file"
+  simulation_seed: "from_file"  # Options: integer (TEST/NORMAL), "from_file" (REPLAY/BENCHMARK)
 
   # Source file for genomes, seeds, and all simulation parameters.
   # Required when genome_type: "from_file" OR simulation_seed: "from_file".
   from_file_source:
-    file_folder: "data/first_regrow/"
-    filename: "2026-05-26_12-31-02_ea_from_random"
-    genome_ID: 'all'   # "all" or a list of genome indices — only used in replay mode
-    runs_to_load: 'all' # "all" or a list of run indices  — only used in replay mode
+    file_folder: "data/flex_task/"
+    filename: "2026-05-29_09-47-15_ea_from_random"
+    genome_ID: [0,1,2]   # "all" or a list of genome indices — only used in replay mode
+    runs_to_load: [0,1,5,60,73] # "all" or a list of run indices  — only used in replay mode
 
   # Visualization
-  viz_enabled: false
+  viz_enabled: true
   viz_fps: 8
   viz_brain_enabled: false 
   viz_brain_fps: 8

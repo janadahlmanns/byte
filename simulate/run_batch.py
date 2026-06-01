@@ -318,9 +318,8 @@ def main():
     #               Fresh genomes run on the same world seeds as a reference experiment.
     #   NORMAL    – genome_type: <de novo>   AND simulation_seed: <integer>
     #               Fully fresh simulation, nothing loaded from file.
-    #
-    # Warning case: genome_type: "from_file" AND simulation_seed: <integer>
-    #               Asks user whether to switch to seeds-from-file or cancel.
+    #   TEST      – genome_type: "from_file"  AND simulation_seed: <integer>
+    #               Genome(s) loaded from file, run on a fresh simulation defined by YAML.
 
     GENOME_TYPE = experiment_cfg["genome_type"]
     SIMULATION_SEED_RAW = experiment_cfg.get("simulation_seed", 1)
@@ -331,32 +330,70 @@ def main():
     replay_info = None
 
     # ============================================================
-    # 3. WARNING: genome from file but seeds NOT from file
+    # 3. TEST MODE: genome from file, fresh simulation from YAML
     # ============================================================
     if GENOME_FROM_FILE and not SEEDS_FROM_FILE:
         print("\n" + "="*80)
-        print("[WARNING] Inconsistent configuration detected:")
+        print("[TEST MODE] Loading genomes from HDF5, running with YAML simulation parameters")
         print("="*80)
-        print(f"  genome_type      = 'from_file'")
-        print(f"  simulation_seed  = {SIMULATION_SEED_RAW!r}  (not 'from_file')")
-        print()
-        print("  Loading genomes from file but using fresh seeds means this run will NOT")
-        print("  reproduce the original simulation. This is almost certainly a mistake.")
-        print()
-        print("  [1] Cancel — fix the configuration and try again")
-        print("  [2] Load seeds from file as well (full replay mode)")
-        print("="*80)
-        while True:
-            response = input("\nEnter your choice (1 or 2): ").strip()
-            if response == '1':
-                print("[EXIT] Execution stopped.")
-                return
-            elif response == '2':
-                print("[INFO] Switching to full replay mode (seeds loaded from file).")
-                SEEDS_FROM_FILE = True
-                break
+
+        from_file_cfg = experiment_cfg.get("from_file_source", {})
+        file_folder = from_file_cfg.get("file_folder")
+        filename = from_file_cfg.get("filename")
+        if not file_folder or not filename:
+            raise ValueError("[ERROR] 'from_file_source' section missing 'file_folder' or 'filename'")
+
+        hdf5_source_path = str(Path(file_folder) / f"{filename}.h5")
+        if not Path(hdf5_source_path).exists():
+            raise FileNotFoundError(f"[ERROR] HDF5 source file not found: {hdf5_source_path}")
+
+        genome_ID = from_file_cfg.get("genome_ID", "all")
+        with h5py.File(hdf5_source_path, 'r') as f:
+            if genome_ID == "all":
+                available_elites = [key for key in f['elite_genomes'].keys() if key.startswith('elite_')]
+                selected_elite_ids = [int(k.split('_')[1]) for k in sorted(available_elites)]
+            elif isinstance(genome_ID, int):
+                selected_elite_ids = [genome_ID]
+            elif isinstance(genome_ID, list):
+                selected_elite_ids = genome_ID
             else:
-                print("[ERROR] Invalid choice. Enter 1 or 2.")
+                raise ValueError(f"[ERROR] genome_ID must be 'all', int, or list. Got: {genome_ID}")
+
+        genome_generator = load_genome_generator(GENOME_TYPE)
+        genomes = []
+        for elite_id in selected_elite_ids:
+            genome = genome_generator(cfg, elite_id=elite_id, hdf5_path=hdf5_source_path)
+            genomes.append(genome)
+
+        N_VARIANTS = len(selected_elite_ids)
+        MAX_TICKS = experiment_cfg["max_ticks"]
+        N_RUNS = experiment_cfg["n_runs"]
+
+        VIZ_ENABLED = experiment_cfg["viz_enabled"]
+        VIZ_FPS = experiment_cfg["viz_fps"]
+        VIZ_BRAIN_ENABLED = experiment_cfg["viz_brain_enabled"]
+        VIZ_BRAIN_FPS = experiment_cfg["viz_brain_fps"]
+        ENABLE_PER_RUN_TRACKING = experiment_cfg["enable_per_run_tracking"]
+        ENABLE_PER_TICK_TRACKING = experiment_cfg["enable_per_tick_tracking"]
+        ENABLE_HEAT_MAP_TRACKING = experiment_cfg["enable_heat_map_tracking"]
+
+        EXPERIMENT_FOLDER = experiment_cfg["output_folder"]
+        SIMULATION_NAME = experiment_cfg["simulation_name"]
+        SIMULATION_SEED = int(SIMULATION_SEED_RAW)
+        WIRING_RANDOMIZATION_SEED = 0
+
+        genome_id_str = (
+            "all" if genome_ID == "all"
+            else "-".join(str(x) for x in selected_elite_ids) if isinstance(genome_ID, list)
+            else str(genome_ID)
+        )
+        replay_info = {
+            'mode': 'test',
+            'source_path': hdf5_source_path,
+            'source_filename': filename,
+            'genome_ids': genome_id_str,
+            'runs_to_load': 'n/a',
+        }
 
     # ============================================================
     # 4. LOAD FROM HDF5 (replay mode or benchmark mode)
@@ -525,7 +562,7 @@ def main():
     # ============================================================
     # 5. NORMAL MODE: nothing from file
     # ============================================================
-    else:
+    elif not GENOME_FROM_FILE:
         genome_generator = load_genome_generator(GENOME_TYPE)
 
         if GENOME_TYPE.lower() == "random":
@@ -587,7 +624,7 @@ def main():
     # Replay mode:    SIMULATION_SEED = 0 (RNGs unused; all seeds from pre_computed_seeds_dict).
     # Benchmark mode: SIMULATION_SEED = WIRING_RANDOMIZATION_SEED; rng_noise/rng_decision used
     #                 for per-variant seeds; rng_world unused (run_seeds from file).
-    # Normal mode:    SIMULATION_SEED from YAML; all three RNGs used.
+    # Normal/Test mode: SIMULATION_SEED from YAML; all three RNGs used.
     seed_seq_sim = np.random.SeedSequence(int(SIMULATION_SEED))
     streams_sim = seed_seq_sim.spawn(3)
     rng_noise = np.random.default_rng(streams_sim[0])
