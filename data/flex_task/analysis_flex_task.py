@@ -59,7 +59,7 @@ EXPERIMENT_NAME = "flex_task"  # Used for file naming and report titles
 # Leave all but the first commented out if running a single-experiment analysis.
 # color_index references EXPERIMENT_COLORS; if the index is out of range a color is auto-generated.
 EXPERIMENT_HDF5_FILES = [
-    ("EA from Random", "2026-05-29_09-47-15_ea_from_random_genomes_all_runs_all", 1),
+    ("EA from Random", "2026-06-01_19-14-46_flex_task_hard_100_not_clipped_genomes_all_runs_all", 1),
     #("EA from Soft-Coded", "2026-05-06_09-34-55_ea_from_lookup_soft_genomes_all_runs_all", 1),
     #("EA from Hard-Coded", "2026-05-06_11-31-03_ea_from_lookup_hard_genomes_all_runs_all", 2),
 ]
@@ -68,9 +68,9 @@ EXPERIMENT_HDF5_FILES = [
 # Leave as empty list [] if no benchmarks to compare
 # color_index references BENCHMARK_COLORS; if the index is out of range a color is auto-generated.
 BENCHMARK_HDF5_FILES = [
-    ("Random", "2026-05-29_09-47-15_ea_from_random_BM_random", 0),
+    ("Random", "2026-06-01_19-14-46_flex_task_hard_100_not_clipped_BM_random", 0),
     #("Soft-Coded", "2026-05-27_10-00-35_2026-05-05_17-42-25_ea_from_random_BM_lookup_soft", 1),
-    ("Hard-Coded", "2026-05-29_09-47-15_ea_from_random_BM_lookup_hard", 1),
+    ("Hard-Coded", "2026-06-01_19-14-46_flex_task_hard_100_not_clipped_BM_lookup_hard", 1),
 ]
 
 # Network visualization configuration (e.g., '11' for network_viz_11.yaml)
@@ -4057,7 +4057,7 @@ doc.add_heading("1.4. EA results", level=2)
 
 # Add all PNG images from the parent data/first_ea folder with descriptions
 _ea_images = {
-    '2026-05-26_12-31-02_ea_from_random': 'EA evolved from random network initialization. Population size = 260, elite = 10. In generation 50: mean = 198.1, median = 227.6, max = 419.8.',}
+    '2026-06-01_19-14-46_flex_task_hard_100_not_clipped': 'EA evolved from random network initialization. Population size = 260, elite = 10. In generation 70: mean = 81.6, median = 55.8, max = 403.5.',}
 
 _ea_dir = Path(__file__).resolve().parent  # Same folder as this script
 
