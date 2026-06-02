@@ -24,9 +24,9 @@ experiment:
   # Required when genome_type: "from_file" OR simulation_seed: "from_file".
   from_file_source:
     file_folder: "data/flex_task/"
-    filename: "2026-05-29_09-47-15_ea_from_random"
-    genome_ID: [0,1,2]   # "all" or a list of genome indices — only used in replay mode
-    runs_to_load: [0,1,5,60,73] # "all" or a list of run indices  — only used in replay mode
+    filename: "2026-06-01_16-19-45_flex_task_hard_70"
+    genome_ID: [0]  # "all" or a list of genome indices — only used in replay mode
+    runs_to_load: [2,3] # "all" or a list of run indices  — only used in replay mode
 
   # Visualization
   viz_enabled: true
