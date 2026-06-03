@@ -102,19 +102,23 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list, replay_info: 
     """
     Save genome generation parameters to HDF5 as a vertical list dataset.
     
-    In normal mode: Extracts the params from the first genome (shared across all variants)
-    In replay mode: Saves replay metadata (source file, loaded genome IDs, loaded runs)
+    Normal mode:          Saves genome params from the first genome (shared across all variants).
+    Test mode:            Saves genome params + test_loaded_from_file / test_source_filename /
+                          test_genome_ids entries recording where the genomes were loaded from.
+    Replay/Benchmark mode: Saves only source metadata (loaded_from_file, source_filename,
+                           genome_ids, runs_to_load).
     
     Saves as a structured array with name-value pairs (one row per parameter).
     
     Args:
         hdf5_path: Path to HDF5 file
         genomes: List of genome objects (each has a .params attribute)
-        replay_info: Optional dict with replay metadata:
+        replay_info: Optional dict with metadata. Required keys:
+            - 'mode': 'test', 'replay', or 'benchmark'
             - 'source_path': path to source HDF5 file
             - 'source_filename': filename without extension
-            - 'genome_ids': list of genome IDs or 'all'
-            - 'runs_to_load': list of run indices or 'all'
+            - 'genome_ids': genome IDs loaded ('all', int, or list)
+            - 'runs_to_load': run indices loaded ('all', list, or 'n/a' for test mode)
     """
     if not genomes and replay_info is None:
         return
@@ -125,8 +129,8 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list, replay_info: 
         ('value', 'S256'),  # byte string, up to 256 chars (for numeric or text values)
     ])
     
-    if replay_info is not None:
-        # REPLAY MODE: Save metadata about where genomes were loaded from
+    if replay_info is not None and replay_info.get('mode') != 'test':
+        # REPLAY / BENCHMARK MODE: Save metadata about where genomes were loaded from
         properties = {
             'loaded_from_file': replay_info['source_path'],
             'source_filename': replay_info['source_filename'],
@@ -134,7 +138,7 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list, replay_info: 
             'runs_to_load': str(replay_info['runs_to_load']),
         }
     else:
-        # NORMAL MODE: Extract params from first genome
+        # NORMAL / TEST MODE: Extract params from first genome
         params = genomes[0].params
         
         # Convert dataclass to dict
@@ -143,6 +147,12 @@ def save_genome_properties_to_hdf5(hdf5_path: Path, genomes: list, replay_info: 
         # Flatten the params dict
         flattened = _flatten_config(params_dict)
         properties = flattened
+        
+        # TEST MODE: also record the genome source
+        if replay_info is not None:
+            properties['test_loaded_from_file'] = replay_info['source_path']
+            properties['test_source_filename'] = replay_info['source_filename']
+            properties['test_genome_ids'] = str(replay_info['genome_ids'])
     
     # Create array with one row per property
     genome_props = np.zeros(len(properties), dtype=dtype)

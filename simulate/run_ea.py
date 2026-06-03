@@ -615,8 +615,9 @@ def main():
     worm_movement_cost = cfg["worm"]["movement_cost"]
     sensor_cfg = cfg["worm"]["sensors"]["active"]
     
-    # Use config subsections directly (no wrapping)
-    feeding_cfg = cfg["food"]
+    sorted_phases = sorted(cfg["food"], key=lambda p: p["phase_from"])
+    initial_feeding_cfg = sorted_phases[0]
+    switch_phases = sorted_phases[1:]
     brain_cfg = cfg["brain"]
     
     # Create HDF5 file early to catch file system errors before experiment runs
@@ -658,7 +659,7 @@ def main():
 
     lifespans, run_seeds_gen0 = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)                             
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
 
 
     # ============================================================
@@ -706,7 +707,7 @@ def main():
 
         lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg)
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
 
         # ============================================================
         # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)
@@ -733,6 +734,22 @@ def main():
         write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats, run_seeds_gen)
         
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Median: {gen_stats[1]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
+
+        # # Check if elite runs are saturating the simulation limit
+        # total_elite_runs = sum(len(v) for v in elite_lifespan_vectors)
+        # max_tick_hits = sum(int(np.sum(np.asarray(v) >= MAX_TICKS)) for v in elite_lifespan_vectors)
+        # if total_elite_runs > 0 and max_tick_hits / total_elite_runs > 0.10:
+        #     print(f"\n[EARLY STOP] max_ticks reached: {max_tick_hits}/{total_elite_runs} elite runs "
+        #           f"({100 * max_tick_hits / total_elite_runs:.1f}%) hit the simulation limit of {MAX_TICKS} ticks.")
+            
+        #     # Trim HDF5 file to remove pre-allocated but unfilled generation stats
+        #     with h5py.File(hdf5_path, 'a') as f:
+        #         if 'generation_stats' in f:
+        #             completed_rows = f['generation_stats'][:generation + 1]
+        #             del f['generation_stats']
+        #             f.create_dataset('generation_stats', data=completed_rows)
+
+        #     break
 
     # ============================================================
     # 14. PRINT AND PLOT RESULTS

@@ -4,17 +4,17 @@
 experiment:
   # Output and file naming
   output_folder: "data/temp/"
-  simulation_name: "test_batch"
+  simulation_name: "test_batch2"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 300
+  n_runs: 3
   evolutionary_algorithm_enabled: false
 
   # Genome generation for first generation
-  genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 15
+  genome_type: "lookup_hard"  # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 3
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -24,7 +24,7 @@ experiment:
     modulation_degree_depression: 0.1
 
   # Visualization
-  viz_enabled: false
+  viz_enabled: true
   viz_fps: 4
   viz_brain_enabled: false 
   viz_brain_fps: 4
@@ -46,11 +46,18 @@ world:
   - 26
 
 food:
-  feeding_paradigm:
-    initial: true
-    regrow: true
-  initial_fraction_per_cell: 0.05
-  regrow_time: 20
+  - phase_from: 0
+    feeding_paradigm:
+      initial: true
+      regrow: false
+    initial_fraction_per_cell: 0.1
+    regrow_time: 200
+  - phase_from: 40
+    feeding_paradigm:
+      initial: true
+      regrow: true
+    initial_fraction_per_cell: 0.05
+    regrow_time: 4
 
 worm:
   speed: 1
