@@ -26,7 +26,7 @@ experiment:
   # Visualization
   viz_enabled: true
   viz_fps: 4
-  viz_brain_enabled: false 
+  viz_brain_enabled: true 
   viz_brain_fps: 4
   
   # Data tracking
