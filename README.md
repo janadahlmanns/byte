@@ -6,6 +6,7 @@ Tiny CTRNNs are used to control embedded agents to solve a grid-foraging task. O
 ## Quickstart
 ```bash
 python -m simulate.run_batch --config test_batch      
+```
 
 ## Overview Folders
 1. mvb - to not touch :) Simulation core
