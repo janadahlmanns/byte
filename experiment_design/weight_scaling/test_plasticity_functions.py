@@ -7,8 +7,6 @@ def run_iterations(update_fn, w_init, eta, input_val, num_iters=100):
     weights = [w]
     for _ in range(num_iters):
         w = update_fn(w, eta, input_val)
-        # Clamp to [-1, 1] for display
-        w = np.clip(w, -1, 1)
         weights.append(w)
     return weights
 
@@ -73,7 +71,7 @@ def fn_L(w, eta, inp):
 functions = {
     'A': (fn_A, "w_new = w_old * (1 + η·input·(1-|w_old|)·|w_old|)"),
     'B': (fn_B, "w_new = sign(w_old) · (|w_old| + η·input) · (1-|w_old|)"),
-    'C': (fn_C, "w_new = w_old + η·input · (1 - w_old²)"),
+    #'C': (fn_C, "w_new = w_old + η·input · (1 - w_old²)"),
     'D': (fn_D, "w_new = w_old · (1 + η·input) / (1 + |η·input|)"),
     'E': (fn_E, "w_new = tanh(w_old + η·input·sign(w_old)·(1 - |w_old|))"),
     'F': (fn_F, "w_new = tanh(w_old + η·input)"),
@@ -86,27 +84,27 @@ functions = {
 }
 
 param_sets = [
-    (0.1, 1, "eta=0.1, input=1"),
+    (0.5, 0.8, "eta=0.5, input=0.8"),
     (0.1, -1, "eta=0.1, input=-1"),
-    (0.2, 3, "eta=0.2, input=3"),
+    (0.2, 0.3, "eta=0.2, input=0.3"),
 ]
 
-w_init = 0.1
+w_init = 0.3
 
 # Generate plots for each function
 for fn_name, (fn, formula) in functions.items():
     fig, axes = plt.subplots(3, 3, figsize=(15, 12))
     fig.suptitle(f'Function {fn_name}: {formula}', fontsize=12, fontweight='bold')
     
-    # Top row: w_init = 0.1
+    # Top row: w_init = 0.3
     for idx, (eta, inp, label) in enumerate(param_sets):
-        weights = run_iterations(fn, 0.1, eta, inp, num_iters=100)
+        weights = run_iterations(fn, 0.3, eta, inp, num_iters=10)
         
         ax = axes[0, idx]
         ax.plot(weights, linewidth=2, marker='o', markersize=3, alpha=0.7)
         ax.set_xlabel('Iteration')
         ax.set_ylabel('Weight')
-        ax.set_title(label + " (w_init=+0.1)")
+        ax.set_title(label + " (w_init=+0.3)")
         ax.grid(True, alpha=0.3)
         ax.axhline(y=1.0, color='r', linestyle='--', alpha=0.3, label='w=1.0')
         ax.axhline(y=-1.0, color='r', linestyle='--', alpha=0.3, label='w=-1.0')
@@ -115,7 +113,7 @@ for fn_name, (fn, formula) in functions.items():
         
         # Print convergence point
         final_w = weights[-1]
-        print(f"Function {fn_name}, {label} (w_init=+0.1): converges to w ≈ {final_w:.6f}")
+        print(f"Function {fn_name}, {label} (w_init=+0.3): converges to w ≈ {final_w:.6f}")
     
     # Middle row: w_init = 0.0
     for idx, (eta, inp, label) in enumerate(param_sets):
@@ -156,7 +154,7 @@ for fn_name, (fn, formula) in functions.items():
         print(f"Function {fn_name}, {label} (w_init=-0.1): converges to w ≈ {final_w:.6f}")
     
     plt.tight_layout()
-    plt.savefig(f'weight_scaling/plasticity_fn_{fn_name}.png', dpi=150)
+    plt.savefig(f'experiment_design/weight_scaling_50/plasticity_fn_{fn_name}.png', dpi=150)
     print(f"Saved: plasticity_fn_{fn_name}.png\n")
     plt.close()
 
@@ -179,7 +177,7 @@ ax.axhline(y=0.0, color='k', linestyle='-', alpha=0.1, linewidth=0.5)
 ax.set_ylim([-1.2, 1.2])
 ax.legend(fontsize=9, loc='best')
 plt.tight_layout()
-plt.savefig('weight_scaling/plasticity_all_functions.png', dpi=150)
+plt.savefig('experiment_design/weight_scaling_50/plasticity_all_functions.png', dpi=150)
 print("Saved: plasticity_all_functions.png")
 plt.close()
 
@@ -202,7 +200,7 @@ ax.axhline(y=0.0, color='k', linestyle='-', alpha=0.1, linewidth=0.5)
 ax.set_ylim([-1.2, 1.2])
 ax.legend(fontsize=9, loc='best')
 plt.tight_layout()
-plt.savefig('weight_scaling/plasticity_all_functions_eta02_input-1.png', dpi=150)
+plt.savefig('experiment_design/weight_scaling_50/plasticity_all_functions_eta02_input-1.png', dpi=150)
 print("Saved: plasticity_all_functions_eta02_input-1.png")
 plt.close()
 
@@ -225,12 +223,12 @@ ax.axhline(y=0.0, color='k', linestyle='-', alpha=0.1, linewidth=0.5)
 ax.set_ylim([-1.2, 1.2])
 ax.legend(fontsize=9, loc='best')
 plt.tight_layout()
-plt.savefig('weight_scaling/plasticity_all_functions_eta05_input-1.png', dpi=150)
+plt.savefig('experiment_design/weight_scaling_50/plasticity_all_functions_eta05_input-1.png', dpi=150)
 print("Saved: plasticity_all_functions_eta05_input-1.png")
 plt.close()
 
-# Create combined plot (eta=0.05, input=1 only)
-eta, inp = 0.05, 1
+# Create combined plot (eta=0.5, input=50 only)
+eta, inp = 0.5, 50
 fig, ax = plt.subplots(figsize=(14, 6))
 
 colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'cyan', 'gray', 'olive', 'navy', 'teal']
@@ -240,7 +238,7 @@ for (fn_name, (fn, formula)), color in zip(functions.items(), colors):
 
 ax.set_xlabel('Iteration', fontsize=12)
 ax.set_ylabel('Weight', fontsize=12)
-ax.set_title('All Functions Compared: η=0.05, input=1 (100 iterations)', fontsize=14, fontweight='bold')
+ax.set_title('All Functions Compared: η=0.5, input=50 (100 iterations)', fontsize=14, fontweight='bold')
 ax.grid(True, alpha=0.3)
 ax.axhline(y=1.0, color='k', linestyle='--', alpha=0.3, linewidth=1)
 ax.axhline(y=-1.0, color='k', linestyle='--', alpha=0.3, linewidth=1)
@@ -248,8 +246,8 @@ ax.axhline(y=0.0, color='k', linestyle='-', alpha=0.1, linewidth=0.5)
 ax.set_ylim([-1.2, 1.2])
 ax.legend(fontsize=9, loc='best')
 plt.tight_layout()
-plt.savefig('weight_scaling/plasticity_all_functions_eta0.05_input1.png', dpi=150)
-print("Saved: plasticity_all_functions_eta0.05_input1.png")
+plt.savefig('experiment_design/weight_scaling_50/plasticity_all_functions_eta0.5_input50.png', dpi=150)
+print("Saved: plasticity_all_functions_eta0.5_input50.png")
 plt.close()
 
 

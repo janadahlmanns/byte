@@ -64,7 +64,7 @@ class Neuron:
 
     def update(self, rng_neuron_noise=None):
         total_input = self.compute_input(rng_neuron_noise)
-        self.next_activity = 1.0 if total_input >= self.threshold else 0.0
+        self.next_activity = 1.0 if np.tanh(total_input) >= self.threshold else 0.0
 
     def commit(self):
         self.activity = self.next_activity
@@ -122,6 +122,7 @@ class Connection:
         # Calculate modulation 
         modulation_sum = sum(mod_weight * neuron.activity 
                             for neuron, mod_weight in self.modulating_inputs)
+        modulation_sum = np.tanh(modulation_sum)  # ← bind to (-1, +1)
         
         if modulation_sum == 0.0:
             self.next_weight = self.weight
