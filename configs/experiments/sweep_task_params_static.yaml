@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "data/sweep_task_params_static/"
-  simulation_name: "no_regrow_initial_0.1"
+  simulation_name: "no_regrow_initial_0.8"
   simulation_seed: 1
   
   # Simulation runtime
@@ -59,7 +59,7 @@ food:
     feeding_paradigm:
       initial: true
       regrow: false
-    initial_fraction_per_cell: 0.1
+    initial_fraction_per_cell: 0.8
     regrow_time: 500
 
 
