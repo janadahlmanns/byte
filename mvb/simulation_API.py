@@ -19,7 +19,7 @@ from mvb.feeding import seed_food
 from mvb.worm import Worm
 from mvb.world_renderer_qt import QtRenderer
 from mvb.brain_renderer_qt import BrainQtRenderer
-from simulate.pause_manager import get_pause_manager, PauseManagerExit
+from simulate.pause_manager import get_pause_manager, cleanup_pause_manager, PauseManagerExit
 from simulate.hdf5_utils import (
     create_hdf5_file,
     save_variant_summary_to_hdf5,
@@ -56,11 +56,15 @@ def simulate_run(world, worm, rec, rng_worker_decision, rng_worker_neuron_noise,
     Returns:
         Tuple of (world, worm, rec, pause_mgr) - all objects modified in place during simulation
     """
+    # Get Qt app for event processing during pause (if renderer is active)
+    app = worm.renderer.app if worm.renderer is not None else None
+    process_events = app.processEvents if app is not None else None
+
     try:
         while worm.alive and worm.ticks < max_ticks:
             # Check pause/exit at start of each tick
             if pause_mgr is not None:
-                pause_mgr.check_pause()
+                pause_mgr.check_pause(process_events)
             
             world.step()
             worm.step_day(rng_worker_decision, rng_worker_neuron_noise)
@@ -681,7 +685,6 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
     except PauseManagerExit:
         print("[EXIT] Batch simulation stopped by user.")
     finally:
-        from simulate.pause_manager import cleanup_pause_manager
         if VIZ_ENABLED or VIZ_BRAIN_ENABLED:
             cleanup_pause_manager()
     

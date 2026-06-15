@@ -1,17 +1,15 @@
 # ============================================================
 # Pause Manager: Handles pause/resume/step/exit functionality
 # ============================================================
+#
+# Pure state holder — no threads, no pynput.
+# Qt renderers update the flags via keyPressEvent;
+# simulate_run() polls check_pause() each tick.
+# ============================================================
 
 import threading
-from typing import Optional
-
-try:
-    from pynput import keyboard
-except ImportError:
-    raise ImportError(
-        "pynput is required for pause functionality. "
-        "Install it with: pip install pynput"
-    )
+import time
+from typing import Optional, Callable
 
 
 class PauseManagerExit(Exception):
@@ -21,77 +19,53 @@ class PauseManagerExit(Exception):
 
 class PauseManager:
     """
-    Manages pause/resume/step/exit of simulation via keyboard input.
-    
-    Key bindings:
+    Manages pause/resume/step/exit of simulation via shared flags.
+
+    Key bindings (handled by Qt renderers, not here):
     - 'p': Toggle pause/resume
-    - 'n': Step forward one checkpoint (only when paused)
+    - 'n': Step forward one tick (only when paused)
     - 'c': Cancel and exit simulation
     """
-    
+
     def __init__(self):
         self._paused = False
         self._step_requested = False
         self._exit_requested = False
         self._lock = threading.Lock()
-        self._listener: Optional[keyboard.Listener] = None
-        self._start_listener()
-    
-    def _start_listener(self):
-        """Start the background keyboard listener thread."""
-        def on_press(key):
-            try:
-                char = key.char
-            except AttributeError:
-                # Handle special keys (they don't have .char attribute)
-                return
-            
-            if char == 'p':
-                with self._lock:
-                    self._paused = not self._paused
-                    if self._paused:
-                        print("\n[PAUSED] Press 'n' to step, 'p' to resume, or 'c' to cancel.")
-                    else:
-                        print("\n[RESUMED]")
-                        self._step_requested = False  # Clear any pending steps when resuming
-            
-            elif char == 'n':
-                with self._lock:
-                    if self._paused:
-                        self._step_requested = True
-                        print("[STEP] Advancing one checkpoint...")
-            
-            elif char == 'c':
-                with self._lock:
-                    self._exit_requested = True
-                    print("\n[EXIT] Stopping simulation...")
-        
-        self._listener = keyboard.Listener(on_press=on_press)
-        self._listener.start()
-    
-    def check_pause(self):
+
+    def check_pause(self, process_events: Optional[Callable] = None):
         """
         Call this at each pause checkpoint.
-        
-        If paused, blocks execution until user resumes (presses 'p') or exits (presses 'c').
-        If exit is requested, raises PauseManagerExit exception.
-        Otherwise returns normally (simulation continues).
+
+        If paused, blocks execution until user resumes ('p'), steps ('n'),
+        or exits ('c').  While blocked the optional *process_events*
+        callable is invoked each iteration so that the Qt event loop keeps
+        delivering key-press events to the renderers.
+
+        Args:
+            process_events: Optional callable (e.g. ``app.processEvents``)
+                            invoked during the pause spin-loop to keep the
+                            UI responsive.
+
+        Raises:
+            PauseManagerExit: When the user requests exit.
         """
         with self._lock:
             if self._exit_requested:
                 raise PauseManagerExit("Simulation exited via pause manager.")
-            
-            if self._paused:
-                if self._step_requested:
-                    # Execute one step
-                    self._step_requested = False
-                    return
-                else:
-                    # Stay paused, don't return yet
-                    pass
-        
-        # If paused and no step requested, block here
+
+            if not self._paused:
+                return
+
+            if self._step_requested:
+                self._step_requested = False
+                return
+
+        # Paused and no step — block here until something changes.
         while True:
+            if process_events is not None:
+                process_events()
+
             with self._lock:
                 if self._exit_requested:
                     raise PauseManagerExit("Simulation exited via pause manager.")
@@ -100,25 +74,26 @@ class PauseManager:
                     return
                 if not self._paused:
                     return
-            
-            # Sleep briefly to avoid busy-waiting and let keyboard listener work
-            threading.Event().wait(0.01)
-    
+
+            # Brief sleep to avoid busy-waiting.
+            time.sleep(0.01)
+
     def is_paused(self) -> bool:
         """Check if simulation is currently paused."""
         with self._lock:
             return self._paused
-    
+
     def should_exit(self) -> bool:
         """Check if exit was requested."""
         with self._lock:
             return self._exit_requested
-    
+
     def cleanup(self):
-        """Stop the keyboard listener."""
-        if self._listener:
-            self._listener.stop()
-            self._listener.join(timeout=1.0)
+        """Reset state."""
+        with self._lock:
+            self._paused = False
+            self._step_requested = False
+            self._exit_requested = False
 
 
 # Global instance

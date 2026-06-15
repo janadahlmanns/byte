@@ -519,10 +519,12 @@ def decide(world: World, worm, rng_decision, inputs: dict, rng_neuron_noise):
                     if stable_decision is not None:
                         return stable_decision
             
-            # CHECKPOINT 2: At end of each brain tick iteration
+            # CHECKPOINT: At end of each brain tick iteration
             try:
                 pause_mgr = get_pause_manager()
-                pause_mgr.check_pause()
+                brain_app = _brain_renderer.app if _brain_renderer is not None else None
+                pe = brain_app.processEvents if brain_app is not None else None
+                pause_mgr.check_pause(pe)
             except RuntimeError:
                 # Pause manager not initialized (visualization disabled)
                 pass
