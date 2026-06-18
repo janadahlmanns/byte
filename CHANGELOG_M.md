@@ -29,6 +29,28 @@ Two modes:
 
 ---
 
+**Added ea_timer.py to track runtime across code versions**
+
+A lightweight timing harness that runs `python -m simulate.run_ea --config test_ea`, measures wall-clock time, and appends it to a history file so runtimes can be compared across refactors and machines. It is meant as a quick "is there any gain at all?" screen, not a controlled benchmark — environment noise (CPU load, temperature) is deliberately not controlled.
+
+How it works:
+- Times the EA subprocess end-to-end (feeding `"n"` to the plot prompt, with a timeout and exit-code check) and appends one CSV row per rep to `tests/bench/runtimes.csv`.
+- Each row is auto-tagged with the git short commit, branch, a **dirty-tree flag**, the **hostname**, and an optional `--note`. The dirty flag matters because an uncommitted refactor would otherwise be recorded under the previous commit's hash; `--note` provides a human label to distinguish such versions.
+- `--reps N` records multiple timings per invocation; produced HDF5/PNG files are cleaned up unless `--keep-output`.
+- `--plot` renders the accumulated history to `tests/bench/runtimes.png`: x-axis is the version (note, else commit), one line per host, with min/max error bars when multiple reps exist. The per-host grouping lets results from different computers be compared on the same graph.
+
+Note on interpretation: the measurement is end-to-end, so constant serial overhead (imports, HDF5 write, the EA's own plot) is included and slightly understates the percentage gain of compute-only optimizations. On fanless machines, sustained back-to-back reps drift upward from thermal throttling — compare cold first-runs (and prefer the min) there, and save precise numbers for a machine with active cooling.
+
+#### Changes
+
+- **`tests/ea_timer.py`** (new)
+  - Standalone CLI; no pytest dependency. Run with the project interpreter, e.g. `pyenv/bin/python -m tests.ea_timer --note "baseline"`, and `python -m tests.ea_timer --plot` to graph the history.
+
+- **`tests/bench/`** (new)
+  - Holds the accumulated `runtimes.csv` history and the generated `runtimes.png` graph.
+
+---
+
 
 ## 2026-06-12
 
