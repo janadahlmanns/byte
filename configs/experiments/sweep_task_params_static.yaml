@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "data/sweep_task_params_static/"
-  simulation_name: "regrow_5_initial_0.235"
+  simulation_name: "regrow_32_initial_0.1"
   simulation_seed: 1
   
   # Simulation runtime
@@ -59,8 +59,8 @@ food:
     feeding_paradigm:
       initial: true
       regrow: true
-    initial_fraction_per_cell: 0.235
-    regrow_time: 5
+    initial_fraction_per_cell: 0.1
+    regrow_time: 32
 
 
 worm:
