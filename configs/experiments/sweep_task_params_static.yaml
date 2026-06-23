@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "data/sweep_task_params_static/"
-  simulation_name: "no_regrow_initial_0.5"
+  simulation_name: "regrow_5_initial_0.235"
   simulation_seed: 1
   
   # Simulation runtime
@@ -25,7 +25,7 @@ experiment:
 
   # evolutionary algorithm
   evolutionary_algorithm:
-    num_generations: 20
+    num_generations: 20 
     elite_size: 10
     elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
     mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
@@ -58,9 +58,9 @@ food:
   - phase_from: 0
     feeding_paradigm:
       initial: true
-      regrow: false
-    initial_fraction_per_cell: 0.5
-    regrow_time: 500
+      regrow: true
+    initial_fraction_per_cell: 0.235
+    regrow_time: 5
 
 
 worm:
