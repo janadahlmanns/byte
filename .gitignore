@@ -36,3 +36,6 @@ Thumbs.db
 
 # --- Temp files ---
 data/temp/
+
+# --- Experiment data ---
+/experiment_data
