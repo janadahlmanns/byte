@@ -42,7 +42,7 @@ def load_network_viz_config(config_name: Union[str, int]) -> Tuple[Dict[int, Tup
     workspace_root = None
     
     while current_path.parent != current_path:  # While not at filesystem root
-        if (current_path / "data").exists() and (current_path / "simulate").exists() and (current_path / "configs").exists():
+        if (current_path / "experiment_data").exists() and (current_path / "simulate").exists() and (current_path / "configs").exists():
             workspace_root = current_path
             break
         current_path = current_path.parent

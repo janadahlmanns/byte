@@ -23,8 +23,8 @@ experiment:
   # Source file for genomes, seeds, and all simulation parameters.
   # Required when genome_type: "from_file" OR simulation_seed: "from_file".
   from_file_source:
-    file_folder: "data/sweep_task_params_static/"
-    filename: "2026-06-11_14-22-50_no_regrow_initial_0.8"
+    file_folder: "experiment_data/sweep_task_params_static/"
+    filename: "2026-06-22_18-28-22_regrow_5_initial_0.235"
     genome_ID: 'all'  # "all" or a list of genome indices — only used in replay mode
     runs_to_load: 'all' # "all" or a list of run indices  — only used in replay mode
 
