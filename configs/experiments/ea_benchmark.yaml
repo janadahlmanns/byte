@@ -30,8 +30,8 @@ experiment:
 
   # Source file for simulation parameters and run_seeds
   from_file_source:
-    file_folder: "data/flex_task/"
-    filename: "2026-06-01_19-14-46_flex_task_hard_100_not_clipped"
+    file_folder: "data/sweep_task_params_static/"
+    filename: "2026-06-22_18-07-42_no_regrow_initial_0.235"
     # genome_ID and runs_to_load are not used in benchmark mode
 
   # Visualization

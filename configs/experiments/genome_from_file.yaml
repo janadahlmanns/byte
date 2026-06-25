@@ -23,13 +23,13 @@ experiment:
   # Source file for genomes, seeds, and all simulation parameters.
   # Required when genome_type: "from_file" OR simulation_seed: "from_file".
   from_file_source:
-    file_folder: "data/flex_task/"
-    filename: "2026-06-01_19-14-46_flex_task_hard_100_not_clipped"
-    genome_ID: [0]  # "all" or a list of genome indices — only used in replay mode
-    runs_to_load: [0] # "all" or a list of run indices  — only used in replay mode
+    file_folder: "data/sweep_task_params_static/"
+    filename: "2026-06-11_14-22-50_no_regrow_initial_0.8"
+    genome_ID: 'all'  # "all" or a list of genome indices — only used in replay mode
+    runs_to_load: 'all' # "all" or a list of run indices  — only used in replay mode
 
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 8
   viz_brain_enabled: false 
   viz_brain_fps: 8
