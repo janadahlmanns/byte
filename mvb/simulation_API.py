@@ -564,6 +564,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         # Run simulation
         all_lifespans = {}
         num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
+        num_workers = min(61, num_workers)  # this is some annoying windows limit and can apparently not be subverted easily. it is however not limited with multiprocessing.Pool, so thats something to try here 
         
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
