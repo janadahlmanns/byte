@@ -55,7 +55,7 @@ BASIC WORKFLOW (NEW FEATURE)
 2) Create and switch to a new branch
    git checkout -b feature/my-feature-name
 
-3) Work like normal 
+3) Work like normal   
    (edit files)
 
    git status 
