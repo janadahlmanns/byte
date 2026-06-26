@@ -17,8 +17,6 @@ import h5py
 from mvb.world import World
 from mvb.feeding import seed_food
 from mvb.worm import Worm
-from mvb.world_renderer_qt import QtRenderer
-from mvb.brain_renderer_qt import BrainQtRenderer
 from simulate.pause_manager import get_pause_manager, PauseManagerExit
 from simulate.hdf5_utils import (
     create_hdf5_file,
@@ -255,6 +253,7 @@ def eval_variant(
         if viz_enabled:
             try:
                 if viz_fps > 0:
+                    from mvb.world_renderer_qt import QtRenderer
                     worm.renderer = QtRenderer(world, worm, viz_fps)
                     print(f"[viz] Created world renderer at {viz_fps} FPS")
                 else:
@@ -268,6 +267,7 @@ def eval_variant(
         if viz_brain_enabled:
             try:
                 if viz_brain_fps > 0:
+                    from mvb.brain_renderer_qt import BrainQtRenderer
                     brain_renderer = BrainQtRenderer(fps=viz_brain_fps)
                     brain_module._brain_renderer = brain_renderer
                     print(f"[viz] Created brain renderer at {viz_brain_fps} FPS")
