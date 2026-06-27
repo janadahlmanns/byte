@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""EA regression test: run `simulate.run_ea --config test_ea` and compare its
-HDF5 output against a known-good reference file.
+"""Simulation drift regression test: run a deterministic simulation and compare
+its HDF5 output against a known-good reference file.
 
-The test_ea run is fully deterministic (fixed simulation_seed, per-variant seeds
-drawn in variant_id order), so a correct refactor must produce a bit-identical
-HDF5 file. This script guards that invariant while the parallelism is optimized.
+By default this runs `simulate.run_ea --config test_ea`, but the runner, config,
+and output simulation_name are all overridable (see --runner/--config/--sim-name)
+so the same harness can guard other deterministic entrypoints — e.g.
+`simulate.run_batch` with per-run tracking enabled.
+
+The targeted runs are fully deterministic (fixed simulation_seed, per-variant
+seeds drawn in variant_id order), so a correct refactor must produce a
+bit-identical HDF5 file. This script guards that invariant while the parallelism
+is optimized.
 
 Usage
 -----
@@ -14,7 +20,16 @@ Generate a reference from the current (known-good) code, once:
 Compare the current code against that reference (default mode):
     python -m tests.ea_drift --reference tests/refs/test_ea_ref.h5
 
+Drive a different runner/config (must match the reference it's compared to):
+    python -m tests.ea_drift --reference tests/refs/test_batch_tracking_ref.h5 \
+        --runner simulate.run_batch --config test_batch_tracking \
+        --sim-name test_batch_tracking
+
 Useful flags:
+    --runner MODULE  Module to run with -m (default: simulate.run_ea).
+    --config NAME    Experiment config name (default: test_ea).
+    --sim-name NAME  experiment.simulation_name in the config, used to locate the
+                     produced H5 (default: test_task_switching).
     --tol            Compare floats with np.allclose instead of exact equality.
     --rtol / --atol  Tolerances used with --tol (defaults: 1e-7 / 0.0).
     --keep           Keep the HDF5 file produced by the run (default: delete it).
@@ -32,34 +47,39 @@ from pathlib import Path
 import numpy as np
 import h5py
 
-# Mirrors configs/experiments/test_ea.yaml: experiment.output_folder and
-# experiment.simulation_name. The produced file is "{timestamp}_{name}.h5".
+# Mirrors the chosen config's experiment.output_folder. The produced file is
+# "{timestamp}_{simulation_name}.h5".
 OUTPUT_DIR = Path("data/temp")
-SIMULATION_NAME = "test_task_switching"
-RUN_CMD = [sys.executable, "-m", "simulate.run_ea", "--config", "test_ea"]
+
+# Defaults reproduce the original EA drift test. Override via CLI to drive a
+# different runner/config (e.g. run_batch with per-run tracking enabled).
+DEFAULT_RUNNER = "simulate.run_ea"
+DEFAULT_CONFIG = "test_ea"
+DEFAULT_SIM_NAME = "test_task_switching"
 
 
-def _existing_outputs() -> set:
-    """Set of EA output H5 files currently in OUTPUT_DIR."""
+def _existing_outputs(sim_name: str) -> set:
+    """Set of output H5 files for sim_name currently in OUTPUT_DIR."""
     if not OUTPUT_DIR.exists():
         return set()
-    return set(OUTPUT_DIR.glob(f"*_{SIMULATION_NAME}.h5"))
+    return set(OUTPUT_DIR.glob(f"*_{sim_name}.h5"))
 
 
-def run_simulation(timeout: int) -> Path:
-    """Run the EA and return the path to the H5 file it produced.
+def run_simulation(timeout: int, runner: str, config: str, sim_name: str) -> Path:
+    """Run the simulation and return the path to the H5 file it produced.
 
     Identifies the new file by diffing the OUTPUT_DIR listing taken before and
     after the run, so pre-existing files in data/temp are not mistaken for it.
     """
-    before = _existing_outputs()
-    print(f"[run] {' '.join(RUN_CMD)}")
+    run_cmd = [sys.executable, "-m", runner, "--config", config]
+    before = _existing_outputs(sim_name)
+    print(f"[run] {' '.join(run_cmd)}")
     start = time.time()
     try:
-        # Feed "n" to the unconditional "Display ... plot? (y/n)" prompt so the
-        # run never blocks waiting on stdin.
+        # Feed "n" to any "Display ... plot? (y/n)" prompt (run_ea) so the run
+        # never blocks waiting on stdin; runners without the prompt ignore it.
         proc = subprocess.run(
-            RUN_CMD,
+            run_cmd,
             input="n\n",
             text=True,
             timeout=timeout,
@@ -72,14 +92,14 @@ def run_simulation(timeout: int) -> Path:
     print(f"[run] finished in {elapsed:.1f}s (exit {proc.returncode})")
 
     if proc.returncode != 0:
-        print("[FAIL] run_ea exited non-zero. Captured output:", file=sys.stderr)
+        print(f"[FAIL] {runner} exited non-zero. Captured output:", file=sys.stderr)
         sys.stderr.write(proc.stdout or "")
         sys.stderr.write(proc.stderr or "")
         sys.exit(1)
 
-    new_files = _existing_outputs() - before
+    new_files = _existing_outputs(sim_name) - before
     if len(new_files) == 0:
-        print(f"[FAIL] no new *_{SIMULATION_NAME}.h5 produced in {OUTPUT_DIR}",
+        print(f"[FAIL] no new *_{sim_name}.h5 produced in {OUTPUT_DIR}",
               file=sys.stderr)
         sys.exit(1)
     if len(new_files) > 1:
@@ -209,9 +229,17 @@ def main():
                         help="Keep the H5 file the run produced.")
     parser.add_argument("--timeout", type=int, default=600,
                         help="Subprocess timeout in seconds (default 600).")
+    parser.add_argument("--runner", default=DEFAULT_RUNNER,
+                        help=f"Module to run (default {DEFAULT_RUNNER}). "
+                             f"Use simulate.run_batch for the per-run-tracking path.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG,
+                        help=f"Experiment config name (default {DEFAULT_CONFIG}).")
+    parser.add_argument("--sim-name", default=DEFAULT_SIM_NAME,
+                        help=f"experiment.simulation_name in the config, used to "
+                             f"locate the produced H5 (default {DEFAULT_SIM_NAME}).")
     args = parser.parse_args()
 
-    produced = run_simulation(args.timeout)
+    produced = run_simulation(args.timeout, args.runner, args.config, args.sim_name)
 
     if args.generate_reference:
         ref_path = Path(args.generate_reference)
