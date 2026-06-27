@@ -8,8 +8,7 @@ Provides the primary entry point for executing simulations:
 This module is designed to be imported by runner scripts.
 """
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import Manager
+from multiprocessing import Manager, Pool
 
 import numpy as np
 import h5py
@@ -564,7 +563,6 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         # Run simulation
         all_lifespans = {}
         num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
-        num_workers = min(61, num_workers)  # this is some annoying windows limit and can apparently not be subverted easily. it is however not limited with multiprocessing.Pool, so thats something to try here 
         
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
@@ -616,9 +614,13 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                 print(" done")
         
         else:
-            completed = 0            
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = set()
+            completed = 0
+            # Use multiprocessing.Pool instead of ProcessPoolExecutor: on Windows the
+            # executor's manager thread waits on every worker handle at once via
+            # WaitForMultipleObjects, which caps at 64 handles. Pool reads results from a
+            # single queue, so it scales to all cores (e.g. 96) without that limit.
+            with Pool(processes=num_workers) as pool:
+                async_results = []
                 for variant_id in range(N_VARIANTS):
 
                     # Use pre-computed seeds if in replay mode; otherwise generate fresh seeds
@@ -660,16 +662,17 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                     if ENABLE_PER_RUN_TRACKING:
                         kwargs['hdf5_path'] = hdf5_path
                         kwargs['hdf5_lock'] = hdf5_lock
-                    
-                    future = executor.submit(run_variant_worker, **kwargs)
-                    futures.add(future)
-                
-                for future in as_completed(futures):
+
+                    async_results.append(pool.apply_async(run_variant_worker, kwds=kwargs))
+
+                # .get() blocks until each task finishes and re-raises any worker exception.
+                # Final ordering is restored by the sort on all_lifespans below.
+                for async_result in async_results:
                     completed += 1
-                    returned_variant_id, lifespan_results = future.result()
+                    returned_variant_id, lifespan_results = async_result.get()
                     all_lifespans[returned_variant_id] = lifespan_results
                     print(f"\rProcessing variants... ({completed}/{N_VARIANTS} completed)", end='', flush=True)
-            
+
             print()
         # ============================================================
         # WRAP-UP
