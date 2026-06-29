@@ -4,7 +4,7 @@
 experiment:
   # Output and file naming
   output_folder: "experiment_data/reversal_task/"
-  simulation_name: "no_regrow_235_tick1000_6_regrow_6"
+  simulation_name: "no_regrow_235"
   simulation_seed: 1
   
   # Simulation runtime
@@ -61,12 +61,12 @@ food:
       regrow: false
     initial_fraction_per_cell: 0.235
     regrow_time: 300
-  - phase_from: 1000
-    feeding_paradigm:
-      initial: true
-      regrow: true
-    initial_fraction_per_cell: 0.06
-    regrow_time: 6
+  # - phase_from: 1000
+  #   feeding_paradigm:
+  #     initial: true
+  #     regrow: true
+  #   initial_fraction_per_cell: 0.06
+  #   regrow_time: 6
 
 
 worm:
