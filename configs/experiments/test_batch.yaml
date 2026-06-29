@@ -3,18 +3,18 @@
 # ============================================================
 experiment:
   # Output and file naming
-  output_folder: "data/temp/"
-  simulation_name: "test_batch2"
+  output_folder: "experiment_data/temp/"
+  simulation_name: "test_cores"
   simulation_seed: 1
   
   # Simulation runtime
   max_ticks: 2000
-  n_runs: 3
+  n_runs: 300
   evolutionary_algorithm_enabled: false
 
   # Genome generation for first generation
-  genome_type: "lookup_hard"  # Options: "random", "lookup_soft", "lookup_hard"
-  population_size: 3
+  genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 100
     # Genome type specific parameters - random
   random_genome:
     wiring_randomization_seed: 1
@@ -24,9 +24,9 @@ experiment:
     modulation_degree_depression: 0.1
 
   # Visualization
-  viz_enabled: true
+  viz_enabled: false
   viz_fps: 4
-  viz_brain_enabled: true 
+  viz_brain_enabled: false 
   viz_brain_fps: 4
   
   # Data tracking

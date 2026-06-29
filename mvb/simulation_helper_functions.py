@@ -4,7 +4,7 @@ Internal utilities used by the simulation API for tracking, brain loading,
 and worker process management. Not intended for direct use by other modules.
 """
 
-import os
+import psutil
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,7 +102,7 @@ def get_num_workers(viz_enabled, viz_brain_enabled):
     
     # Determine parallel worker count
     try:
-        available_cores = os.cpu_count()
+        available_cores = psutil.cpu_count(logical=False)
         if available_cores is None or available_cores <= 2:
             print("[INFO] Insufficient CPU cores. Running serially.")
             return None
