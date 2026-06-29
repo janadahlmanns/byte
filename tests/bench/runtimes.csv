@@ -1,7 +1,1 @@
-timestamp,host,commit,branch,dirty,note,rep,seconds
-2026-06-18T16:11:51,MacBook-Air-von-Metin.local,0643cad322,runtime_optimizations,1,baseline-test-battery-cold,0,137.558
-2026-06-18T16:14:25,MacBook-Air-von-Metin.local,0643cad322,runtime_optimizations,1,baseline-test-battery,1,154.525
-2026-06-18T16:17:13,MacBook-Air-von-Metin.local,0643cad322,runtime_optimizations,1,baseline-test-battery,2,167.313
-2026-06-18T16:43:11,cip2f0,25769903d6,runtime_optimizations,1,baseline-cip-cold,0,106.785
-2026-06-18T16:45:16,cip2f0,25769903d6,runtime_optimizations,1,baseline-cip,1,124.709
-2026-06-18T16:47:21,cip2f0,25769903d6,runtime_optimizations,1,baseline-cip,2,124.935
+timestamp,host,commit,branch,dirty,runner,config,note,rep,seconds
