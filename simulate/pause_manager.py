@@ -5,13 +5,10 @@
 import threading
 from typing import Optional
 
-try:
-    from pynput import keyboard
-except ImportError:
-    raise ImportError(
-        "pynput is required for pause functionality. "
-        "Install it with: pip install pynput"
-    )
+# NOTE: pynput is imported lazily (only when a PauseManager is actually
+# constructed) so that this module can be imported on headless servers where
+# viz/pause is disabled. Importing pynput at module load fails without an X
+# server / display, even when the pause manager is never used.
 
 
 class PauseManagerExit(Exception):
@@ -34,11 +31,20 @@ class PauseManager:
         self._step_requested = False
         self._exit_requested = False
         self._lock = threading.Lock()
-        self._listener: Optional[keyboard.Listener] = None
+        self._listener = None
         self._start_listener()
-    
+
     def _start_listener(self):
         """Start the background keyboard listener thread."""
+        try:
+            from pynput import keyboard
+        except ImportError as e:
+            raise ImportError(
+                "pynput is required for pause functionality (viz/pause enabled). "
+                "Install it with: pip install pynput. On headless servers, disable "
+                "visualization instead (viz_enabled/viz_brain_enabled = false)."
+            ) from e
+
         def on_press(key):
             try:
                 char = key.char
