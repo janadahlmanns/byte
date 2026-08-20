@@ -32,6 +32,7 @@ from simulate.hdf5_utils import (
     save_genome_properties_to_hdf5,
 )
 
+from mvb.predrawn import make_bundle, PredrawnRandomness
 from mvb.simulation_helper_functions import (
     MetricsRecorder,
     load_brain_module,
@@ -111,6 +112,7 @@ def eval_variant(
     max_ticks,
     sensor_cfg,
     switch_phases=None,
+    randomness_cfg=None,
 ):
     """Execute all runs for a single variant and return tracking results.
     
@@ -243,6 +245,26 @@ def eval_variant(
         brain_module.init_brain(genome, brain_cfg)
 
         # ============================================================
+        # Optional: swap the live RNGs for a pre-drawn bundle (test-only).
+        # Off by default; see mvb/predrawn.py and plan_evotorch.md Step 0.
+        # Must come after init_brain -- bind() reads the draw schedule off the
+        # freshly built neurons -- and before world.rng_world_run is assigned.
+        # ============================================================
+        if randomness_cfg is not None and randomness_cfg.get("enabled", False):
+            bundle = make_bundle(
+                run_seed=run_seeds[run_id],
+                noise_seed=seeds_noise_variant[run_id],
+                decision_seed=seeds_decision_variant[run_id],
+                max_ticks=max_ticks,
+                max_brain_ticks=int(randomness_cfg["max_brain_ticks"]),
+                n_neurons=int(brain_cfg["n_neurons"]),
+                grid_shape=(grid_height, grid_width),
+                n_seed_events=1 + len(switch_phases or []),
+            )
+            source = PredrawnRandomness(bundle).bind(worm, brain_module._brain_state)
+            rng_world_run = rng_noise_run = rng_decision_run = source
+
+        # ============================================================
         # Reset worm & simulation, reset world with the according run rng 
         # ============================================================
         world.rng_world_run = rng_world_run
@@ -369,6 +391,7 @@ def run_variant_worker(
     run_seeds,
     hdf5_path=None,
     hdf5_lock=None,
+    randomness_cfg=None,
 ):
     """Execute a single variant's simulation runs and write data directly to HDF5.
     
@@ -432,6 +455,7 @@ def run_variant_worker(
         max_ticks,
         sensor_cfg,
         switch_phases=switch_phases,
+        randomness_cfg=randomness_cfg,
     )
 
     # ============================================================
@@ -476,7 +500,8 @@ def run_variant_worker(
 
 def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                 ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
-                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, pre_computed_seeds_dict=None, replay_info=None, switch_phases=None):
+                                rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, feeding_cfg, brain_cfg, pre_computed_seeds_dict=None, replay_info=None, switch_phases=None,
+                                randomness_cfg=None):
     """Execute all variants for a generation and return lifespan data.
     
     Args:
@@ -568,6 +593,13 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         # Run simulation
         all_lifespans = {}
         num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
+
+        # Pre-drawn randomness is for deterministic reference generation: force serial.
+        # Bundles are large to pickle and fanning out buys nothing here.
+        if randomness_cfg is not None and randomness_cfg.get("enabled", False):
+            if num_workers is not None:
+                print("[predrawn] forcing serial execution (predrawn_randomness.enabled)")
+            num_workers = None
         
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
@@ -608,6 +640,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                     'seeds_noise_variant': seeds_noise_variant,
                     'seeds_decision_variant': seeds_decision_variant,
                     'run_seeds': run_seeds,
+                    'randomness_cfg': randomness_cfg,
                 }
                 if ENABLE_PER_RUN_TRACKING:
                     kwargs['hdf5_path'] = hdf5_path
@@ -659,6 +692,7 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
                         'seeds_noise_variant': seeds_noise_variant,
                         'seeds_decision_variant': seeds_decision_variant,
                         'run_seeds': run_seeds,
+                        'randomness_cfg': randomness_cfg,
                     }
                     if ENABLE_PER_RUN_TRACKING:
                         kwargs['hdf5_path'] = hdf5_path

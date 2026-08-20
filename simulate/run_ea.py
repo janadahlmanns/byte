@@ -535,6 +535,16 @@ def main():
         WIRING_RANDOMIZATION_SEED = 0
     
     POPULATION_SIZE = experiment_cfg["population_size"]
+
+    # Optional pre-drawn randomness (test-only; absent => live RNGs, see mvb/predrawn.py)
+    RANDOMNESS_CFG = experiment_cfg.get("predrawn_randomness", None)
+    if RANDOMNESS_CFG is not None and RANDOMNESS_CFG.get("enabled", False):
+        if "max_brain_ticks" not in RANDOMNESS_CFG:
+            raise KeyError("[ERROR] predrawn_randomness.enabled is true but "
+                           "'max_brain_ticks' is missing from the config.")
+        print(f"[predrawn] enabled (max_brain_ticks="
+              f"{RANDOMNESS_CFG['max_brain_ticks']})")
+
     MAX_TICKS = experiment_cfg["max_ticks"]
     N_RUNS = experiment_cfg["n_runs"]
     
@@ -659,7 +669,8 @@ def main():
 
     lifespans, run_seeds_gen0 = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
+                                    randomness_cfg=RANDOMNESS_CFG)
 
 
     # ============================================================
@@ -707,7 +718,8 @@ def main():
 
         lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
-                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases)
+                                    rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
+                                    randomness_cfg=RANDOMNESS_CFG)
 
         # ============================================================
         # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)
