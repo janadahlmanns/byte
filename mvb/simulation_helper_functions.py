@@ -59,23 +59,24 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
     Returns:
         Current weight of the connection, or 0.0 if not found
     """
-    if not hasattr(brain_module, '_brain_state'):
-        return 0.0
-    
-    brain_state = brain_module._brain_state
+    brain_state = getattr(brain_module, '_brain_state', None)
     if brain_state is None:
         return 0.0
-    
-    # Search through connections for the one from src to tgt
+
+    # O(1) via the index BrainState builds at init. Falls back to the original scan for
+    # brain modules that predate it.
+    conn_index = getattr(brain_state, 'conn_index', None)
+    if conn_index is not None:
+        conn = conn_index.get((src_neuron_id, tgt_neuron_id))
+        return conn.weight if conn is not None else 0.0
+
     for conn in brain_state.connections:
-        # Check if this is a neuron-to-neuron connection (not input source)
         if hasattr(conn.source, 'id'):
             if conn.source.id == src_neuron_id:
-                # Check target by finding which neuron has this in its incoming list
                 for neuron in brain_state.neurons:
                     if neuron.id == tgt_neuron_id and conn in neuron.incoming:
                         return conn.weight
-    
+
     return 0.0
 
 

@@ -26,7 +26,7 @@ How it plugs in
 ``PredrawnRandomness`` is a drop-in for ``np.random.Generator`` across the only three
 methods the simulation uses:
 
-    .normal(loc, scale)   Neuron.compute_input
+    .normal(loc, scale[, size])   neuron noise (scalar or whole-brain-tick)
     .integers(k)          _stable_outputs_to_decision / _get_random_decision
     .random(shape)        feeding.setup_food_initially
 
@@ -182,27 +182,39 @@ class PredrawnRandomness:
     # ---------- np.random.Generator surface ----------
 
     def normal(self, loc=0.0, scale=1.0, size=None):
-        """Stand-in for ``rng.normal(0.0, neuron.noise_level)``."""
+        """Stand-in for the neuron-noise draw. Two forms, both supported:
+
+        ``normal(0.0, s)``            one scalar, served in draw-schedule order
+                                      (the per-neuron fallback for mixed noise levels)
+        ``normal(0.0, s, size=n)``    the whole brain tick at once (the fast path, and
+                                      the shape the tensor port draws)
+
+        Both index the same ``neuron_noise[world_tick, brain_tick, neuron_id]`` cells, so
+        they agree exactly when every neuron draws.
+        """
         self._require_bound()
-        if size is not None:
-            raise NotImplementedError(
-                "PredrawnRandomness.normal() is scalar-only; the simulation never "
-                "requests an array"
+        n_neurons = self._bundle.n_neurons
+        batched = size is not None
+        if batched and size != n_neurons:
+            raise ValueError(
+                f"batched normal() expects size={n_neurons} (one value per neuron), "
+                f"got {size}"
             )
-        if not self._drawing:
+        if not batched and not self._drawing:
             raise RuntimeError(
                 "normal() called but no neuron has noise_level > 0 — draw schedule is "
                 "empty, so the neuron index cannot be resolved"
             )
 
         world_tick = self._worm.ticks
+        per_tick = n_neurons if batched else len(self._drawing)
         if world_tick != self._world_tick:
             # new world tick: decide() restarts its brain-tick loop from 0
             self._world_tick = world_tick
             self._brain_tick = 0
             self._cursor = 0
-        elif self._cursor >= len(self._drawing):
-            # every drawing neuron has been served this brain tick -> advance
+        elif self._cursor >= per_tick:
+            # this brain tick has been fully served -> advance
             self._brain_tick += 1
             self._cursor = 0
 
@@ -217,6 +229,10 @@ class PredrawnRandomness:
                 f"bundle max_brain_ticks={self._bundle.max_brain_ticks}; raise "
                 f"predrawn_randomness.max_brain_ticks"
             )
+
+        if batched:
+            self._cursor = per_tick
+            return loc + scale * self._bundle.neuron_noise[world_tick, self._brain_tick]
 
         neuron_id = self._drawing[self._cursor]
         self._cursor += 1
