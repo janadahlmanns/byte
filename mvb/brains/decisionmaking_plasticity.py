@@ -141,7 +141,10 @@ class Connection:
         modulation_sum = 0.0
         for neuron, mod_weight in self.modulating_inputs:
             modulation_sum += mod_weight * neuron.activity
-        modulation_sum = np.tanh(modulation_sum)  # ← bind to (-1, +1)
+        # math.tanh, not np.tanh: np.tanh returns np.float64, which would propagate into
+        # next_weight and force every later operation on this weight through numpy scalar
+        # arithmetic. Staying in Python floats keeps precision uniform and is much faster.
+        modulation_sum = math.tanh(modulation_sum)  # ← bind to (-1, +1)
         
         if modulation_sum == 0.0:
             self.next_weight = self.weight
@@ -252,7 +255,7 @@ def init_brain(genome, yaml_config):
     connection_weights = genome["connection_weights"]
     modulation_spec = genome["modulation_spec"]
     tonic_activations = genome["tonic_activations"]
-    eta = genome["eta"]
+    eta = float(genome["eta"])
     
     # Create neurons with properties from YAML (all neurons get same threshold and noise_level)
     neurons = []
@@ -293,14 +296,20 @@ def init_brain(genome, yaml_config):
     # Wire neurons to neurons from genome connection weights
     for src in range(n_neurons):
         for tgt in range(n_neurons):
-            weight, reliability = connection_weights[src, tgt]
+            # float() throughout: the genome is stored float32, but NumPy 2's NEP 50
+            # promotion would otherwise leave each weight's dtype dependent on its own
+            # modulation history (float32 until its first nonzero modulation, float64
+            # after). Python floats keep precision uniform -- and are ~4x faster than
+            # numpy scalars.
+            weight = float(connection_weights[src, tgt, 0])
+            reliability = float(connection_weights[src, tgt, 1])
             if weight == 0.0:
                 continue
             
             # Check if this connection has modulators
             modulating_inputs = None
             if (src, tgt) in modulation_spec:
-                modulating_inputs = [(neurons[mod_id], mod_weight) 
+                modulating_inputs = [(neurons[mod_id], float(mod_weight))
                                     for mod_id, mod_weight in modulation_spec[(src, tgt)]]
             
             conn = Connection(cid, neurons[src], weight, reliability, modulating_inputs)
@@ -387,9 +396,9 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
     neurons = [
         Neuron(
             neuron_id=i,
-            threshold=neuron_params[i, 0],
-            noise_level=neuron_params[i, 1],
-            tonic_level=neuron_params[i, 2],
+            threshold=float(neuron_params[i, 0]),
+            noise_level=float(neuron_params[i, 1]),
+            tonic_level=float(neuron_params[i, 2]),
         )
         for i in range(n_neurons)
     ]
@@ -427,7 +436,8 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
     # ---------------------------------
     for src in range(n_neurons):
         for tgt in range(n_neurons):
-            weight, reliability = conn_matrix[src, tgt]
+            weight = float(conn_matrix[src, tgt, 0])
+            reliability = float(conn_matrix[src, tgt, 1])
             if weight == 0.0:
                 continue
 
@@ -435,7 +445,7 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
             modulating_inputs = None
             if (src, tgt) in modulator_spec:
                 # Build modulating_inputs list: convert neuron IDs to neuron objects
-                modulating_inputs = [(neurons[mod_id], mod_weight) 
+                modulating_inputs = [(neurons[mod_id], float(mod_weight))
                                     for mod_id, mod_weight in modulator_spec[(src, tgt)]]
 
             conn = Connection(cid, neurons[src], weight, reliability, modulating_inputs)
@@ -452,7 +462,7 @@ def init(worm, cfg, rng_neuron_noise, brain_init_spec=None):
         9: "move_west",
     }
     
-    _brain_state = BrainState(neurons, connections, input_sources, eta=eta, output_mapping=default_output_mapping)
+    _brain_state = BrainState(neurons, connections, input_sources, eta=float(eta), output_mapping=default_output_mapping)
 
     # Use max_decision_delay from brain_init_spec (already set above)
     _brain_state.max_decision_delay = max_decision_delay
