@@ -1,1 +1,10 @@
 timestamp,host,commit,branch,dirty,runner,config,note,rep,seconds
+2026-08-21T22:09:26,192.168.1.64,8e17e694c7,runtime_optimizations,1,simulate.run_ea,test_ea,pre0b,0,139.567
+2026-08-21T22:11:13,192.168.1.64,8e17e694c7,runtime_optimizations,1,simulate.run_ea,test_ea,pre0b,1,163.480
+2026-08-21T22:13:10,192.168.1.64,8e17e694c7,runtime_optimizations,1,simulate.run_ea,test_ea,pre0b,2,168.524
+2026-08-21T22:19:06,192.168.1.64,49668c4cc3,evotorch_impl,1,simulate.run_ea,test_ea,post0b,0,99.738
+2026-08-21T22:21:50,192.168.1.64,49668c4cc3,evotorch_impl,1,simulate.run_ea,test_ea,post0b,1,106.568
+2026-08-21T22:24:38,192.168.1.64,49668c4cc3,evotorch_impl,1,simulate.run_ea,test_ea,post0b,2,116.813
+2026-08-24T22:35:46,192.168.1.64,740a3413dd,evotorch_impl,1,simulate.run_ea,test_ea,math.tanh and np.floats to python floats,0,65.752
+2026-08-24T22:36:56,192.168.1.64,740a3413dd,evotorch_impl,1,simulate.run_ea,test_ea,math.tanh and np.floats to python floats,1,69.797
+2026-08-24T22:38:08,192.168.1.64,740a3413dd,evotorch_impl,1,simulate.run_ea,test_ea,math.tanh and np.floats to python floats,2,71.902
