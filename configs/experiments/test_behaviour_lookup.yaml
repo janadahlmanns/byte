@@ -1,0 +1,90 @@
+# ============================================================
+# BEHAVIOURAL DRIFT REFERENCE CONFIG -- LOOKUP  (tests/ea_drift.py --mode behaviour)
+# ============================================================
+# Companion to test_behaviour.yaml. Same question, opposite genome population.
+#
+# test_behaviour.yaml uses 100 random genomes for BREADTH of threshold margins,
+# but random genomes barely feed (3 foods across 32 runs when measured), so they
+# hardly touch the on-food sensory path or the energy-gain branch.
+#
+# lookup_hard is what production actually starts from (configs/experiments/
+# ea_from_lookup.yaml) and it forages: 19 foods across 16 runs in the same world,
+# ~6x the feeding rate. That exercises the paths random genomes leave cold.
+#
+# The trade-off is genome diversity: generate_lookup_hard_genome ignores its
+# rng_seed, so all 30 variants carry the IDENTICAL brain. Trajectories still
+# differ -- each variant/run pair gets its own world and noise seed -- but this
+# config tests one brain on 900 worlds, where test_behaviour.yaml tests 100
+# brains on 20 worlds each. Neither subsumes the other; run both.
+#
+# Usage:
+#   # on the pre-refactor commit:
+#   python -m tests.ea_drift --generate-reference tests/refs/test_behaviour_lookup_ref.h5 \
+#       --runner simulate.run_batch --config test_behaviour_lookup \
+#       --sim-name test_behaviour_lookup
+#   # on the current code:
+#   python -m tests.ea_drift --reference tests/refs/test_behaviour_lookup_ref.h5 \
+#       --runner simulate.run_batch --config test_behaviour_lookup \
+#       --sim-name test_behaviour_lookup --mode behaviour
+# ============================================================
+experiment:
+  output_folder: "data/temp/"
+  simulation_name: "test_behaviour_lookup"
+  simulation_seed: 1
+
+  max_ticks: 2000           # never reached; worms starve first
+  n_runs: 30
+  evolutionary_algorithm_enabled: false
+
+  genome_type: "lookup_hard"
+  population_size: 30
+  random_genome:
+    wiring_randomization_seed: 1
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.1
+    modulation_degree_potentiation: 0.1
+    modulation_degree_depression: 0.1
+
+  viz_enabled: false
+  viz_fps: 4
+  viz_brain_enabled: false
+  viz_brain_fps: 4
+
+  # All three required: per_tick carries the decision record, per_run the
+  # outcome summary, heat map the order-free spatial occupancy.
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
+
+world:
+  grid_width: 51
+  grid_height: 51
+  start_pos: [26, 26]
+
+food:
+  - phase_from: 0
+    feeding_paradigm: {initial: true, regrow: false}
+    initial_fraction_per_cell: 0.1
+    regrow_time: 3000
+
+worm:
+  speed: 1
+  energy_capacity: 30
+  metabolic_rate: 1
+  movement_cost: 1
+  sensors:
+    active: [current_field, adjacent_binary]
+  decisionmaking: {version: plasticity, brain: true}
+
+brain:
+  n_neurons: 11
+  threshold: 0.5
+  noise_level: 0.05
+  sensory_mapping:
+    on_food: [0, 1.0, 0.9]
+    food_north: [1, 0.8, 0.9]
+    food_east: [2, 0.8, 0.9]
+    food_south: [3, 0.8, 0.9]
+    food_west: [4, 0.8, 0.9]
+  output_mapping: {5: stay, 6: move_north, 7: move_east, 8: move_south, 9: move_west}
+  max_decision_delay: 2.0

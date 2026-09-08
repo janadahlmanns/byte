@@ -1,0 +1,93 @@
+# ============================================================
+# BEHAVIOURAL DRIFT REFERENCE CONFIG  (tests/ea_drift.py --mode behaviour)
+# ============================================================
+# Purpose: answer "did the float64 / math.tanh / arctanh refactors change what
+# the worm DOES?", as opposed to "are the weights bit-identical?" (which they are
+# not, and by design -- see reproducibility.md).
+#
+# Sized for BREADTH, not depth. Worms in this world die after ~20-40 ticks
+# regardless of genome quality (energy_capacity 30, 2 energy per move tick), so
+# max_ticks is never the binding constraint and behavioural exposure comes from
+# the number of independent trajectories. 100 genomes x 20 runs = 2000 of them.
+#
+# genome_type is "random" here on purpose: 100 distinct genomes give 100 distinct
+# weight/modulation structures and therefore a broad spread of threshold margins,
+# which is what a 1e-11 drift would have to cross to flip a decision. The
+# companion config test_behaviour_lookup.yaml covers the opposite case -- one
+# competent forager that actually eats -- because random genomes barely feed and
+# so hardly exercise the on-food path.
+#
+# Live RNG, not pre-drawn: this must exercise the production path, and live RNG
+# also permits parallel workers. Determinism comes from simulation_seed, which is
+# the same premise ea_drift already relies on.
+#
+# Usage:
+#   # on the pre-refactor commit:
+#   python -m tests.ea_drift --generate-reference tests/refs/test_behaviour_ref.h5 \
+#       --runner simulate.run_batch --config test_behaviour --sim-name test_behaviour
+#   # on the current code:
+#   python -m tests.ea_drift --reference tests/refs/test_behaviour_ref.h5 \
+#       --runner simulate.run_batch --config test_behaviour --sim-name test_behaviour \
+#       --mode behaviour
+# ============================================================
+experiment:
+  output_folder: "data/temp/"
+  simulation_name: "test_behaviour"
+  simulation_seed: 1
+
+  max_ticks: 2000           # never reached; worms starve first
+  n_runs: 20
+  evolutionary_algorithm_enabled: false
+
+  genome_type: "random"
+  population_size: 100
+  random_genome:
+    wiring_randomization_seed: 1
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.1
+    modulation_degree_potentiation: 0.1
+    modulation_degree_depression: 0.1
+
+  viz_enabled: false
+  viz_fps: 4
+  viz_brain_enabled: false
+  viz_brain_fps: 4
+
+  # All three required: per_tick carries the decision record, per_run the
+  # outcome summary, heat map the order-free spatial occupancy.
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
+
+world:
+  grid_width: 51
+  grid_height: 51
+  start_pos: [26, 26]
+
+food:
+  - phase_from: 0
+    feeding_paradigm: {initial: true, regrow: false}
+    initial_fraction_per_cell: 0.1
+    regrow_time: 3000
+
+worm:
+  speed: 1
+  energy_capacity: 30
+  metabolic_rate: 1
+  movement_cost: 1
+  sensors:
+    active: [current_field, adjacent_binary]
+  decisionmaking: {version: plasticity, brain: true}
+
+brain:
+  n_neurons: 11
+  threshold: 0.5
+  noise_level: 0.05
+  sensory_mapping:
+    on_food: [0, 1.0, 0.9]
+    food_north: [1, 0.8, 0.9]
+    food_east: [2, 0.8, 0.9]
+    food_south: [3, 0.8, 0.9]
+    food_west: [4, 0.8, 0.9]
+  output_mapping: {5: stay, 6: move_north, 7: move_east, 8: move_south, 9: move_west}
+  max_decision_delay: 2.0
