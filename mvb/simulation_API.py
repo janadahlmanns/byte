@@ -222,6 +222,47 @@ def eval_variant(
     worm.brain = brain_module
 
     # ============================================================
+    # Create renderers ONCE for all runs.
+    # world and worm above are created once and only reset() per run, so the
+    # renderers' references stay valid for the whole variant. Creating them
+    # inside the run loop instead opened (and leaked) one window per run.
+    # ============================================================
+    # Create world renderer independently if world visualization is enabled
+    if viz_enabled:
+        try:
+            if viz_fps > 0:
+                worm.renderer = QtRenderer(world, worm, viz_fps)
+                print(f"[viz] Created world renderer at {viz_fps} FPS")
+            else:
+                worm.renderer = None
+        except Exception as e:
+            print(f"[WARNING] Failed to create world renderer: {e}.")
+            worm.renderer = None
+    else:
+        worm.renderer = None
+    # Create brain renderer independently if brain visualization is enabled
+    if viz_brain_enabled:
+        try:
+            if viz_brain_fps > 0:
+                brain_renderer = BrainQtRenderer(fps=viz_brain_fps)
+                brain_module._brain_renderer = brain_renderer
+                print(f"[viz] Created brain renderer at {viz_brain_fps} FPS")
+            else:
+                brain_module._brain_renderer = None
+        except Exception as e:
+            print(f"[WARNING] Failed to create brain renderer: {e}.")
+            brain_module._brain_renderer = None
+    else:
+        brain_module._brain_renderer = None
+    # Get pause manager for checkpoints (if any visualization enabled)
+    pause_mgr = None
+    if viz_enabled or viz_brain_enabled:
+        try:
+            pause_mgr = get_pause_manager()
+        except RuntimeError:
+            pass
+
+    # ============================================================
     # Simulate runs. For each run do:
     # ============================================================
     for run_id in range(n_runs):
@@ -250,41 +291,6 @@ def eval_variant(
         if rec is not None:
             rec.reset()
             rec.record(worm)
-
-        # Create world renderer independently if world visualization is enabled
-        if viz_enabled:
-            try:
-                if viz_fps > 0:
-                    worm.renderer = QtRenderer(world, worm, viz_fps)
-                    print(f"[viz] Created world renderer at {viz_fps} FPS")
-                else:
-                    worm.renderer = None
-            except Exception as e:
-                print(f"[WARNING] Failed to create world renderer: {e}.")
-                worm.renderer = None
-        else:
-            worm.renderer = None       
-        # Create brain renderer independently if brain visualization is enabled
-        if viz_brain_enabled:
-            try:
-                if viz_brain_fps > 0:
-                    brain_renderer = BrainQtRenderer(fps=viz_brain_fps)
-                    brain_module._brain_renderer = brain_renderer
-                    print(f"[viz] Created brain renderer at {viz_brain_fps} FPS")
-                else:
-                    brain_module._brain_renderer = None
-            except Exception as e:
-                print(f"[WARNING] Failed to create brain renderer: {e}.")
-                brain_module._brain_renderer = None
-        else:
-            brain_module._brain_renderer = None
-        # Get pause manager for checkpoints (if any visualization enabled)
-        pause_mgr = None
-        if viz_enabled or viz_brain_enabled:
-            try:
-                pause_mgr = get_pause_manager()
-            except RuntimeError:
-                pass
 
         # ============================================================
         # Simulate
@@ -564,8 +570,9 @@ def eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER
         # Run simulation
         all_lifespans = {}
         num_workers = get_num_workers(VIZ_ENABLED, VIZ_BRAIN_ENABLED)
-        num_workers = min(61, num_workers)  # this is some annoying windows limit and can apparently not be subverted easily. it is however not limited with multiprocessing.Pool, so thats something to try here 
-        
+        if num_workers is not None:
+            num_workers = min(61, num_workers)  # this is some annoying windows limit and can apparently not be subverted easily. it is however not limited with multiprocessing.Pool, so thats something to try here
+
         if num_workers is None:
             for variant_id in range(N_VARIANTS):
                 print(f"[variant {variant_id+1:02d}/{N_VARIANTS:02d}] Simulating...", end='', flush=True)
