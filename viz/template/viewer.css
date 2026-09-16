@@ -1,0 +1,300 @@
+/* Byte replay viewer — colourblind-safe blue/gold on dark.
+   Palette from configs/viz/color_palette_colorblindsafe.txt: blue vs gold
+   survives deuteranopia and protanopia, unlike a green/red pair. */
+
+:root {
+  --bg: #0e1512;
+  --panel: #131c18;
+  --edge: #24332c;
+  --grid: #1a2420;
+  --text: #e8efea;
+  --dim: #8ca093;
+
+  --gold: #d4af37;
+  --gold-light: #ddd55f;
+  --blue: #aad5ee;
+  --blue-mid: #336f99;
+  --dead: #c4553f;
+  --warn: #e0913a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 14px;
+  gap: 10px;
+}
+
+/* ---------- header ---------- */
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+h1 .accent { color: var(--gold); }
+
+.meta {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---------- canvas ---------- */
+
+#stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+#world { display: block; }
+
+/* ---------- transport ---------- */
+
+#transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+button {
+  background: var(--edge);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  line-height: 1;
+  min-width: 32px;
+}
+
+button:hover { background: #2f4239; }
+button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+button.primary { background: var(--gold); color: #12160f; font-weight: 600; }
+button.primary:hover { background: var(--gold-light); }
+
+/* Scrub bar: a range input sitting on top of an event-marker strip */
+.scrub {
+  position: relative;
+  flex: 1;
+  min-width: 120px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+}
+
+#markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#seek {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  background: transparent;
+  margin: 0;
+  position: relative;
+  z-index: 1;
+}
+
+#seek::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--edge);
+  border-radius: 2px;
+}
+
+#seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: none;
+  cursor: pointer;
+}
+
+#seek::-moz-range-track {
+  height: 4px;
+  background: var(--edge);
+  border-radius: 2px;
+}
+
+#seek::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: none;
+  cursor: pointer;
+}
+
+.readout {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.readout strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+select {
+  background: var(--edge);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* ---------- status ---------- */
+
+#status {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
+}
+
+.energy-wrap { flex: 1; min-width: 200px; }
+
+.energy-track {
+  height: 15px;
+  background: var(--edge);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+#energy-fill {
+  height: 100%;
+  width: 0;
+  background: var(--gold);
+  transition: width 90ms linear;
+}
+
+.energy-label {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
+#alive-state { font-weight: 600; color: var(--gold-light); }
+#alive-state.dead { color: var(--dead); }
+
+/* Sensor compass: the five cells the agent can actually sense */
+.compass {
+  display: grid;
+  grid-template-columns: repeat(3, 20px);
+  grid-template-rows: repeat(3, 20px);
+  gap: 2px;
+}
+
+.compass div {
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  font-family: Consolas, monospace;
+  font-size: 9px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compass div.lit {
+  background: var(--gold-light);
+  border-color: var(--gold-light);
+  color: #12160f;
+  font-weight: 700;
+}
+
+.compass div.absent { opacity: 0.25; }
+
+.c-n { grid-area: 1 / 2; }
+.c-w { grid-area: 2 / 1; }
+.c-c { grid-area: 2 / 2; }
+.c-e { grid-area: 2 / 3; }
+.c-s { grid-area: 3 / 2; }
+
+.legend {
+  font-size: 11px;
+  color: var(--dim);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.legend span { display: flex; align-items: center; gap: 5px; }
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--dim);
+  text-align: center;
+}
+
+kbd {
+  background: var(--edge);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+}

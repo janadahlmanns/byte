@@ -9,7 +9,8 @@ afterwards, only for runs worth looking at.
 The replay is driven by `mvb.simulation_API.simulate_run` — the real tick loop —
 so it cannot drift from the simulation it reproduces.
 
-Phase 1.2 writes the recording as JSON. Phase 1.3 wraps it in a viewer.
+Writes one self-contained .html: CSS, JS and the run data are all inlined, so
+it opens straight from disk with no server and no network access.
 """
 
 import argparse
@@ -99,6 +100,44 @@ def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
 
 
 # ============================================================
+# Page building
+# ============================================================
+
+TEMPLATE_DIR = Path(__file__).resolve().parent / "template"
+
+
+def _embed_json(payload: dict) -> str:
+    """Serialise run data for inlining inside a <script> tag.
+
+    `</script>` appearing anywhere inside the JSON would close the tag early and
+    break the page, so `<` is escaped. It stays valid JSON either way.
+    """
+    return json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
+
+
+def build_page(payload: dict, title: str, meta: str) -> str:
+    """Inline the template's CSS, JS and data into a single HTML document."""
+    html = (TEMPLATE_DIR / "viewer.html").read_text(encoding="utf-8")
+    css = (TEMPLATE_DIR / "viewer.css").read_text(encoding="utf-8")
+    js = (TEMPLATE_DIR / "viewer.js").read_text(encoding="utf-8")
+
+    # Substituted rather than .format()ed: the CSS and JS are full of braces.
+    for token, value in (
+        ("__TITLE__", title),
+        ("__META__", meta),
+        ("__CSS__", css),
+        ("__JS__", js),
+        ("__DATA__", _embed_json(payload)),
+    ):
+        html = html.replace(token, value)
+
+    leftover = [t for t in ("__TITLE__", "__META__", "__CSS__", "__JS__", "__DATA__") if t in html]
+    if leftover:
+        raise RuntimeError(f"[ERROR] template placeholders not substituted: {leftover}")
+    return html
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -119,9 +158,11 @@ Examples:
     parser.add_argument("--run", type=int, default=0,
                         help="Which run of that genome to replay. Default 0")
     parser.add_argument("--out", default=None,
-                        help="Output path. Defaults to <h5-stem>_g<genome>_r<run>.json beside the source")
+                        help="Output path. Defaults to <h5-stem>_g<genome>_r<run>.html beside the source")
     parser.add_argument("--max-ticks", type=int, default=None,
                         help="Override the recorded tick limit")
+    parser.add_argument("--json", action="store_true",
+                        help="Also write the raw recording as .json next to the page")
     return parser.parse_args(argv)
 
 
@@ -160,9 +201,9 @@ def main(argv=None):
         if actual != source.expected_lifetime:
             print("[export] WARNING: replay diverged from the original run.")
 
-    out_path = Path(args.out) if args.out else Path(hdf5_path).with_name(
-        f"{Path(hdf5_path).stem}_g{source.genome_id}_r{source.run_id}.json"
-    )
+    stem = f"{Path(hdf5_path).stem}_g{source.genome_id}_r{source.run_id}"
+    out_path = Path(args.out) if args.out else Path(hdf5_path).with_name(f"{stem}.html")
+
     payload = recorder.to_dict()
     payload["meta"] = {
         "source_file": str(hdf5_path),
@@ -174,10 +215,22 @@ def main(argv=None):
         "decision_seed": source.decision_seed,
     }
 
+    final_tick = recorder.frames[-1]["t"]
+    title = f"Byte replay · {Path(hdf5_path).stem} · g{source.genome_id} r{source.run_id}"
+    meta = (f"{Path(hdf5_path).name} &nbsp;·&nbsp; genome {source.genome_id} &nbsp;·&nbsp; "
+            f"run {source.run_id} &nbsp;·&nbsp; {final_tick} ticks &nbsp;·&nbsp; "
+            f"seed {source.world_seed}")
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload), encoding="utf-8")
-    size_kb = out_path.stat().st_size / 1024
-    print(f"[export] wrote {out_path}  ({size_kb:.1f} KB)")
+    out_path.write_text(build_page(payload, title, meta), encoding="utf-8")
+    print(f"[export] wrote {out_path}  ({out_path.stat().st_size / 1024:.1f} KB)")
+
+    if args.json:
+        json_path = out_path.with_suffix(".json")
+        json_path.write_text(json.dumps(payload), encoding="utf-8")
+        print(f"[export] wrote {json_path}  ({json_path.stat().st_size / 1024:.1f} KB)")
+
+    print(f"[export] open it: {out_path.resolve()}")
     return 0
 
 

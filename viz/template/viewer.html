@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>__CSS__</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1>Byte <span class="accent">·</span> replay</h1>
+    <div class="meta">__META__</div>
+  </header>
+
+  <div id="stage">
+    <canvas id="world"></canvas>
+  </div>
+
+  <div id="transport">
+    <button id="play" class="primary" title="Play (space)">▶</button>
+    <button id="prev" title="Back one tick (left arrow)">‹</button>
+    <button id="next" title="Forward one tick (right arrow)">›</button>
+    <button id="prev-ev" title="Previous event">|‹</button>
+    <button id="next-ev" title="Next event">›|</button>
+
+    <div class="scrub">
+      <div id="markers"></div>
+      <input id="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Timeline">
+    </div>
+
+    <div class="readout" id="tick">0 / 0</div>
+
+    <select id="speed" title="Playback speed" aria-label="Playback speed">
+      <option value="2">2 t/s</option>
+      <option value="4">4 t/s</option>
+      <option value="8" selected>8 t/s</option>
+      <option value="20">20 t/s</option>
+      <option value="60">60 t/s</option>
+    </select>
+  </div>
+
+  <div id="status">
+    <div class="energy-wrap">
+      <div class="energy-track"><div id="energy-fill"></div></div>
+      <div class="energy-label">
+        <span id="energy-text">ENERGY</span>
+        <span id="alive-state">ALIVE</span>
+      </div>
+    </div>
+
+    <div class="compass" title="The five cells the agent can sense">
+      <div class="c-n">N</div>
+      <div class="c-w">W</div>
+      <div class="c-c">●</div>
+      <div class="c-e">E</div>
+      <div class="c-s">S</div>
+    </div>
+
+    <div class="readout" id="counters">eats 0   dist 0</div>
+
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--blue)"></i>food</span>
+      <span><i class="swatch" style="background:var(--blue-mid);opacity:.45"></i>regrowing</span>
+      <span><i class="swatch" style="background:var(--gold)"></i>agent</span>
+      <span><i class="swatch" style="background:var(--gold-light)"></i>sensed</span>
+    </div>
+  </div>
+
+  <div class="hint">
+    <kbd>space</kbd> play/pause &nbsp; <kbd>←</kbd><kbd>→</kbd> step
+    (<kbd>shift</kbd> ×10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump
+  </div>
+
+</div>
+
+<script>window.RUN_DATA = __DATA__;</script>
+<script>__JS__</script>
+</body>
+</html>
