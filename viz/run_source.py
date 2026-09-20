@@ -231,3 +231,65 @@ def _modulation_from_rows(rows, fields):
         key = (int(row[src_f]), int(row[tgt_f]))
         spec.setdefault(key, []).append((int(row[mod_f]), float(row[w_f])))
     return spec
+
+
+# ============================================================
+# Discovery
+# ============================================================
+
+def summarize_file(hdf5_path) -> str:
+    """Human-readable listing of what a result file contains.
+
+    Answers "which genome and run do I pass to --genome/--run?" without
+    having to guess and read an error.
+    """
+    hdf5_path = str(hdf5_path)
+    lines = [f"{hdf5_path}"]
+
+    with h5py.File(hdf5_path, "r") as f:
+        layout = detect_layout(f)
+        max_ticks = int(f.attrs.get("experiment_max_ticks", 0))
+        capacity = f.attrs.get("worm_energy_capacity", "?")
+        lines.append(
+            f"  layout: {layout}   max_ticks: {max_ticks}   energy_capacity: {capacity}"
+        )
+        lines.append("")
+
+        if layout == "elite":
+            ids = sorted(int(k.split("_")[1]) for k in f["elite_genomes"]
+                         if k.startswith("elite_"))
+            n_runs = len(f["elite_genomes/run_seeds"])
+            lifespans = f["elite_genomes/lifespans"][:] if "elite_genomes/lifespans" in f else None
+
+            lines.append(f"  {'genome':>7} {'runs':>5}   lifetimes")
+            lines.append("  " + "-" * 52)
+            for i, gid in enumerate(ids):
+                if lifespans is not None and i < len(lifespans):
+                    vals = " ".join(f"{int(v):>5}" for v in np.atleast_1d(lifespans[i]))
+                else:
+                    vals = "(not recorded)"
+                lines.append(f"  {gid:>7} {n_runs:>5}   {vals}")
+        else:
+            ids = sorted(int(k.split("_")[1]) for k in f if k.startswith("variant_"))
+            lines.append(f"  {'genome':>7} {'run':>4} {'lifetime':>9} {'eats':>6} {'distance':>9}")
+            lines.append("  " + "-" * 44)
+            for gid in ids:
+                for row in f[f"variant_{gid}/summary"][:]:
+                    lines.append(
+                        f"  {gid:>7} {int(row['run_id']):>4} "
+                        f"{int(row['lifetime_ticks']):>9} {int(row['foods']):>6} "
+                        f"{int(row['distance']):>9}"
+                    )
+
+        lines.append("")
+        lines.append(f"  export one with:  --genome <genome> --run <run>")
+
+    return "\n".join(lines)
+
+
+def list_result_files(search_root: str = "data") -> list:
+    """Every .h5 under the search root, newest first."""
+    root = Path(search_root)
+    if not root.exists():
+        return []
+    return sorted(root.rglob("*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)

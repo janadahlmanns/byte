@@ -26,7 +26,8 @@ from mvb.feeding import seed_food
 from mvb.simulation_API import simulate_run
 from mvb.simulation_helper_functions import load_brain_module
 from viz.replay_recorder import WorldFrameRecorder
-from viz.run_source import RunSource, load_run_source, resolve_h5_path
+from viz.run_source import RunSource, load_run_source, resolve_h5_path, summarize_file
+from viz.verify import verify, format_report
 
 
 # ============================================================
@@ -163,6 +164,12 @@ Examples:
                         help="Override the recorded tick limit")
     parser.add_argument("--json", action="store_true",
                         help="Also write the raw recording as .json next to the page")
+    parser.add_argument("--list", action="store_true",
+                        help="List the genomes and runs in the file, then exit")
+    parser.add_argument("--verify", action="store_true",
+                        help="Compare the replay tick-by-tick against the file's per_tick data")
+    parser.add_argument("--open", action="store_true",
+                        help="Open the exported page in the default browser")
     return parser.parse_args(argv)
 
 
@@ -174,6 +181,10 @@ def main(argv=None):
     except (FileNotFoundError, ValueError) as e:
         print(e)
         return 1
+
+    if args.list:
+        print(summarize_file(hdf5_path))
+        return 0
 
     try:
         source = load_run_source(hdf5_path, args.genome, args.run)
@@ -200,6 +211,16 @@ def main(argv=None):
               f"replayed={actual}  [{match}]")
         if actual != source.expected_lifetime:
             print("[export] WARNING: replay diverged from the original run.")
+
+    verify_failed = False
+    if args.verify:
+        checks, fatal = verify(recorder, source)
+        print()
+        print(format_report(checks, fatal, source))
+        print()
+        verify_failed = not fatal and any(
+            not c.ok for c in checks if c.name != "movement"
+        )
 
     stem = f"{Path(hdf5_path).stem}_g{source.genome_id}_r{source.run_id}"
     out_path = Path(args.out) if args.out else Path(hdf5_path).with_name(f"{stem}.html")
@@ -231,7 +252,12 @@ def main(argv=None):
         print(f"[export] wrote {json_path}  ({json_path.stat().st_size / 1024:.1f} KB)")
 
     print(f"[export] open it: {out_path.resolve()}")
-    return 0
+
+    if args.open:
+        import webbrowser
+        webbrowser.open(out_path.resolve().as_uri())
+
+    return 1 if verify_failed else 0
 
 
 if __name__ == "__main__":
