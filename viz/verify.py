@@ -1,17 +1,15 @@
-"""Check a replay against the ground truth recorded during the original run.
+"""Check a replay against the per_tick data recorded during the original run.
 
-`MetricsRecorder` writes a `per_tick` table into the HDF5 while the experiment
-runs. Our recorder samples at the same point in the tick (`wait_frame`, after
-`worm.ticks += 1`), so the two series should line up index for index.
-
-This is the load-bearing test for the whole viewer: if the replay drifts, the
-page is showing a run that never happened.
+`MetricsRecorder` writes per_tick into the HDF5 while the experiment runs, and
+the replay recorder samples at the same point in the tick, so the two series
+line up index for index. A divergence means the replay is not reproducing the
+run it claims to.
 """
 
 import numpy as np
 
 
-# Sensor key in our frames -> column name in the per_tick table
+# Sensor key in a recorded frame -> column name in the per_tick table
 SENSOR_COLUMNS = {
     "food_north": "food_sensed_N",
     "food_east": "food_sensed_E",
@@ -50,7 +48,7 @@ class Check:
 
 
 def verify(recorder, source):
-    """Compare recorded frames against the per_tick ground truth.
+    """Compare recorded frames against the per_tick data.
 
     Args:
         recorder: WorldFrameRecorder after a replay
@@ -121,8 +119,8 @@ def verify(recorder, source):
     checks.append(Check("food_consumed", max(0, n - 1), bad))
 
     # --- movement ---
-    # per_tick[T].movement is the move EXECUTED during tick T, which is the
-    # action DECIDED at tick T-1 -- our frames[T-1].next_action.
+    # per_tick[T].movement is the move executed during tick T, which is the
+    # action decided at tick T-1, i.e. frames[T-1].next_action.
     bad = []
     for i in range(1, n):
         got = frames[i - 1]["next_action"] or "stay"
@@ -132,10 +130,10 @@ def verify(recorder, source):
             bad.append((frames[i]["t"], got, exp))
     checks.append(Check(
         "movement", max(0, n - 1), bad,
-        note=("MetricsRecorder derives direction by comparing raw coordinates "
+        note=("MetricsRecorder derives direction from raw coordinate differences "
               "without accounting for toroidal wrap, so it reports the opposite "
-              "direction whenever the agent crosses an edge. Our value comes "
-              "from the action tuple itself and is correct.")
+              "direction when the agent crosses an edge. The value compared here "
+              "is taken from the action tuple.")
         if bad else "",
     ))
 
@@ -150,8 +148,7 @@ def format_report(checks, fatal, source):
         return f"{head}\n  SKIPPED: {fatal}"
 
     body = "\n".join(str(c) for c in checks)
-    # Movement is excluded from the verdict: it disagrees only where the
-    # ground truth itself is wrong (see the note above).
+    # Movement is excluded from the verdict; see the note attached to that check.
     judged = [c for c in checks if c.name != "movement"]
     failed = [c for c in judged if not c.ok]
     verdict = ("PASS: replay matches the recorded run"
@@ -161,15 +158,12 @@ def format_report(checks, fatal, source):
 
 
 def _detect_aborted(truth, source):
-    """Detect a recorded run that was stopped by the user rather than by the simulation.
+    """Detect a recorded run that was interrupted rather than ended by the simulation.
 
-    A run ends legitimately either because the agent starved (final energy 0) or
-    because it hit the tick limit. Anything else -- still alive, below the limit --
-    means PauseManagerExit fired because someone pressed 'c' or closed the
-    visualisation window, and `simulate_run` returned early.
-
-    Such a run is written to the HDF5 looking like a real result, but it cannot be
-    replayed faithfully: the replay has no reason to stop where the user did.
+    A run ends legitimately when the agent starves (final energy 0) or hits the
+    tick limit. Still alive and below the limit means PauseManagerExit fired and
+    `simulate_run` returned early. Such a run is stored like any other result but
+    is truncated, so a replay cannot match it.
     """
     if len(truth) == 0:
         return "the recorded run contains no ticks"
@@ -181,14 +175,14 @@ def _detect_aborted(truth, source):
     if final_energy > 0 and final_tick < source.max_ticks:
         if final_tick == 0:
             return (
-                "the recorded run never ran -- it has a single tick at full energy. "
-                "The original simulation was aborted before this run started "
-                "(window closed, or 'c' pressed), so there is nothing to verify against."
+                "the recorded run has a single tick at full energy: the original "
+                "simulation was interrupted before this run started, so there is "
+                "nothing to compare against."
             )
         return (
-            f"the recorded run was cut short: it stops at tick {final_tick} while "
-            f"still alive with {final_energy:.0f} energy, below the {source.max_ticks} "
-            "tick limit. The original simulation was interrupted, so the stored data "
-            "is truncated and a faithful replay cannot match it."
+            f"the recorded run stops at tick {final_tick} while still alive with "
+            f"{final_energy:.0f} energy, below the {source.max_ticks} tick limit. "
+            "The original simulation was interrupted, so the stored data is "
+            "truncated and a replay cannot match it."
         )
     return None

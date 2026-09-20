@@ -135,7 +135,7 @@
       ctx.stroke();
     }
 
-    // cells awaiting regrowth — makes the regrow paradigm visible
+    // cells eaten and awaiting regrowth
     ctx.fillStyle = C.pending;
     ctx.globalAlpha = 0.28;
     for (let i = 0; i < pending.length; i++) {
@@ -204,7 +204,7 @@
     const ring = cell * 2.0, core = cell * 0.42;
     const colour = f.alive ? C.agent : C.dead;
 
-    // glow, so the eye finds the agent among 2601 cells
+    // glow: the agent is one cell among thousands and needs to stand out
     ctx.globalAlpha = 0.1;
     ctx.fillStyle = colour;
     ctx.beginPath(); ctx.arc(cx, cy, ring, 0, 6.2832); ctx.fill();

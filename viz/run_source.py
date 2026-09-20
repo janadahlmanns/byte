@@ -238,11 +238,7 @@ def _modulation_from_rows(rows, fields):
 # ============================================================
 
 def summarize_file(hdf5_path) -> str:
-    """Human-readable listing of what a result file contains.
-
-    Answers "which genome and run do I pass to --genome/--run?" without
-    having to guess and read an error.
-    """
+    """Listing of the genomes and runs a result file contains."""
     hdf5_path = str(hdf5_path)
     lines = [f"{hdf5_path}"]
 
@@ -282,14 +278,7 @@ def summarize_file(hdf5_path) -> str:
                     )
 
         lines.append("")
-        lines.append(f"  export one with:  --genome <genome> --run <run>")
+        lines.append("  export one with:  --genome <genome> --run <run>")
 
     return "\n".join(lines)
 
-
-def list_result_files(search_root: str = "data") -> list:
-    """Every .h5 under the search root, newest first."""
-    root = Path(search_root)
-    if not root.exists():
-        return []
-    return sorted(root.rglob("*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)

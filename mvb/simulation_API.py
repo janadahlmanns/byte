@@ -222,10 +222,9 @@ def eval_variant(
     worm.brain = brain_module
 
     # ============================================================
-    # Create renderers ONCE for all runs.
-    # world and worm above are created once and only reset() per run, so the
-    # renderers' references stay valid for the whole variant. Creating them
-    # inside the run loop instead opened (and leaked) one window per run.
+    # Create renderers once for the whole variant.
+    # world and worm are created above and only reset() per run, so a renderer
+    # created here stays valid for every run.
     # ============================================================
     # Create world renderer independently if world visualization is enabled
     if viz_enabled:

@@ -6,8 +6,8 @@ Re-runs a single saved run deterministically from its stored seeds and records
 every tick. Experiments themselves stay headless and parallel; this is done
 afterwards, only for runs worth looking at.
 
-The replay is driven by `mvb.simulation_API.simulate_run` — the real tick loop —
-so it cannot drift from the simulation it reproduces.
+The replay is driven by `mvb.simulation_API.simulate_run`, the same tick loop the
+experiment used, so it cannot drift from the simulation it reproduces.
 
 Writes one self-contained .html: CSS, JS and the run data are all inlined, so
 it opens straight from disk with no server and no network access.
@@ -149,7 +149,7 @@ def parse_arguments(argv=None):
         epilog="""
 Examples:
   python -m viz.export_viewer --file 2026-09-16_01-41-48_test_batch2 --genome 0 --run 1
-  python -m viz.export_viewer --file data/temp/my_run.h5 --genome 2 --run 0 --out run.json
+  python -m viz.export_viewer --file data/temp/my_run.h5 --genome 2 --run 0 --open
         """,
     )
     parser.add_argument("--file", required=True,
@@ -201,9 +201,9 @@ def main(argv=None):
     recorder = replay(source, max_ticks=args.max_ticks)
     print(f"[export] {recorder.summary()}")
 
-    # Cheap correctness signal: the replay should live exactly as long as the
-    # original. A mismatch means the replay diverged and nothing downstream is
-    # trustworthy. (Full tick-by-tick verification is Phase 1.4.)
+    # The replay should live exactly as long as the original. A mismatch means
+    # it diverged, and nothing downstream can be trusted. --verify compares every
+    # tick rather than just the total.
     if source.expected_lifetime >= 0:
         actual = recorder.frames[-1]["t"]
         match = "OK" if actual == source.expected_lifetime else "MISMATCH"

@@ -1,8 +1,8 @@
-"""Interactive replay visualisation for Byte simulations.
+"""Replay visualisation for Byte simulations.
 
-Records a deterministic re-run of a saved simulation and emits a self-contained
-HTML viewer that plays it back with a scrub timeline.
+Re-runs a saved run deterministically from its stored seeds and emits a
+self-contained HTML viewer that plays it back with a scrub timeline.
 
-This package never participates in a real experiment. Experiments run headless
-and in parallel; visualisation happens afterwards, from the saved HDF5.
+Nothing here runs during an experiment. Experiments stay headless and parallel;
+visualisation happens afterwards, from the saved HDF5.
 """

@@ -1,14 +1,12 @@
 """Frame recorders for replay export.
 
-These record simulation state instead of painting it. They deliberately expose
-the same interface the Qt renderers do, so they can be attached to an ordinary
-simulation run without any change to the simulation core:
+Record simulation state instead of painting it, exposing the same interface as
+the Qt renderers so they can be attached to an ordinary run:
 
     worm.renderer = WorldFrameRecorder(world, worm)
 
-`mvb.simulation_API.simulate_run` then drives them exactly as it drives a
-renderer, which means a recorded replay cannot drift from the simulation it is
-meant to reproduce.
+`simulate_run` then drives them as it would a renderer, so a replay cannot
+drift from the simulation it reproduces.
 
 Nothing here mutates world, worm or rng state.
 """
@@ -26,20 +24,11 @@ class WorldFrameRecorder:
     Implements the renderer interface (`draw`, `wait_frame`) so it can be
     assigned to `worm.renderer`.
 
-    **Where the frame is sampled.** Capture happens in `wait_frame()`, not in
-    `draw()`. In `simulate_run` the order per tick is::
-
-        world.step()
-        worm.step_day(...)   ->  calls renderer.draw() mid-tick
-        worm.ticks += 1
-        rec.record(worm)     ->  MetricsRecorder samples here (HDF5 per-tick)
-        renderer.wait_frame()
-
-    `draw()` is called inside `step_day` *before* metabolism is applied and
-    before the tick counter advances, so sampling there would record energy one
-    step out of date. `wait_frame()` fires at the same settled point as
-    `MetricsRecorder`, which is what makes a tick-for-tick comparison against
-    the HDF5 per-tick datasets meaningful.
+    Frames are taken in `wait_frame()` rather than `draw()`. Within a tick,
+    `simulate_run` calls `draw()` from inside `step_day`, before metabolism is
+    applied and before the tick counter advances; `wait_frame()` runs afterwards,
+    at the same point `MetricsRecorder.record()` samples. Capturing there keeps
+    the series aligned with the per_tick datasets written to HDF5.
 
     Args:
         world: World instance (read-only)
@@ -71,10 +60,9 @@ class WorldFrameRecorder:
     def start(self):
         """Capture the tick-0 baseline.
 
-        Call after the world has been seeded and the worm reset, but before
-        `simulate_run`. The renderer interface has no hook for the initial
-        state — `draw()` only fires once the agent has already acted — so the
-        starting frame has to be taken explicitly or it would be missing.
+        Call after the world is seeded and the worm reset, but before
+        `simulate_run`. The renderer interface has no hook for the initial state,
+        so it has to be taken explicitly.
         """
         self.initial_food = (self.world.food > 0).astype(np.uint8).copy()
         self._prev_food = self.initial_food.copy()
@@ -84,18 +72,13 @@ class WorldFrameRecorder:
     # --- renderer interface ---------------------------------------
 
     def draw(self):
-        """Part of the renderer interface. Intentionally does nothing.
-
-        See the class docstring: the frame is taken in `wait_frame()` instead,
-        because `draw()` fires before metabolism is applied.
-        """
+        """No-op. Frames are taken in `wait_frame()`; see the class docstring."""
         return
 
     def wait_frame(self):
-        """Capture this tick's frame. No pacing — recording runs at full speed."""
+        """Capture this tick's frame. No pacing; recording runs at full speed."""
         if not self._started:
-            # Defensive: start() should have been called, but never lose a run
-            # over it. Treat the first frame we see as the baseline.
+            # start() was skipped; treat the first frame seen as the baseline.
             self.start()
             return
 
@@ -124,9 +107,8 @@ class WorldFrameRecorder:
             "distance": int(worm.distance),
             "alive": bool(worm.alive),
             "sense": {k: int(v) for k, v in sense.items()},
-            # The action decided *during* this tick, to be executed on the next
-            # one (step_day decides after acting). Movement that already
-            # happened is derivable from consecutive y/x instead.
+            # Decided during this tick, executed on the next one. Movement that
+            # already happened is derivable from consecutive y/x.
             "next_action": _action_label(worm.action),
             "food_added": food_added,
             "food_removed": food_removed,
@@ -137,7 +119,7 @@ class WorldFrameRecorder:
     def to_dict(self):
         """Return the recording as plain JSON-serialisable data."""
         if self.initial_food is None:
-            raise RuntimeError("Nothing recorded — was start() called?")
+            raise RuntimeError("Nothing recorded; start() was never called")
         return {
             "static": dict(self.static),
             "initial_food": [int(i) for i in np.flatnonzero(self.initial_food)],
@@ -145,7 +127,7 @@ class WorldFrameRecorder:
         }
 
     def summary(self):
-        """Short human-readable description, for verification output."""
+        """One-line description of the recording."""
         if not self.frames:
             return "WorldFrameRecorder: no frames"
         last = self.frames[-1]
