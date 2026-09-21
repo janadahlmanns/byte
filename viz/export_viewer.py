@@ -15,6 +15,7 @@ it opens straight from disk with no server and no network access.
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -116,9 +117,14 @@ def _embed_json(payload: dict) -> str:
     return json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
 
 
+TEMPLATE_NOTE = re.compile(r"<!--\s*Template, not a page\..*?-->\s*", re.DOTALL)
+
+
 def build_page(payload: dict, title: str, meta: str) -> str:
     """Inline the template's CSS, JS and data into a single HTML document."""
-    html = (TEMPLATE_DIR / "viewer.html").read_text(encoding="utf-8")
+    html = (TEMPLATE_DIR / "viewer.html.tpl").read_text(encoding="utf-8")
+    # The note explaining what the template is belongs in the template only.
+    html = TEMPLATE_NOTE.sub("", html, count=1)
     css = (TEMPLATE_DIR / "viewer.css").read_text(encoding="utf-8")
     js = (TEMPLATE_DIR / "viewer.js").read_text(encoding="utf-8")
 

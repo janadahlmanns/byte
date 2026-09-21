@@ -1,4 +1,7 @@
 <!doctype html>
+<!-- Template, not a page. The __TOKEN__ placeholders below are filled in by
+     viz/export_viewer.py, which writes a complete standalone .html elsewhere.
+     Opening this file directly shows an unstyled skeleton. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
