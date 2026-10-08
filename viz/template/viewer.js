@@ -26,6 +26,13 @@
     dead: css.getPropertyValue("--dead").trim(),
     edge: css.getPropertyValue("--edge").trim(),
     warn: css.getPropertyValue("--warn").trim(),
+    exc: css.getPropertyValue("--gold-light").trim(),
+    inh: css.getPropertyValue("--blue").trim(),
+    text: css.getPropertyValue("--text").trim(),
+    dim: css.getPropertyValue("--dim").trim(),
+    panelEdge: css.getPropertyValue("--edge").trim(),
+    neuronIdle: css.getPropertyValue("--panel").trim(),
+    neuronEdge: css.getPropertyValue("--edge").trim(),
   };
 
   // ---------------------------------------------------------------
@@ -116,17 +123,30 @@
   const ctx = canvas.getContext("2d");
   let cell = 8;
 
-  function fitCanvas() {
-    const stage = document.getElementById("stage");
-    const avail = Math.min(stage.clientWidth - 20, stage.clientHeight - 20);
-    const size = Math.max(200, avail);
-    cell = size / Math.max(W, H);
+  function sizeCanvas(el, c, w, h) {
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(W * cell * dpr);
-    canvas.height = Math.round(H * cell * dpr);
-    canvas.style.width = W * cell + "px";
-    canvas.style.height = H * cell + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    el.width = Math.round(w * dpr);
+    el.height = Math.round(h * dpr);
+    el.style.width = w + "px";
+    el.style.height = h + "px";
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function fitCanvas() {
+    const panels = document.querySelectorAll(".panel");
+    const wp = panels[0];
+    const avail = Math.min(wp.clientWidth - 20, wp.clientHeight - 34);
+    const size = Math.max(180, avail);
+    cell = size / Math.max(W, H);
+    sizeCanvas(canvas, ctx, W * cell, H * cell);
+
+    const bp = panels[1];
+    if (bp) {
+      const bw = Math.max(180, bp.clientWidth - 20);
+      const bh = Math.max(180, bp.clientHeight - 34);
+      bCell = { w: bw, h: bh };
+      sizeCanvas(document.getElementById("brain"), bctx, bw, bh);
+    }
   }
 
   function wrapDelta(d, span) {
@@ -286,6 +306,227 @@
     }
   }
 
+
+  // ---------------------------------------------------------------
+  // Brain
+  // ---------------------------------------------------------------
+  // Weights are stored as sparse change events rather than a value per beat,
+  // because a connection only moves while one of its modulators fires and
+  // stops permanently once it saturates at +/-1. Rebuilding them works the
+  // same way as the food grid: step forward incrementally, replay from the
+  // start when seeking backwards.
+
+  const BRAIN = DATA.brain || null;
+  const bctx = document.getElementById("brain").getContext("2d");
+
+  let bLayout = null;     // node id / input key -> {x, y} in unit space
+  let bWeights = null;    // current weight per edge
+  let bChanges = null;    // beat index -> [[edge, value], ...]
+  let bOffsets = null;    // first beat index of each decision
+  let bBuiltTo = -1;      // beat the weights currently represent
+  let bCell = 0;          // px per unit, set by fitCanvas
+
+  if (BRAIN) {
+    const S2 = BRAIN.static;
+
+    // Rows: input sources, the neurons they feed, everything unlabelled, then
+    // the output neurons. Derived from the recording, not hardcoded, so a
+    // different brain size still lays out sensibly.
+    const byRole = r => S2.neurons.filter(n => n.role === r).map(n => n.id);
+    const rows = [
+      S2.inputs.map(k => "in:" + k),
+      byRole("sensory"),
+      byRole("hidden"),
+      byRole("output"),
+    ].filter(r => r.length);
+
+    bLayout = {};
+    rows.forEach(function (row, ri) {
+      const y = rows.length === 1 ? 0.5 : ri / (rows.length - 1);
+      row.forEach(function (key, ci) {
+        bLayout[key] = { x: (ci + 0.5) / row.length, y: y };
+      });
+    });
+
+    bChanges = new Map();
+    for (const [beat, edge, val] of BRAIN.weight_changes) {
+      if (!bChanges.has(beat)) bChanges.set(beat, []);
+      bChanges.get(beat).push([edge, val]);
+    }
+
+    bOffsets = new Array(BRAIN.beats_per_tick.length);
+    let acc = 0;
+    for (let i = 0; i < BRAIN.beats_per_tick.length; i++) {
+      bOffsets[i] = acc;
+      acc += BRAIN.beats_per_tick[i];
+    }
+  }
+
+  /* World frame t is produced by decision t-1; frame 0 predates any decision. */
+  function decisionOf(t) { return t - 1; }
+
+  /* Last beat of a decision: the committed state the action was taken on. */
+  function lastBeatOf(d) {
+    if (!BRAIN || d < 0 || d >= BRAIN.beats_per_tick.length) return -1;
+    return bOffsets[d] + BRAIN.beats_per_tick[d] - 1;
+  }
+
+  function resetWeights() {
+    bWeights = BRAIN.static.edges.map(e => e.w0);
+    bBuiltTo = -1;
+  }
+
+  function weightsTo(beat) {
+    if (beat === bBuiltTo) return;
+    if (beat < bBuiltTo) resetWeights();
+    for (let b = bBuiltTo + 1; b <= beat; b++) {
+      const list = bChanges.get(b);
+      if (list) for (const [edge, val] of list) bWeights[edge] = val;
+    }
+    bBuiltTo = beat;
+  }
+
+  const ACTION_LABEL = {
+    stay: "STAY", move_north: "N", move_east: "E",
+    move_south: "S", move_west: "W",
+  };
+
+  function nodePos(key, w, h, pad) {
+    const p = bLayout[key];
+    return { x: pad + p.x * (w - 2 * pad), y: pad + p.y * (h - 2 * pad) };
+  }
+
+  function drawBrain(n) {
+    if (!BRAIN) return;
+    const S2 = BRAIN.static;
+    const W2 = bCell.w, H2 = bCell.h;
+    bctx.clearRect(0, 0, W2, H2);
+
+    const d = decisionOf(FRAMES[n].t);
+    const beat = lastBeatOf(d);
+    if (beat >= 0) weightsTo(beat); else resetWeights();
+    const act = beat >= 0 ? BRAIN.activations[beat] : 0;
+    const cand = (d >= 0 && d < BRAIN.candidates_per_tick.length)
+      ? BRAIN.candidates_per_tick[d] : 0;
+
+    const pad = Math.min(W2, H2) * 0.14;
+    const r = Math.max(7, Math.min(W2, H2) * 0.045);
+    const fired = id => (act >> id & 1) === 1;
+
+    // --- edges ---
+    for (let i = 0; i < S2.edges.length; i++) {
+      const e = S2.edges[i];
+      const w = bWeights[i];
+      if (Math.abs(w) < 0.01) continue;              // invisible anyway
+      const a = nodePos(e.src, W2, H2, pad);
+      const b = nodePos(e.tgt, W2, H2, pad);
+      const live = typeof e.src === "number" ? fired(e.src) : false;
+
+      // Opacity carries magnitude and reliability; a firing source brightens
+      // it so signal flow is visible without changing the encoding.
+      const mag = Math.min(1, Math.abs(w));
+      bctx.globalAlpha = (0.06 + 0.5 * mag * e.rel) * (live ? 2.0 : 1);
+      bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
+      bctx.lineWidth = 0.5 + 3 * mag;
+
+      if (e.src === e.tgt) {
+        bctx.beginPath();
+        bctx.arc(a.x, a.y - r * 1.5, r * 0.85, 0, 6.2832);
+        bctx.stroke();
+      } else {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const sx = a.x + ux * r, sy = a.y + uy * r;
+        const ex = b.x - ux * r, ey = b.y - uy * r;
+        // Curve every edge the same way round so opposing pairs stay distinct.
+        const cx = (sx + ex) / 2 - (ey - sy) * 0.18;
+        const cy = (sy + ey) / 2 + (ex - sx) * 0.18;
+        bctx.beginPath();
+        bctx.moveTo(sx, sy);
+        bctx.quadraticCurveTo(cx, cy, ex, ey);
+        bctx.stroke();
+        arrowHead(ex, ey, ex - cx, ey - cy, 3 + 3 * mag);
+      }
+    }
+    bctx.globalAlpha = 1;
+
+    // --- input sources ---
+    bctx.font = "600 9px Consolas, monospace";
+    bctx.textAlign = "center";
+    bctx.textBaseline = "middle";
+    for (const key of S2.inputs) {
+      const p = nodePos("in:" + key, W2, H2, pad);
+      const on = (FRAMES[n].sense || {})[key] > 0;
+      bctx.fillStyle = on ? C.sensor : C.panelEdge;
+      roundRect(p.x - r * 0.95, p.y - r * 0.6, r * 1.9, r * 1.2, 3);
+      bctx.fill();
+      bctx.fillStyle = on ? "#12160f" : C.dim;
+      bctx.fillText(shortSensor(key), p.x, p.y);
+    }
+
+    // --- neurons ---
+    for (const neu of S2.neurons) {
+      const p = nodePos(neu.id, W2, H2, pad);
+      const on = fired(neu.id);
+      const isCand = (cand >> neu.id & 1) === 1;
+
+      if (isCand) {                                  // candidate for the decision
+        bctx.strokeStyle = C.sensor;
+        bctx.globalAlpha = 0.9;
+        bctx.lineWidth = 1.5;
+        bctx.setLineDash([3, 3]);
+        bctx.beginPath(); bctx.arc(p.x, p.y, r * 1.45, 0, 6.2832); bctx.stroke();
+        bctx.setLineDash([]);
+        bctx.globalAlpha = 1;
+      }
+
+      bctx.beginPath(); bctx.arc(p.x, p.y, r, 0, 6.2832);
+      bctx.fillStyle = on ? C.agent : C.neuronIdle;
+      bctx.fill();
+      bctx.lineWidth = 1.5;
+      bctx.strokeStyle = on ? C.agent : C.neuronEdge;
+      bctx.stroke();
+
+      bctx.fillStyle = on ? "#12160f" : C.text;
+      bctx.font = "600 " + Math.round(r * 0.95) + "px Consolas, monospace";
+      bctx.fillText(String(neu.id), p.x, p.y);
+
+      const action = S2.output_mapping[neu.id];
+      if (action) {
+        bctx.fillStyle = C.dim;
+        bctx.font = "600 9px Consolas, monospace";
+        bctx.fillText(ACTION_LABEL[action] || action, p.x, p.y + r * 1.9);
+      }
+    }
+  }
+
+  function shortSensor(key) {
+    return { on_food: "\u25cf", food_north: "N", food_east: "E",
+             food_south: "S", food_west: "W" }[key] || key.slice(0, 3);
+  }
+
+  function arrowHead(x, y, dx, dy, size) {
+    const a = Math.atan2(dy, dx);
+    bctx.beginPath();
+    bctx.moveTo(x, y);
+    bctx.lineTo(x - size * Math.cos(a - 0.5), y - size * Math.sin(a - 0.5));
+    bctx.lineTo(x - size * Math.cos(a + 0.5), y - size * Math.sin(a + 0.5));
+    bctx.closePath();
+    bctx.fillStyle = bctx.strokeStyle;
+    bctx.fill();
+  }
+
+  function roundRect(x, y, w, h, rad) {
+    bctx.beginPath();
+    bctx.moveTo(x + rad, y);
+    bctx.arcTo(x + w, y, x + w, y + h, rad);
+    bctx.arcTo(x + w, y + h, x, y + h, rad);
+    bctx.arcTo(x, y + h, x, y, rad);
+    bctx.arcTo(x, y, x + w, y, rad);
+    bctx.closePath();
+  }
+
   // ---------------------------------------------------------------
   // Status panel
   // ---------------------------------------------------------------
@@ -344,6 +585,7 @@
     cur = Math.max(0, Math.min(N - 1, n));
     buildTo(cur);
     draw(cur);
+    drawBrain(cur);
     updateStatus(cur);
     seek.value = cur;
   }
@@ -414,7 +656,7 @@
     else if (e.key === "End") { setPlaying(false); show(N - 1); }
   });
 
-  window.addEventListener("resize", function () { fitCanvas(); draw(cur); });
+  window.addEventListener("resize", function () { fitCanvas(); draw(cur); drawBrain(cur); });
 
   resetGrid();
   fitCanvas();

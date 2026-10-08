@@ -69,17 +69,46 @@ h1 .accent { color: var(--gold); }
 
 #stage {
   flex: 1;
+  min-height: 320px;
+  display: flex;
+  gap: 10px;
+}
+
+/* Each panel is an equal share of the row, and shrinks to a stacked column
+   when there is not enough width for two readable canvases side by side. */
+.panel {
+  flex: 1 1 0;
+  min-width: 0;
   min-height: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--edge);
   border-radius: 6px;
-  padding: 10px;
+  padding: 24px 10px 10px;
 }
 
-#world { display: block; }
+.panel h2 {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  pointer-events: none;
+}
+
+#world, #brain { display: block; }
+
+@media (max-width: 860px) {
+  #stage { flex-direction: column; }
+}
 
 /* ---------- transport ---------- */
 

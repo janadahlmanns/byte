@@ -18,7 +18,14 @@
   </header>
 
   <div id="stage">
-    <canvas id="world"></canvas>
+    <section class="panel">
+      <h2>World</h2>
+      <canvas id="world"></canvas>
+    </section>
+    <section class="panel">
+      <h2>Brain</h2>
+      <canvas id="brain"></canvas>
+    </section>
   </div>
 
   <div id="transport">
