@@ -257,14 +257,19 @@ def summarize_file(hdf5_path) -> str:
             n_runs = len(f["elite_genomes/run_seeds"])
             lifespans = f["elite_genomes/lifespans"][:] if "elite_genomes/lifespans" in f else None
 
-            lines.append(f"  {'genome':>7} {'runs':>5}   lifetimes")
-            lines.append("  " + "-" * 52)
+            # Columns are labelled by run index, so the header reads the same way
+            # the --run argument is given.
+            header = f"  {'genome':>7}  " + " ".join(f"{'run ' + str(r):>7}" for r in range(n_runs))
+            lines.append(header)
+            lines.append("  " + "-" * (len(header) - 2))
             for i, gid in enumerate(ids):
                 if lifespans is not None and i < len(lifespans):
-                    vals = " ".join(f"{int(v):>5}" for v in np.atleast_1d(lifespans[i]))
+                    vals = " ".join(f"{int(v):>7}" for v in np.atleast_1d(lifespans[i]))
                 else:
-                    vals = "(not recorded)"
-                lines.append(f"  {gid:>7} {n_runs:>5}   {vals}")
+                    vals = "(lifetimes not recorded)"
+                lines.append(f"  {gid:>7}  {vals}")
+            lines.append("")
+            lines.append("  numbers are lifetimes in ticks")
         else:
             ids = sorted(int(k.split("_")[1]) for k in f if k.startswith("variant_"))
             lines.append(f"  {'genome':>7} {'run':>4} {'lifetime':>9} {'eats':>6} {'distance':>9}")
