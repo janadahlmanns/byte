@@ -14,6 +14,7 @@
   const H = S.grid_height;
   const N = FRAMES.length;
   const TRAIL_LEN = 60;
+  const EAT_FLASH = 6;      // ticks a meal stays visible for
 
   const css = getComputedStyle(document.documentElement);
   const C = {
@@ -62,10 +63,8 @@
   // ---------------------------------------------------------------
 
   const events = [];
-  let prevEats = 0;
   FRAMES.forEach(function (f, i) {
-    if (f.eats > prevEats) events.push({ i: i, kind: "ate" });
-    prevEats = f.eats;
+    if (f.ate !== null && f.ate !== undefined) events.push({ i: i, kind: "ate" });
     // A whole-grid reseed at a phase boundary changes far more cells than
     // ordinary eating or regrowth ever does.
     if (f.food_added.length + f.food_removed.length > 30) {
@@ -168,6 +167,23 @@
       ctx.beginPath();
       ctx.arc((FRAMES[i].x + 0.5) * cell, (FRAMES[i].y + 0.5) * cell, r, 0, 6.2832);
       ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // recent meals. A camping agent regrows and eats the same cell within one
+    // tick, so the food grid never changes and the only sign of eating is this.
+    for (let i = Math.max(0, n - EAT_FLASH); i <= n; i++) {
+      const cellIdx = FRAMES[i].ate;
+      if (cellIdx === null || cellIdx === undefined) continue;
+      const age = 1 - (n - i) / EAT_FLASH;          // 1 = this tick
+      const ex = (cellIdx % W) * cell, ey = ((cellIdx / W) | 0) * cell;
+      ctx.globalAlpha = 0.15 + 0.75 * age;
+      ctx.strokeStyle = C.food;
+      ctx.lineWidth = Math.max(1, cell * 0.14);
+      const grow = cell * (0.5 + 0.5 * (1 - age));
+      ctx.beginPath();
+      ctx.arc(ex + cell / 2, ey + cell / 2, grow, 0, 6.2832);
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
@@ -274,8 +290,9 @@
 
     document.getElementById("energy-text").textContent =
       "ENERGY " + f.energy + "/" + S.energy_capacity;
+    const meal = (f.ate !== null && f.ate !== undefined) ? "  ATE" : "";
     document.getElementById("counters").textContent =
-      "eats " + f.eats + "   dist " + f.distance + "   pos " + f.y + "," + f.x;
+      "eats " + f.eats + "   dist " + f.distance + "   pos " + f.y + "," + f.x + meal;
 
     const state = document.getElementById("alive-state");
     state.textContent = f.alive ? "ALIVE" : "DEAD";

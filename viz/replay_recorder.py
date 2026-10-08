@@ -53,6 +53,7 @@ class WorldFrameRecorder:
         self.initial_food = None   # full grid at tick 0; deltas are relative to it
         self.frames = []
         self._prev_food = None
+        self._prev_eats = 0
         self._started = False
 
     # --- lifecycle ------------------------------------------------
@@ -66,6 +67,7 @@ class WorldFrameRecorder:
         """
         self.initial_food = (self.world.food > 0).astype(np.uint8).copy()
         self._prev_food = self.initial_food.copy()
+        self._prev_eats = int(self.worm.eats)
         self._started = True
         self._append_frame(food_added=[], food_removed=[])
 
@@ -98,6 +100,20 @@ class WorldFrameRecorder:
         worm = self.worm
         sense = getattr(worm, "sensory_information", {}) or {}
 
+        # Which cell was eaten, as a flat index, or None.
+        #
+        # This cannot be derived from the food deltas above. Within one tick the
+        # order is world.step() (regrow) -> step_day() (eat) -> wait_frame()
+        # (snapshot), so with a short regrow_time a cell regrows and is eaten
+        # again between two snapshots and the grid looks unchanged. A camping
+        # agent can take hundreds of meals without producing a single delta.
+        #
+        # Only do_stay/do_eat consume food, and both act on the worm's current
+        # cell, which is still its position when this runs.
+        ate = worm.eats > self._prev_eats
+        self._prev_eats = worm.eats
+        eaten = int(worm.y) * self.static["grid_width"] + int(worm.x) if ate else None
+
         self.frames.append({
             "t": int(worm.ticks),
             "y": int(worm.y),
@@ -110,6 +126,7 @@ class WorldFrameRecorder:
             # Decided during this tick, executed on the next one. Movement that
             # already happened is derivable from consecutive y/x.
             "next_action": _action_label(worm.action),
+            "ate": eaten,
             "food_added": food_added,
             "food_removed": food_removed,
         })

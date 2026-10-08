@@ -262,6 +262,14 @@ select {
 
 .compass div.absent { opacity: 0.25; }
 
+/* Fixed width: this text changes every tick (counters tick over, ATE appears
+   and goes). Left to size itself it would resize the flex:1 energy bar beside
+   it on every change, making the bar jump. */
+#counters {
+  flex: 0 0 250px;
+  white-space: nowrap;
+}
+
 .c-n { grid-area: 1 / 2; }
 .c-w { grid-area: 2 / 1; }
 .c-c { grid-area: 2 / 2; }
