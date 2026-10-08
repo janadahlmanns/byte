@@ -282,3 +282,21 @@ def summarize_file(hdf5_path) -> str:
 
     return "\n".join(lines)
 
+
+
+def available_options(hdf5_path):
+    """Return (genome_ids, n_runs) for a result file.
+
+    Cheaper than load_run_source and needs no ids up front, so it can be used
+    to validate a choice before committing to loading it.
+    """
+    with h5py.File(str(hdf5_path), "r") as f:
+        layout = detect_layout(f)
+        if layout == "elite":
+            ids = sorted(int(k.split("_")[1]) for k in f["elite_genomes"]
+                         if k.startswith("elite_"))
+            n_runs = len(f["elite_genomes/run_seeds"])
+        else:
+            ids = sorted(int(k.split("_")[1]) for k in f if k.startswith("variant_"))
+            n_runs = len(f["run_seeds"])
+    return ids, n_runs

@@ -27,7 +27,13 @@ from mvb.feeding import seed_food
 from mvb.simulation_API import simulate_run
 from mvb.simulation_helper_functions import load_brain_module
 from viz.replay_recorder import WorldFrameRecorder
-from viz.run_source import RunSource, load_run_source, resolve_h5_path, summarize_file
+from viz.run_source import (
+    RunSource,
+    available_options,
+    load_run_source,
+    resolve_h5_path,
+    summarize_file,
+)
 from viz.verify import verify, format_report
 
 
@@ -145,6 +151,58 @@ def build_page(payload: dict, title: str, meta: str) -> str:
 
 
 # ============================================================
+# Interactive selection
+# ============================================================
+
+def ask_int(label, valid):
+    """Prompt until the answer is one of `valid`, or None if the user quits."""
+    hint = f"{valid[0]}-{valid[-1]}" if len(valid) > 1 else str(valid[0])
+    while True:
+        try:
+            raw = input(f"  {label} [{hint}] (q to quit): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+
+        if raw.lower() in ("q", "quit", "exit"):
+            return None
+        if not raw:
+            print("  Enter a number.")
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"  '{raw}' is not a number.")
+            continue
+        if value not in valid:
+            print(f"  {value} is not available. Choose from {valid}.")
+            continue
+        return value
+
+
+def choose_run(hdf5_path):
+    """Show the file's contents and ask which genome and run to export.
+
+    Returns (genome_id, run_id), or None if the user quit.
+    """
+    genomes, n_runs = available_options(hdf5_path)
+    runs = list(range(n_runs))
+
+    print(summarize_file(hdf5_path))
+    print()
+
+    genome = ask_int("genome", genomes)
+    if genome is None:
+        return None
+    run = ask_int("run", runs)
+    if run is None:
+        return None
+
+    print()
+    return genome, run
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -154,16 +212,18 @@ def parse_arguments(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m viz.export_viewer --file 2026-09-16_01-41-48_test_batch2 --genome 0 --run 1
-  python -m viz.export_viewer --file data/temp/my_run.h5 --genome 2 --run 0 --open
+  python -m viz.export_viewer --file my_run                       pick genome/run interactively
+  python -m viz.export_viewer --file my_run --list                just show what is in the file
+  python -m viz.export_viewer --file my_run --genome 2 --run 0    export directly
         """,
     )
     parser.add_argument("--file", required=True,
                         help="HDF5 result file (path, or bare name to find under data/)")
-    parser.add_argument("--genome", type=int, default=0,
-                        help="Elite id (EA output) or variant id (batch output). Default 0")
-    parser.add_argument("--run", type=int, default=0,
-                        help="Which run of that genome to replay. Default 0")
+    parser.add_argument("--genome", type=int, default=None,
+                        help="Elite id (EA output) or variant id (batch output). "
+                             "Omit to choose interactively")
+    parser.add_argument("--run", type=int, default=None,
+                        help="Which run of that genome to replay. Omit to choose interactively")
     parser.add_argument("--out", default=None,
                         help="Output path. Defaults to <h5-stem>_g<genome>_r<run>.html beside the source")
     parser.add_argument("--max-ticks", type=int, default=None,
@@ -192,8 +252,26 @@ def main(argv=None):
         print(summarize_file(hdf5_path))
         return 0
 
+    # With no genome/run given, show what the file holds and ask. Falls back to
+    # the first run when there is no terminal to ask on, so scripts still work.
+    interactive = args.genome is None or args.run is None
+    genome_id, run_id = args.genome or 0, args.run or 0
+    if interactive:
+        if sys.stdin.isatty():
+            try:
+                choice = choose_run(hdf5_path)
+            except (ValueError, KeyError, OSError) as e:
+                print(e)
+                return 1
+            if choice is None:
+                print("[export] cancelled")
+                return 0
+            genome_id, run_id = choice
+        else:
+            interactive = False
+
     try:
-        source = load_run_source(hdf5_path, args.genome, args.run)
+        source = load_run_source(hdf5_path, genome_id, run_id)
     except (ValueError, KeyError) as e:
         print(e)
         return 1
@@ -259,7 +337,8 @@ def main(argv=None):
 
     print(f"[export] open it: {out_path.resolve()}")
 
-    if args.open:
+    # Choosing interactively implies wanting to look at the result.
+    if args.open or interactive:
         import webbrowser
         webbrowser.open(out_path.resolve().as_uri())
 
