@@ -56,12 +56,13 @@ def base_cfg():
         return yaml.safe_load(f)
 
 
-def tensor_block(device="cpu", dtype="float64", philox_rounds=None):
-    """Evaluator block. Live mode needs philox_rounds (R1.1); pre-drawn mode refuses it.
-    No width key: the width is chosen automatically (R3)."""
+def tensor_block(device="cpu", dtype="float64", philox_rounds=None, compile=False):
+    """Evaluator block. Live mode (philox_rounds given) also needs `compile` (R5);
+    pre-drawn mode refuses both. No width key: the width is automatic (R3)."""
     blk = {"backend": "tensor", "device": device, "dtype": dtype}
     if philox_rounds is not None:
         blk["philox_rounds"] = philox_rounds
+        blk["compile"] = compile
     return blk
 
 
@@ -115,9 +116,17 @@ def diff_h5(a, b, ignore_attr_prefix=("experiment_evaluator", "experiment_output
 # ============================================================
 
 def test_scalar_untouched():
-    print("\n[1] Scalar path untouched: ea_drift vs tests/refs/test_ea_ref.h5")
+    from tests.platform_refs import PLATFORM, missing_message, ref_path
+    ref = ref_path("test_ea_ref.h5")
+    print(f"\n[1] Scalar path untouched: ea_drift vs {ref} ({PLATFORM})")
+    if not (ROOT / ref).exists():
+        # The scalar sim differs across platforms (math.tanh), so another platform's
+        # reference cannot be used -- say exactly how to make this one's.
+        print("      " + missing_message("test_ea_ref.h5"))
+        check(f"scalar reference for {PLATFORM} exists", False)
+        return
     proc = subprocess.run(
-        [sys.executable, "-m", "tests.ea_drift", "--reference", "tests/refs/test_ea_ref.h5"],
+        [sys.executable, "-m", "tests.ea_drift", "--reference", str(ref)],
         text=True, capture_output=True, cwd=ROOT, timeout=1800,
     )
     check("run_ea with no evaluator block is bit-identical to the reference",
@@ -284,8 +293,8 @@ def test_validation(tmp):
         raises("pre-drawn on mps", ValueError,
                lambda: validate_evaluator_cfg({**blk, "device": "mps"}, rc_pre))
         raises("float64 on mps (live)", ValueError,
-               lambda: validate_evaluator_cfg({**blk, "device": "mps", "philox_rounds": 10},
-                                              None))
+               lambda: validate_evaluator_cfg({**blk, "device": "mps", "philox_rounds": 10,
+                                               "compile": False}, None))
 
     # philox_rounds (R1.1): required in live mode, 7..10 only, refused in pre-drawn mode.
     live = tensor_block(dtype="float32", philox_rounds=10)
@@ -297,6 +306,14 @@ def test_validation(tmp):
                lambda bad=bad: validate_evaluator_cfg({**live, "philox_rounds": bad}, None))
     raises("philox_rounds in pre-drawn mode", KeyError,
            lambda: validate_evaluator_cfg({**blk, "philox_rounds": 10}, rc_pre))
+    # compile (R5): required in live mode, true/false only, refused in pre-drawn mode.
+    raises("live mode without compile", KeyError,
+           lambda: validate_evaluator_cfg({k: v for k, v in live.items()
+                                           if k != "compile"}, None))
+    raises("compile = 'yes'", ValueError,
+           lambda: validate_evaluator_cfg({**live, "compile": "yes"}, None))
+    raises("compile in pre-drawn mode", KeyError,
+           lambda: validate_evaluator_cfg({**blk, "compile": False}, rc_pre))
     check("live mode accepts philox_rounds 7 and 10",
           validate_evaluator_cfg({**live, "philox_rounds": 7}, None)[2] == 7
           and validate_evaluator_cfg(live, None)[2] == 10)

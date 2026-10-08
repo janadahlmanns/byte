@@ -103,20 +103,20 @@ def test_storage(tmp):
 # 2. End-to-end replay, live mode
 # ============================================================
 
-def make_ea(tmp, device, tag, rounds=10):
+def make_ea(tmp, device, tag, rounds=10, compile=False):
     cfg = load("test_ea")
     x = cfg["experiment"]
     x["output_folder"] = str(Path(tmp) / tag) + "/"
     x["population_size"] = 40
     x["evolutionary_algorithm"]["num_generations"] = 3
     x["evaluator"] = {"backend": "tensor", "device": device, "dtype": "float32",
-                      "philox_rounds": rounds}
+                      "philox_rounds": rounds, "compile": compile}
     rc, out = run_module("simulate.run_ea", cfg, tmp, f"ea_{tag}")
     files = glob.glob(str(Path(tmp) / tag / "*.h5"))
     return (files[0] if rc == 0 and len(files) == 1 else None), out
 
 
-def replay(src, device, genome_ids, runs, tmp, tag, rounds=10):
+def replay(src, device, genome_ids, runs, tmp, tag, rounds=10, compile=False):
     """run_batch replay mode on `src`; returns ({elite_id: lifespans}, output, returncode)."""
     cfg = load("genome_from_file")
     x = cfg["experiment"]
@@ -125,7 +125,7 @@ def replay(src, device, genome_ids, runs, tmp, tag, rounds=10):
     x["from_file_source"].update(file_folder=str(Path(src).parent), filename=Path(src).stem,
                                  genome_ID=list(genome_ids), runs_to_load=runs)
     x["evaluator"] = {"backend": "tensor", "device": device, "dtype": "float32",
-                      "philox_rounds": rounds}
+                      "philox_rounds": rounds, "compile": compile}
     before = set(glob.glob(str(Path(src).parent / "*.h5")))
     rc, out = run_module("simulate.run_batch", cfg, tmp, tag)
     new = [p for p in glob.glob(str(Path(src).parent / "*.h5")) if p not in before]
@@ -203,6 +203,41 @@ def test_rounds(tmp):
           rcl != 0 and "does not record" in outl)
 
 
+def test_compile_replay(tmp):
+    print("\n[5] compile (R5): a compiled run replays exactly; the setting is enforced")
+    dev = (accelerators() or ["cpu"])[0]
+    src, out = make_ea(tmp, dev, f"ea_compiled_{dev}", compile=True)
+    if not check(f"[{dev}] compiled live EA produced a file", src is not None):
+        print(out[-2000:])
+        return
+    with h5py.File(src, "r") as f:
+        stored = f["elite_genomes/lifespans"][:].astype(np.int64)
+        attr = f.attrs.get("experiment_evaluator_compile", None)
+    check(f"[{dev}] the EA printed compile=on and the file records compile = {attr}",
+          "compile=on" in out and attr is not None and bool(attr))
+    n_el, R = stored.shape
+    got, _, _ = replay(src, dev, range(n_el), "all", tmp, f"rep_comp_all_{dev}", compile=True)
+    bad = sum(int((got[e] != stored[e]).sum()) for e in range(n_el)) if got else -1
+    check(f"[{dev}] replayed compiled: all {n_el} x {R} runs identical ({bad} differ)",
+          bad == 0)
+    one, _, _ = replay(src, dev, [n_el - 1], [R - 1], tmp, f"rep_comp_one_{dev}", compile=True)
+    check(f"[{dev}] one run replayed alone, compiled: identical",
+          bool(one) and int(one[n_el - 1][0]) == int(stored[n_el - 1, R - 1]))
+    _, out_e, rc_e = replay(src, dev, [0], [0], tmp, f"rep_comp_as_eager_{dev}", compile=False)
+    check("replaying a compiled file with compile: false is refused, naming the setting",
+          rc_e != 0 and "compile=True" in out_e)
+    # A CUDA live file from before the compile key used the batch-dependent einsum.
+    legacy = Path(tmp) / "legacy_cuda" / "old_cuda.h5"
+    legacy.parent.mkdir()
+    shutil.copy(src, legacy)
+    with h5py.File(legacy, "a") as f:
+        del f.attrs["experiment_evaluator_compile"]
+        f.attrs["experiment_evaluator_device"] = "cuda"
+    _, out_l, rc_l = replay(str(legacy), "cpu", [0], [0], tmp, "rep_legacy_cuda")
+    check("a CUDA live file from before the compile key is refused (old einsum)",
+          rc_l != 0 and "before the compile key" in out_l)
+
+
 def report_cross_device(src_gpu, tmp, dev):
     print(f"\n[3] Cross-device replay (reported, not asserted): {dev} file replayed on CPU")
     with h5py.File(src_gpu, "r") as f:
@@ -223,6 +258,7 @@ def main():
         test_storage(tmp)
         srcs = {d: test_replay(tmp, d) for d in devices}
         test_rounds(tmp)
+        test_compile_replay(tmp)
         for dev in accelerators():
             if srcs.get(dev):
                 report_cross_device(srcs[dev], tmp, dev)

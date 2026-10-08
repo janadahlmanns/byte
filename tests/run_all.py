@@ -26,6 +26,7 @@ SUITES = [
     ("tests.test_philox", False),
     ("tests.test_generation", True),
     ("tests.test_scheduling", False),
+    ("tests.test_compile", False),
     ("tests.test_replay", False),
     ("tests.test_io_tensor", True),
     ("tests.test_ea_tensor", True),

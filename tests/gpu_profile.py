@@ -7,8 +7,10 @@ next decisions need, on whichever GPU is present (CUDA preferred, else MPS):
   [1] environment: GPU, versions, memory, the pinned numeric settings
   [2] per-phase time of one generation iteration at three widths, with the production
       brain and world (ea_from_lookup), and peak memory per slot at each width
-  [3] torch.compile probe for R5: Philox and the brain tick, eager vs compiled --
-      speed, bit-identity, and whether a width change triggers a recompile
+      -- eager and with compile on (R5), with the production contraction
+  [3] torch.compile probe for R5: Philox and the decision step exactly as the evaluator
+      compiles them, eager vs compiled -- speed, bit-identity, compile time, and
+      whether a width change triggers a recompile
   [4] deterministic-algorithms probe: does any operation we use refuse
       torch.use_deterministic_algorithms(True)?
 
@@ -35,7 +37,7 @@ import mvb_torch.generation as G  # noqa: E402
 from mvb.genome.generate_genome_lookup_hard import generate_lookup_hard_genome  # noqa: E402
 from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simple  # noqa: E402
 from mvb_torch import philox  # noqa: E402
-from mvb_torch.brain import BrainTensorState, brain_tick  # noqa: E402
+from mvb_torch.brain import BrainTensorState  # noqa: E402
 from mvb_torch.decision import build_output_spec, decide_batch  # noqa: E402
 from mvb_torch.genome_codec import encode_genomes  # noqa: E402
 from mvb_torch.world import active_key_mask, sense_batch  # noqa: E402
@@ -77,8 +79,9 @@ def env(dev):
     print(f"  device memory used for the width rule: {G.device_memory(dev) / 2**30:.1f} GB")
 
 
-def phase_profile(dev, cfg, batch, width, n_iter=20, warm=5):
-    """The real loop body, synchronized between phases. Returns (ms per phase, KB/slot)."""
+def phase_profile(dev, cfg, batch, width, compile, n_iter=20, warm=5):
+    """The real loop body, synchronized between phases. Returns (ms per phase, KB/slot).
+    The warm-up iterations absorb compilation when `compile` is on."""
     c = dict(cfg)
     c["experiment"] = dict(cfg["experiment"], n_runs=300)
     sim = G.sim_config_from_yaml(c)
@@ -88,7 +91,7 @@ def phase_profile(dev, cfg, batch, width, n_iter=20, warm=5):
     base = allocator_bytes(dev)
     reset_peak(dev)
     state, ctx, source = G.setup_generation(batch, sim, seeds, width=width, mode="live",
-                                            philox_rounds=10)
+                                            philox_rounds=10, compile=compile)
     R, Q, i64 = 300, P * 300, torch.int64
     K = int(batch.max_ticks.max().item())
     key_mask = torch.tensor(active_key_mask(batch.sensor_keys, sim.active_sensors),
@@ -133,7 +136,8 @@ def phase_profile(dev, cfg, batch, width, n_iter=20, warm=5):
         du = source.decision(w.ticks, state.slot_genome, state.run_idx)
         t = lap("random numbers", t)
         new_brain, dec = decide_batch(sb, state.brain, spec, sens, nz, du,
-                                      contraction="einsum", n_brain_ticks=K)
+                                      contraction=G.live_contraction(dev), n_brain_ticks=K,
+                                      compile=compile)
         t = lap("decide (brain)", t)
         state.brain = BrainTensorState(
             act=torch.where(active.unsqueeze(-1), new_brain.act, state.brain.act),
@@ -159,7 +163,7 @@ def phase_profile(dev, cfg, batch, width, n_iter=20, warm=5):
 
 
 def compile_probe(dev, batch):
-    print("\n[3] torch.compile probe (R5): eager vs compiled")
+    print("\n[3] torch.compile probe (R5): the evaluator's compiled functions vs eager")
     B = 7800
 
     def bench(fn, *a, reps=20):
@@ -172,55 +176,73 @@ def compile_probe(dev, batch):
         sync(dev)
         return 1000 * (time.perf_counter() - t0) / reps, r
 
+    def first_call(fn, *a):
+        t0 = time.perf_counter()
+        r = fn(*a)
+        sync(dev)
+        return time.perf_counter() - t0, r
+
+    K = int(batch.max_ticks.max().item())
     seed = torch.randint(0, 2**32, (B, 1), dtype=torch.int64, device=dev)
     tick = torch.randint(0, 300, (B, 1), device=dev)
-
-    def normals(s, t):
-        return philox.standard_normals(s, t, 22, 11, DT, rounds=10)
     try:
-        t0 = time.perf_counter()
-        cn = torch.compile(normals, dynamic=True)
-        cn(seed, tick)
-        sync(dev)
-        ct = time.perf_counter() - t0
-        te, ze = bench(normals, seed, tick)
+        cn = philox.compiled_normals(K, 11, DT, 10)
+        cu = philox.compiled_uniforms(DT, 10)
+        ct, _ = first_call(cn, seed, tick)
+        te, ze = bench(lambda s, t: philox.standard_normals(s, t, K, 11, DT, rounds=10),
+                       seed, tick)
         tc, zc = bench(cn, seed, tick)
+        ue = philox.decision_uniforms(seed, tick, DT, rounds=10)
+        uc = cu(seed, tick)
+        d = (ze - zc).abs().max().item()
         print(f"  Philox normals, width {B}: eager {te:.2f} ms, compiled {tc:.2f} ms "
-              f"({te / tc:.1f}x); bit-identical: {torch.equal(ze, zc)}; compile {ct:.1f} s")
-        s2 = torch.randint(0, 2**32, (3000, 1), dtype=torch.int64, device=dev)
-        t2 = torch.randint(0, 300, (3000, 1), device=dev)
-        t0 = time.perf_counter()
-        cn(s2, t2)
-        sync(dev)
-        print(f"  Philox at another width (3000): first call {1000 * (time.perf_counter() - t0):.0f} ms "
+              f"({te / tc:.1f}x); normals bit-identical: {d == 0} (max |diff| {d:.1e}); "
+              f"uniforms bit-identical: {torch.equal(ue, uc)}; first call {ct:.1f} s "
+              f"(~0 = already compiled during [2])")
+        s2, t2 = seed[:3000], tick[:3000]
+        cn(s2, t2)                                   # 2nd shape: marks the width dynamic
+        t3, _ = first_call(cn, seed[:5000], tick[:5000])
+        print(f"  Philox at a third width (5000): first call {1000 * t3:.0f} ms "
               f"(a few ms = no recompile)")
     except Exception as e:  # noqa: BLE001 -- a diagnostic: report and continue
         print(f"  Philox compile FAILED: {type(e).__name__}: {str(e)[:300]}")
 
-    g = (torch.arange(B, device=dev) % P).view(B, 1)
-    sb = G.slot_view(batch, g)
-    st = BrainTensorState(act=(torch.rand(B, 1, 11, device=dev) < 0.5).to(DT),
-                          Wabs=sb.Wabs0.clone())
-    sens = (torch.rand(B, 1, len(batch.sensor_keys), device=dev) < 0.3).to(DT)
-    nz = torch.randn(B, 1, 11, device=dev) * 0.05
+    spec = build_output_spec(yaml.safe_load(open(os.path.join(
+        ROOT, "configs/experiments/ea_from_lookup.yaml")))["brain"])
+    contraction = G.live_contraction(dev)
 
-    def tick_fn(a, W, s, n):
-        s2, snap = brain_tick(sb, BrainTensorState(act=a, Wabs=W), s, n, contraction="einsum")
-        return s2.act, s2.Wabs, snap
+    def inputs(width):
+        g = (torch.arange(width, device=dev) % P).view(width, 1)
+        sb = G.slot_view(batch, g)
+        st = BrainTensorState(act=(torch.rand(width, 1, 11, device=dev) < 0.5).to(DT),
+                              Wabs=sb.Wabs0.clone())
+        sens = (torch.rand(width, 1, len(batch.sensor_keys), device=dev) < 0.3).to(DT)
+        nz = torch.randn(K, width, 1, 11, device=dev) * 0.05
+        u = torch.rand(width, 1, device=dev)
+        return sb, st, sens, nz, u
+
+    def decide(compile, sb, st, sens, nz, u):
+        s2, d = decide_batch(sb, st, spec, sens, nz, u, contraction=contraction,
+                             n_brain_ticks=K, compile=compile)
+        return s2.act, s2.Wabs, d.action
     try:
-        t0 = time.perf_counter()
-        ct_fn = torch.compile(tick_fn, dynamic=True)
-        ct_fn(st.act, st.Wabs, sens, nz)
-        sync(dev)
-        ct = time.perf_counter() - t0
-        te, oe = bench(tick_fn, st.act, st.Wabs, sens, nz)
-        tc, oc = bench(ct_fn, st.act, st.Wabs, sens, nz)
+        args = inputs(B)
+        ct, _ = first_call(decide, True, *args)
+        te, oe = bench(decide, False, *args, reps=5)
+        tc, oc = bench(decide, True, *args, reps=5)
         same = all(torch.equal(x, y) for x, y in zip(oe, oc))
         d = (oe[1] - oc[1]).abs().max().item()
-        print(f"  brain tick, width {B}: eager {te:.2f} ms, compiled {tc:.2f} ms "
-              f"({te / tc:.1f}x); bit-identical: {same} (max |dW| {d:.1e}); compile {ct:.1f} s")
+        n_act = int((oe[2] != oc[2]).sum())
+        print(f"  decide ({contraction}, {K} brain ticks), width {B}: eager {te:.1f} ms, "
+              f"compiled {tc:.1f} ms ({te / tc:.1f}x); bit-identical: {same} "
+              f"(max |dW| {d:.1e}, {n_act} actions differ); first call {ct:.1f} s "
+              f"(~0 = already compiled during [2])")
+        decide(True, *inputs(3000))                  # 2nd shape: marks the width dynamic
+        t3, _ = first_call(decide, True, *inputs(5000))
+        print(f"  decide at a third width (5000): first call {1000 * t3:.0f} ms "
+              f"(well under the first call above = no recompile)")
     except Exception as e:  # noqa: BLE001
-        print(f"  brain-tick compile FAILED: {type(e).__name__}: {str(e)[:300]}")
+        print(f"  decide compile FAILED: {type(e).__name__}: {str(e)[:300]}")
 
 
 def deterministic_probe(dev, cfg, batch):
@@ -233,7 +255,7 @@ def deterministic_probe(dev, cfg, batch):
     try:
         G.eval_generation_batch(batch, build_output_spec(cfg["brain"]), sim, seeds,
                                 width=P * 20, mode="live", philox_rounds=10,
-                                contraction="einsum")
+                                contraction=G.live_contraction(dev))
         print("  a whole generation runs under torch.use_deterministic_algorithms(True): "
               "no operation lacks a deterministic implementation")
     except Exception as e:  # noqa: BLE001
@@ -258,12 +280,19 @@ def main():
     cfg, genomes, batch = production_setup(dev)
     print("\n[2] One iteration by phase (ms, synchronized between phases), production "
           "brain and world, 260 gen-1-like genomes")
+    print(f"  contraction: {G.live_contraction(dev)}")
     for width in (7_800, 26_000, 78_000):
-        ms, kb = phase_profile(dev, cfg, batch, width)
-        total = sum(ms.values())
-        print(f"  width {width:6d}: total {total:7.1f} ms | "
-              + " | ".join(f"{k} {v:.1f}" for k, v in ms.items())
-              + f" | peak memory {kb:.1f} KB/slot")
+        for compile in (False, True):
+            try:
+                ms, kb = phase_profile(dev, cfg, batch, width, compile)
+            except RuntimeError as e:
+                print(f"  width {width:6d} compile={compile}: FAILED {str(e)[:300]}")
+                continue
+            total = sum(ms.values())
+            print(f"  width {width:6d} {'compiled' if compile else 'eager   '}: "
+                  f"total {total:7.1f} ms | "
+                  + " | ".join(f"{k} {v:.1f}" for k, v in ms.items())
+                  + f" | peak memory {kb:.1f} KB/slot")
     compile_probe(dev, batch)
     deterministic_probe(dev, cfg, batch)
     print("\nDone. Please send this whole output.")

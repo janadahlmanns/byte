@@ -60,12 +60,13 @@ def load(path):
         return yaml.safe_load(f)
 
 
-def tensor_block(device="cpu", dtype="float64", philox_rounds=None):
-    """Evaluator block. Live mode needs philox_rounds (R1.1); pre-drawn mode refuses it.
-    No width key: the width is chosen automatically (R3)."""
+def tensor_block(device="cpu", dtype="float64", philox_rounds=None, compile=False):
+    """Evaluator block. Live mode (philox_rounds given) also needs `compile` (R5);
+    pre-drawn mode refuses both. No width key: the width is automatic (R3)."""
     blk = {"backend": "tensor", "device": device, "dtype": dtype}
     if philox_rounds is not None:
         blk["philox_rounds"] = philox_rounds
+        blk["compile"] = compile
     return blk
 
 
@@ -331,10 +332,16 @@ def test_schedule_invariance():
 # ============================================================
 
 def test_scalar_untouched():
-    print("\n[T5] run_batch without an evaluator block is unchanged")
+    from tests.platform_refs import PLATFORM, missing_message, ref_path
+    ref = ref_path("test_behaviour_ref.h5")
+    print(f"\n[T5] run_batch without an evaluator block is unchanged ({ref}, {PLATFORM})")
+    if not (ROOT / ref).exists():
+        print("      " + missing_message("test_behaviour_ref.h5"))
+        check(f"scalar behaviour reference for {PLATFORM} exists", False)
+        return
     proc = subprocess.run(
         [sys.executable, "-m", "tests.ea_drift", "--reference",
-         "tests/refs/test_behaviour_ref.h5", "--runner", "simulate.run_batch",
+         str(ref), "--runner", "simulate.run_batch",
          "--config", "test_behaviour", "--sim-name", "test_behaviour",
          "--mode", "behaviour"],
         text=True, capture_output=True, cwd=ROOT, timeout=1800,

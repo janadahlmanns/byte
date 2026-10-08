@@ -25,7 +25,8 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mvb_torch.decision import build_output_spec  # noqa: E402
-from mvb_torch.generation import eval_generation_batch, sim_config_from_yaml  # noqa: E402
+from mvb_torch.generation import (eval_generation_batch, live_contraction,  # noqa: E402
+                                  sim_config_from_yaml)
 from mvb_torch.genome_codec import encode_genomes  # noqa: E402
 from tests.devices import all_devices  # noqa: E402
 from tests.test_generation import MAX_BRAIN_TICKS, genome_pool, load_cfg, seeds_for  # noqa: E402
@@ -48,7 +49,8 @@ def run(cfg, genomes, seeds, *, S, mode="predrawn", device="cpu", dtype=torch.fl
         width=min(len(genomes) * S, len(genomes) * cfg["experiment"]["n_runs"]),
         mode=mode, max_brain_ticks=MAX_BRAIN_TICKS,
         philox_rounds=10 if mode == "live" else None,
-        contraction="sequential" if mode == "predrawn" else "einsum", _state_hook=hook,
+        contraction="sequential" if mode == "predrawn" else live_contraction(device),
+        _state_hook=hook,
         tracker=tracker,
         **({} if compact_below is None else {"compact_below": compact_below}),
     )
@@ -224,7 +226,8 @@ def hook(it, state, refill):   # MPS has no peak counter: sample every iteration
     peak[0] = max(peak[0], allocator_bytes(dev))
 G.eval_generation_batch(b, build_output_spec(cfg["brain"]), G.sim_config_from_yaml(cfg),
                         seeds_for(cfg, len(gs)), width=W, mode="live", philox_rounds=10,
-                        contraction="einsum", compact_below=0.0, _state_hook=hook)
+                        contraction=G.live_contraction(dev), compact_below=0.0,
+                        _state_hook=hook)
 sync(dev)
 print(max(peak[0], peak_allocator_bytes(dev)) - base)
 """
@@ -246,6 +249,10 @@ def test_width():
           and w_cap == exp_cap and why_cap.startswith("memory cap"))
     check("the width is deterministic for a given machine (same inputs, same width)",
           G.choose_width(260, 300, slot, "cpu", total_memory=8 * GB)[0] == w_cap)
+    w_cuda, _ = G.choose_width(260, 300, slot, "cuda", total_memory=8 * GB)
+    check(f"dedicated GPU memory (CUDA) gets the larger share: {w_cuda} slots from 8 GB "
+          f"vs {w_cap} on shared memory (0.8 vs 0.5)",
+          w_cuda == (int(0.8 * 8 * GB) - G.BASE_BYTES) // slot and w_cuda > w_cap)
     from tests.devices import physical_ram
     expected_total = {"cpu": physical_ram()}
     if torch.backends.mps.is_available():
@@ -286,7 +293,7 @@ def test_width():
         b2 = encode_genomes(gs2, cfg2["brain"], device=dev, dtype=torch.float32)
         eval_generation_batch(b2, build_output_spec(cfg2["brain"]), sim_config_from_yaml(cfg2),
                               seeds_for(cfg2, len(gs2)), width=len(gs2) * 200, mode="live",
-                              philox_rounds=10, contraction="einsum")
+                              philox_rounds=10, contraction=live_contraction(dev))
         sync(dev)
         cached = (allocator_bytes(dev) - live_bytes(dev)) / 2**20
         check(f"[{dev}] after a generation the device cache is released ({cached:.0f} MB "
@@ -309,28 +316,44 @@ def test_batch_independence():
     print("\n[6] A run's arithmetic does not depend on the batch around it (replay)")
     # Single-run replay (R1) needs a run computed alone to give the same bits as inside
     # a batch of 78,000. Elementwise operations are independent by construction; the
-    # two einsums are batched matrix products, where a library may pick a different
-    # algorithm -- and summation order -- by batch size (a known cuBLAS behaviour).
+    # contractions are what can differ: cuBLAS picks its matrix-product algorithm by
+    # batch size (measured on CUDA). So each device must use a contraction that is
+    # independent there -- `live_contraction(device)`.
+    from mvb_torch.brain import BrainTensorState, _accumulate_input, _modulation_sum
+    from mvb_torch import generation as G
+    cfg = load_cfg()
+    gs = genome_pool(cfg["brain"], n_random=20, n_mutant=20)
     gen = torch.Generator().manual_seed(0)
     for dev in all_devices():
-        ok_net = ok_mod = True
+        G.configure_device(dev)
+        b = encode_genomes(gs, cfg["brain"], device=dev, dtype=torch.float32)
+        contraction = live_contraction(dev)
+        ok = True
         for B in (7_800, 78_000):
+            g = (torch.arange(B) % len(gs)).view(B, 1).to(dev)
+            sb = G.slot_view(b, g)
             act = (torch.rand(B, 1, 11, generator=gen) < 0.5).float().to(dev)
-            Wm = (torch.rand(B, 1, 11, 11, generator=gen) * 2 - 1).to(dev)
-            Mod = (torch.rand(B, 11, 11, 11, generator=gen) * 2 - 1).to(dev)
-            full_net = torch.einsum("pri,prij->prj", act, Wm)
-            full_mod = torch.einsum("pkij,prk->prij", Mod, act)
+            st = BrainTensorState(act=act, Wabs=sb.Wabs0 * (0.5 + torch.rand(
+                B, 1, 11, 11, generator=gen).to(dev)))
+            W = (st.Wabs * sb.Wsign) * sb.Rel
+            full_net = _accumulate_input(sb, st, W, None, None, contraction)
+            full_mod = _modulation_sum(sb, st, contraction)
             subsets = [torch.tensor([i], device=dev) for i in (0, 1, 17, B // 2, B - 1)]
-            subsets.append(torch.arange(0, B, 7, device=dev))
-            subsets.append(torch.arange(0, min(B, 1000), device=dev))
+            subsets += [torch.arange(0, B, 7, device=dev), torch.arange(0, 1000, device=dev)]
             for sub in subsets:
-                ok_net &= torch.equal(torch.einsum("pri,prij->prj", act[sub], Wm[sub]),
-                                      full_net[sub])
-                ok_mod &= torch.equal(torch.einsum("pkij,prk->prij", Mod[sub], act[sub]),
-                                      full_mod[sub])
-        check(f"[{dev}] net-input and modulation einsums: rows computed alone / in a "
-              f"subset / in batches of 7,800 and 78,000 are bit-identical",
-              ok_net and ok_mod)
+                sbs = G.slot_view(b, g[sub])
+                sts = BrainTensorState(act=act[sub], Wabs=st.Wabs[sub])
+                Ws = (sts.Wabs * sbs.Wsign) * sbs.Rel
+                ok &= torch.equal(_accumulate_input(sbs, sts, Ws, None, None, contraction),
+                                  full_net[sub])
+                ok &= torch.equal(_modulation_sum(sbs, sts, contraction), full_mod[sub])
+        check(f"[{dev}] live contraction '{contraction}': net input and modulation of rows "
+              f"computed alone / in subsets / in batches of 7,800 and 78,000 are "
+              f"bit-identical", ok)
+    # cuBLAS's einsum is batch-size-dependent (measured on a GTX 1660 Ti), so CUDA must
+    # get `sequential` -- checked here too, so a machine without CUDA still guards it.
+    check("CUDA live mode uses the batch-independent 'sequential' contraction",
+          live_contraction("cuda") == "sequential")
 
 
 def main():

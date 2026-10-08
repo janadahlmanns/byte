@@ -45,7 +45,7 @@ from . import philox
 from . import tracking as trk
 from .decision import build_output_spec
 from .generation import (SeedSet, SimConfig, choose_width, configure_device, draw_seeds,
-                         estimate_slot_bytes, eval_generation_batch)
+                         estimate_slot_bytes, eval_generation_batch, live_contraction)
 from .genome_codec import encode_genomes
 
 # Printed once per generation. tests/test_ea_tensor.py looks for it to prove the tensor
@@ -62,7 +62,7 @@ _REMOVED = {
 }
 # Live mode only: the Philox round count (plan Step 8, R1.1). Required there, refused in
 # pre-drawn mode, where it would have no effect.
-_LIVE_ONLY = ("philox_rounds",)
+_LIVE_ONLY = ("philox_rounds", "compile")
 _DTYPES = {"float32": torch.float32, "float64": torch.float64}
 
 def _predrawn_enabled(randomness_cfg: Optional[Dict[str, Any]]) -> bool:
@@ -82,9 +82,11 @@ def validate_evaluator_cfg(evaluator_cfg: Dict[str, Any],
     if missing:
         raise KeyError(f"[ERROR] experiment.evaluator is missing {missing}")
     if predrawn and any(k in evaluator_cfg for k in _LIVE_ONLY):
+        bad = [k for k in _LIVE_ONLY if k in evaluator_cfg]
         raise KeyError(
-            f"[ERROR] experiment.evaluator.{_LIVE_ONLY[0]} has no effect with "
-            f"predrawn_randomness enabled (pre-drawn bundles are not Philox); remove it."
+            f"[ERROR] experiment.evaluator {bad} have no effect with predrawn_randomness "
+            f"enabled (pre-drawn bundles are not Philox, and the bit-exact reference path "
+            f"is never compiled); remove them."
         )
     extra = [k for k in evaluator_cfg if k not in _REQUIRED + _LIVE_ONLY]
     if extra:
@@ -117,10 +119,14 @@ def validate_evaluator_cfg(evaluator_cfg: Dict[str, Any],
                 "device: cpu and dtype: float64 -- pre-drawn mode is the bit-exact "
                 "reference path (plan 5.4, reproducibility.md 3)."
             )
-        rounds = None
+        rounds, compile_ = None, False
     else:
         rounds = philox.check_rounds(evaluator_cfg["philox_rounds"])
-    return device, _DTYPES[dtype_name], rounds
+        compile_ = evaluator_cfg["compile"]
+        if not isinstance(compile_, bool):
+            raise ValueError(f"[ERROR] evaluator.compile must be true or false, got "
+                             f"{compile_!r}")
+    return device, _DTYPES[dtype_name], rounds, compile_
 
 
 def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
@@ -133,17 +139,17 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
     run's `noise_seed` / `decision_seed` (`mvb_torch.philox`), the per-run seeds this
     evaluator draws from run_ea's streams and returns -- and run_ea stores -- exactly as
     `eval_generation` does. So a stored run can be replayed alone (plan Step 8, R1)."""
-    device, dtype, rounds = validate_evaluator_cfg(evaluator_cfg, randomness_cfg)
+    device, dtype, rounds, compile_ = validate_evaluator_cfg(evaluator_cfg, randomness_cfg)
     configure_device(device)      # CUDA: TF32 off, reproducible cuBLAS -- before any work
     predrawn = _predrawn_enabled(randomness_cfg)
     spec = build_output_spec(cfg["brain"])
 
     mode = "predrawn" if predrawn else "live"
-    contraction = "sequential" if predrawn else "einsum"
+    contraction = "sequential" if predrawn else live_contraction(device)
     rng = "predrawn-bundles" if predrawn else f"philox4x32-{rounds}"
     print(f"{MARKER} backend=tensor mode={mode} device={device} "
           f"dtype={str(dtype).split('.')[-1]} width=auto "
-          f"contraction={contraction} rng={rng}"
+          f"contraction={contraction} rng={rng} compile={'on' if compile_ else 'off'}"
           + (f" tf32=off gpu={torch.cuda.get_device_name(device)}" if device.type == "cuda" else ""))
 
     def evaluate(genomes, cfg_, EXPERIMENT_FOLDER, SIMULATION_NAME,
@@ -239,7 +245,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
             batch, spec, sim, seeds,
             width=width, mode=mode,
             max_brain_ticks=int(randomness_cfg["max_brain_ticks"]) if predrawn else None,
-            philox_rounds=rounds, contraction=contraction, tracker=tracker,
+            philox_rounds=rounds, contraction=contraction, compile=compile_,
+            tracker=tracker,
         )
         lifespans = res.lifespans.cpu().numpy()
         wall = time.perf_counter() - t0

@@ -282,7 +282,12 @@ def load_and_reconstruct_hdf5_cfg(hdf5_path):
 
 
 def check_replay_rounds(source_path, evaluator_cfg, randomness_cfg):
-    """Refuse a tensor live replay whose Philox round count differs from the source file's."""
+    """Refuse a tensor live replay whose numerics differ from the source file's.
+
+    Exact replay of a tensor live run needs the same Philox round count and the same
+    compile setting (compiled != eager in the last bits on some devices), on the same
+    device type (which also fixes the contraction, mvb_torch.generation.live_contraction).
+    """
     replay_live_tensor = (evaluator_cfg is not None
                           and evaluator_cfg.get("backend") == "tensor"
                           and not (randomness_cfg or {}).get("enabled", False))
@@ -292,6 +297,8 @@ def check_replay_rounds(source_path, evaluator_cfg, randomness_cfg):
         src_backend = f.attrs.get("experiment_evaluator_backend", None)
         src_predrawn = bool(f.attrs.get("experiment_predrawn_randomness_enabled", False))
         src_rounds = f.attrs.get("experiment_evaluator_philox_rounds", None)
+        src_compile = f.attrs.get("experiment_evaluator_compile", None)
+        src_device = str(f.attrs.get("experiment_evaluator_device", ""))
     if src_backend != "tensor" or src_predrawn:
         return      # scalar or pre-drawn source: no Philox stream to match
     if src_rounds is None:
@@ -305,6 +312,22 @@ def check_replay_rounds(source_path, evaluator_cfg, randomness_cfg):
             f"[ERROR] the source file used philox_rounds={int(src_rounds)}, but the replay "
             f"config says {evaluator_cfg['philox_rounds']}. Set evaluator.philox_rounds: "
             f"{int(src_rounds)} to replay it exactly."
+        )
+    if src_compile is None:
+        # Made before the compile key existed: eager -- and on CUDA with the einsum
+        # contraction, which depends on batch size and was replaced by `sequential`.
+        if src_device.startswith("cuda"):
+            raise ValueError(
+                f"[ERROR] {source_path} is a CUDA live-mode file from before the compile "
+                f"key; it used the batch-size-dependent einsum contraction (since replaced "
+                f"on CUDA), so it cannot be replayed exactly.")
+        src_compile = False
+    if bool(src_compile) != bool(evaluator_cfg["compile"]):
+        raise ValueError(
+            f"[ERROR] the source file used compile={bool(src_compile)}, but the replay "
+            f"config says {evaluator_cfg['compile']}. Compiled and eager results can "
+            f"differ in the last bits; set evaluator.compile: "
+            f"{str(bool(src_compile)).lower()} to replay it exactly."
         )
 
 

@@ -132,3 +132,47 @@ def decision_uniforms(seed: torch.Tensor, tick: torch.Tensor,
     c3 = torch.full_like(seed, STREAM_DECISION)
     w0, _, _, _ = philox4x32(tick, zero, zero, c3, seed, zero, rounds=check_rounds(rounds))
     return half_open_uniform(w0, dtype)
+
+
+# --- compiled variants (plan Step 8, R5) -----------------------------------------
+# Philox is ~120 small elementwise operations; fused by torch.compile it measured 18-20x
+# faster on MPS and CUDA and bit-identical to eager. Compiled with PyTorch's default
+# "automatic dynamic" shapes: the first call compiles with fixed sizes; when the batch
+# width changes (compaction), ONE recompile makes that size variable, after which no
+# more happen. dynamic=True cannot be used: it makes every integer variable, and
+# `rounds` must stay a fixed loop count (it does: it never changes).
+_COMPILED = {}
+
+
+def _specialised(call: str, dtype: torch.dtype):
+    """A function `f(seed, tick)` whose integer constants are LITERALS in its own code.
+
+    torch.compile tracks Python ints per code object: if one shared function is called
+    with rounds=7 and later rounds=10, it decides `rounds` varies and makes it symbolic
+    -- and a symbolic loop count cannot be traced. Writing the constants into a separate
+    code object per combination keeps them constants. `call` holds only literals.
+    """
+    namespace = {"standard_normals": standard_normals,
+                 "decision_uniforms": decision_uniforms, "DTYPE": dtype}
+    exec(f"def f(seed, tick):\n    return {call}\n", namespace)   # noqa: S102 -- literals only
+    return namespace["f"]
+
+
+def compiled_normals(K: int, n: int, dtype: torch.dtype, rounds: int):
+    """`standard_normals(seed, tick)` for fixed K, n, dtype, rounds -- compiled once."""
+    key = ("normals", int(K), int(n), dtype, check_rounds(rounds))
+    if key not in _COMPILED:
+        f = _specialised(f"standard_normals(seed, tick, {int(K)}, {int(n)}, DTYPE, "
+                         f"rounds={int(rounds)})", dtype)
+        _COMPILED[key] = torch.compile(f)
+    return _COMPILED[key]
+
+
+def compiled_uniforms(dtype: torch.dtype, rounds: int):
+    """`decision_uniforms(seed, tick)` for fixed dtype, rounds -- compiled once."""
+    key = ("uniforms", dtype, check_rounds(rounds))
+    if key not in _COMPILED:
+        f = _specialised(f"decision_uniforms(seed, tick, DTYPE, rounds={int(rounds)})",
+                         dtype)
+        _COMPILED[key] = torch.compile(f)
+    return _COMPILED[key]

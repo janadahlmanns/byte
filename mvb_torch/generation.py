@@ -238,13 +238,21 @@ class KeyedSource:
     """
 
     def __init__(self, seeds: SeedSet, noise_level: float, K: int, n: int, device, dtype,
-                 rounds: int):
+                 rounds: int, compile: bool = False):
         as_dev = lambda a: torch.as_tensor(np.asarray(a, dtype=np.int64), device=device)  # noqa: E731
         self.noise_seeds = as_dev(seeds.noise_seeds)          # (P, R)
         self.decision_seeds = as_dev(seeds.decision_seeds)    # (P, R)
         self.level, self.K, self.n = noise_level, K, n
         self.dtype = dtype
         self.rounds = philox.check_rounds(rounds)
+        if compile:     # constants bound before compiling (see philox.compiled_normals)
+            self._normals = philox.compiled_normals(K, n, dtype, self.rounds)
+            self._uniforms = philox.compiled_uniforms(dtype, self.rounds)
+        else:
+            self._normals = lambda seed, tick: philox.standard_normals(
+                seed, tick, K, n, dtype, rounds=self.rounds)
+            self._uniforms = lambda seed, tick: philox.decision_uniforms(
+                seed, tick, dtype, rounds=self.rounds)
         self.R = self.noise_seeds.shape[1]
 
     def load(self, refill: torch.Tensor, run_idx: torch.Tensor,
@@ -262,15 +270,13 @@ class KeyedSource:
     def noise(self, tick: torch.Tensor, slot_genome: torch.Tensor,
               run_idx: torch.Tensor) -> torch.Tensor:
         seed = self._seed(self.noise_seeds, slot_genome, run_idx)
-        z = philox.standard_normals(seed, tick, self.K, self.n, self.dtype,
-                                    rounds=self.rounds)
+        z = self._normals(seed, tick)
         return z * self.level                                            # (K, B, 1, n)
 
     def decision(self, tick: torch.Tensor, slot_genome: torch.Tensor,
                  run_idx: torch.Tensor) -> torch.Tensor:
         seed = self._seed(self.decision_seeds, slot_genome, run_idx)
-        return philox.decision_uniforms(seed, tick, self.dtype,
-                                        rounds=self.rounds)                  # (B, 1)
+        return self._uniforms(seed, tick)                                  # (B, 1)
 
 
 class PredrawnSource:
@@ -448,7 +454,12 @@ def reset_slots(state: SlotState, mask: torch.Tensor, ctx: _Context, source,
 
 # Share of the device's TOTAL memory the batch may plan for. Total, never free: free
 # memory changes between runs and would make the width non-deterministic.
-MEMORY_FRACTION = 0.5
+# Share of the device's TOTAL memory the batch may plan for, by device type. CUDA VRAM
+# belongs to the simulation alone (bar the CUDA context, reserved via BASE_BYTES, and a
+# desktop if the GPU drives a screen) -> 0.8. MPS and CPU memory is shared with the OS
+# and every other program -> 0.5. (On a 5.6 GB GTX 1660 Ti, 0.5 capped the width at
+# 39,278 of 78,000 runs; measured use was 41.4 KB per slot.)
+MEMORY_FRACTION = {"cuda": 0.8, "mps": 0.5, "cpu": 0.5}
 # Peak / counted bytes per slot, measured on MPS (51x51, n = 11, float32, live), peak
 # driver memory sampled every iteration:
 #   R3 (two-grid world): 81.5 KB per slot vs 33.3 KB counted -> 2.45 (factor was 3.0);
@@ -499,6 +510,22 @@ def device_memory(device) -> int:
     if device.type == "cpu":
         return physical_ram()
     raise ValueError(f"no memory query for device type {device.type!r}")
+
+
+def live_contraction(device) -> str:
+    """The neuron-input contraction live mode uses on this device type.
+
+    Exact single-run replay needs a run's arithmetic to be independent of the batch
+    around it. `sequential` (fixed-order elementwise sums) is, on every device. `einsum`
+    (batched matrix products) is on CPU and MPS, but not on CUDA, where cuBLAS picks its
+    algorithm by batch size: measured on a GTX 1660 Ti, 14 differing modulation values
+    (up to 4.8e-7) between batch sizes. On CUDA `sequential` also costs nothing
+    measurable (378.7 vs 383.5 ms per decide step at width 78,000) and compiles far
+    better (52.9 vs 164.6 ms). On MPS `einsum` is 27% faster eager. Derived from the
+    device type alone -- which the HDF5 records -- so a replay on the same device type
+    uses the same contraction.
+    """
+    return "sequential" if torch.device(device).type == "cuda" else "einsum"
 
 
 def configure_device(device) -> None:
@@ -569,10 +596,13 @@ def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
 
 
 def choose_width(P: int, R: int, slot_bytes: int, device, *,
-                 memory_fraction: float = MEMORY_FRACTION,
+                 memory_fraction: Optional[float] = None,
                  total_memory: Optional[int] = None) -> Tuple[int, str]:
-    """`min(P*R, (MEMORY_FRACTION x total - BASE_BYTES) // slot_bytes)` and a one-line
-    reason for the log. `total_memory` overrides the device query (tests)."""
+    """`min(P*R, (fraction x total - BASE_BYTES) // slot_bytes)` and a one-line reason
+    for the log; the fraction is MEMORY_FRACTION[device type]. `memory_fraction` and
+    `total_memory` override them (tests)."""
+    if memory_fraction is None:
+        memory_fraction = MEMORY_FRACTION[torch.device(device).type]
     total = device_memory(device) if total_memory is None else int(total_memory)
     budget = int(memory_fraction * total) - BASE_BYTES
     cap = budget // int(slot_bytes)
@@ -655,6 +685,7 @@ def setup_generation(
     mode: str,
     max_brain_ticks: Optional[int] = None,
     philox_rounds: Optional[int] = None,
+    compile: bool = False,
 ):
     """Build the slot state, the shared context and the randomness source, with slot b
     reset onto queue item b (genome b // R, run b % R; slots past the queue retire).
@@ -698,12 +729,15 @@ def setup_generation(
             raise ValueError("predrawn mode needs max_brain_ticks")
         if philox_rounds is not None:
             raise ValueError("philox_rounds has no effect in predrawn mode; do not pass it")
+        if compile:
+            raise ValueError("compile is for live mode; the pre-drawn reference path stays "
+                             "eager (bit-exact against the scalar)")
         source = PredrawnSource(seeds, cfg, phases, int(max_brain_ticks), K, B, n,
                                 dev, dt)
     elif mode == "live":
         if philox_rounds is None:
             raise ValueError("live mode needs philox_rounds (7-10; plan Step 8, R1.1)")
-        source = KeyedSource(seeds, cfg.noise_level, K, n, dev, dt, philox_rounds)
+        source = KeyedSource(seeds, cfg.noise_level, K, n, dev, dt, philox_rounds, compile)
     else:
         raise ValueError(f"mode must be 'predrawn' or 'live', got {mode!r}")
 
@@ -744,6 +778,7 @@ def eval_generation_batch(
     max_brain_ticks: Optional[int] = None,
     philox_rounds: Optional[int] = None,
     contraction: str = "sequential",
+    compile: bool = False,
     sync_every: int = 8,
     compact_below: float = COMPACT_BELOW,
     tracker=None,
@@ -763,6 +798,10 @@ def eval_generation_batch(
         `predrawn_randomness.max_brain_ticks`, because the bundle's noise layout
         depends on it) or "live" (randomness keyed by each run's seeds, `KeyedSource`;
         needs `philox_rounds`, 7-10, which pre-drawn mode refuses).
+    compile
+        R5: run the decision step and Philox through `torch.compile` (live mode only).
+        Compiled results are not bit-identical to eager on every device, so a run must
+        be replayed with the same setting (the config key is recorded and checked).
     sync_every
         How often to ask the device whether every run has finished (and whether to
         compact). Extra iterations after the last run are exact no-ops, so a coarse
@@ -779,7 +818,7 @@ def eval_generation_batch(
         raise ValueError(f"compact_below must be in [0, 1], got {compact_below}")
     state, ctx, source = setup_generation(
         batch, cfg, seeds, width=width, mode=mode,
-        max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds,
+        max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds, compile=compile,
     )
     P, R = batch.n_pop, cfg.n_runs
     B, Q = int(width), P * R
@@ -858,7 +897,7 @@ def eval_generation_batch(
             slot_batch, state.brain, spec, sens,
             source.noise(w.ticks, state.slot_genome, state.run_idx),
             source.decision(w.ticks, state.slot_genome, state.run_idx),
-            contraction=contraction, n_brain_ticks=K,
+            contraction=contraction, n_brain_ticks=K, compile=compile,
         )
         state.brain = BrainTensorState(
             act=torch.where(active.unsqueeze(-1), new_brain.act, state.brain.act),

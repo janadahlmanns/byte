@@ -439,6 +439,25 @@ def test_dtype_device(brain_cfg, genomes, K=16):
         print("  [SKIP] no GPU available")
 
 
+def test_exact_tanh():
+    print("\n[9] tanh on CPU float64 equals the scalar's math.tanh, bit for bit")
+    # torch.tanh differs from math.tanh in the last bit for ~0.35% of float64 values on
+    # Apple Silicon and ~30% on Linux x86 (tests/platform_probe.py); that made plastic
+    # weights drift by 1 ulp on Linux. brain._tanh uses math.tanh on CPU float64.
+    import math
+    from mvb_torch.brain import _tanh
+    rng = np.random.default_rng(0)
+    x = np.concatenate([rng.uniform(-3, 3, 400_000), rng.normal(0, 0.5, 400_000),
+                        rng.uniform(-1e-3, 1e-3, 200_000)])
+    ref = np.array([math.tanh(v) for v in x])
+    got = _tanh(torch.as_tensor(x, dtype=torch.float64)).numpy()
+    n_torch = int((torch.tanh(torch.as_tensor(x, dtype=torch.float64)).numpy() != ref).sum())
+    check(f"brain._tanh == math.tanh on all {x.size} values (plain torch.tanh differs on "
+          f"{n_torch} here)", np.array_equal(got, ref) and n_torch > 0)
+    shaped = torch.as_tensor(x[:1210], dtype=torch.float64).view(10, 1, 11, 11)
+    check("shape is preserved", _tanh(shaped).shape == shaped.shape)
+
+
 def main():
     print("=" * 68)
     print("mvb_torch/brain.py test suite")
@@ -454,6 +473,7 @@ def main():
     test_plasticity(brain_cfg, genomes)
     test_output_lag(brain_cfg, genomes)
     test_dtype_device(brain_cfg, genomes)
+    test_exact_tanh()
 
     failed = [n for n, ok in _RESULTS if not ok]
     print("\n" + "=" * 68)

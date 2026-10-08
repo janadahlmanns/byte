@@ -41,7 +41,7 @@ Semantics reproduced deliberately (see plan_evotorch.md Step 2, S1-S7)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import torch
 
@@ -70,6 +70,32 @@ class BrainTensorState:
     @property
     def n_runs(self) -> int:
         return self.act.shape[1]
+
+
+class StepGenome(NamedTuple):
+    """The genome tensors one brain tick reads, and nothing else (plan Step 8, R5).
+
+    `torch.compile` turns plain Python numbers it sees into constants. GenomeBatch
+    carries `n_pop` -- which changes with every compaction -- so a compiled function
+    receiving it would recompile at every width. This tuple holds only tensors and
+    true constants (threshold, sensor names), so one compiled step serves every width.
+    """
+
+    Wsign: torch.Tensor
+    Rel: torch.Tensor
+    Mod: torch.Tensor
+    Tonic: torch.Tensor
+    Eta: torch.Tensor
+    S_w: torch.Tensor
+    S_r: torch.Tensor
+    sensor_keys: Tuple[str, ...]
+    threshold_raw: float
+
+    @staticmethod
+    def of(batch: GenomeBatch) -> "StepGenome":
+        return StepGenome(batch.Wsign, batch.Rel, batch.Mod, batch.Tonic, batch.Eta,
+                          batch.S_w, batch.S_r, tuple(batch.sensor_keys),
+                          float(batch.threshold_raw))
 
 
 def init_state(batch: GenomeBatch, n_runs: int) -> BrainTensorState:
@@ -141,7 +167,7 @@ def _modulation_sum(
     """
     if contraction == "sequential":
         P, R, n = state.act.shape
-        total = torch.zeros((P, R, n, n), dtype=batch.dtype, device=batch.device)
+        total = torch.zeros((P, R, n, n), dtype=state.act.dtype, device=state.act.device)
         for k in range(n):
             # act[:, :, k] -> (P, R, 1, 1);  Mod[:, k] -> (P, 1, n, n)
             total.addcmul_(
@@ -150,7 +176,27 @@ def _modulation_sum(
             )
     else:
         total = torch.einsum("pkij,prk->prij", batch.Mod, state.act)
-    return torch.tanh(total)
+    return _tanh(total)
+
+
+def _tanh(x: torch.Tensor) -> torch.Tensor:
+    """tanh -- on CPU float64 exactly as the scalar simulator computes it.
+
+    The scalar sim uses Python's `math.tanh` (the platform's C library). `torch.tanh`
+    differs from it in the last bit for ~0.35% of float64 values on Apple Silicon and
+    ~30% on Linux x86 (measured, tests/platform_probe.py), which made plastic weights
+    drift by 1 ulp from the scalar's. CPU float64 is the reference configuration (the
+    bit-exact oracle path), so there tanh is computed by `math.tanh` itself -- over the
+    distinct values only: activities are 0/1, so a brain tick produces few distinct
+    modulation sums. Every other device/dtype is the statistical production path and
+    keeps the fast `torch.tanh`.
+    """
+    if x.device.type != "cpu" or x.dtype != torch.float64:
+        return torch.tanh(x)
+    import math
+    values, inverse = torch.unique(x, return_inverse=True)
+    exact = torch.tensor([math.tanh(v) for v in values.tolist()], dtype=x.dtype)
+    return exact[inverse]
 
 
 def brain_tick(
@@ -206,24 +252,32 @@ def brain_tick(
             f"noise has shape {tuple(noise.shape)}, expected {(P, R, n)}"
         )
 
+    return tick_core(StepGenome.of(batch), state, sens, noise, contraction)
+
+
+def tick_core(g: StepGenome, state: BrainTensorState, sens: Optional[torch.Tensor],
+              noise: Optional[torch.Tensor], contraction: str
+              ) -> Tuple[BrainTensorState, torch.Tensor]:
+    """`brain_tick` without the input checks: the part `torch.compile` traces (R5).
+    Every operation and its order are brain_tick's; see there for the semantics."""
     # Snapshot BEFORE anything is committed: this is the value the scalar sim
     # records for this tick (S2).
     output_snapshot = state.act[..., OUTPUT_SLICE].clone()
 
     # Signed, reliability-scaled weights. (Wabs * Wsign) reproduces the genome's
     # signed weight exactly (|w| * +/-1), then * Rel matches Connection.propagate.
-    W = (state.Wabs * batch.Wsign) * batch.Rel
+    W = (state.Wabs * g.Wsign) * g.Rel
 
-    net = _accumulate_input(batch, state, W, sens, noise, contraction)
+    net = _accumulate_input(g, state, W, sens, noise, contraction)
 
     # Hard threshold, compared pre-tanh against atanh(threshold) -- see Step 0b.
-    next_act = (net >= batch.threshold_raw).to(batch.dtype)
+    next_act = (net >= g.threshold_raw).to(state.act.dtype)
 
     # Plasticity rule K on |w|, grouped exactly as the scalar sim groups it (S4).
     # Reads the PRE-tick activities (S1), which is why this uses `state.act`.
-    modsum = _modulation_sum(batch, state, contraction)
+    modsum = _modulation_sum(g, state, contraction)
     next_Wabs = (
-        state.Wabs + ((batch.Eta * state.Wabs) * (1.0 - state.Wabs)) * modsum
+        state.Wabs + ((g.Eta * state.Wabs) * (1.0 - state.Wabs)) * modsum
     ).clamp(min=0.0)
 
     return BrainTensorState(act=next_act, Wabs=next_Wabs), output_snapshot

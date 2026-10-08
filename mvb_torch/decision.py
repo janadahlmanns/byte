@@ -39,7 +39,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from .brain import BrainTensorState, brain_tick
+from .brain import BrainTensorState, StepGenome, brain_tick, tick_core
 from .genome_codec import GenomeBatch
 
 # First neuron of the output window; matches brain.OUTPUT_SLICE and
@@ -155,6 +155,7 @@ def decide_batch(
     *,
     contraction: str = "sequential",
     n_brain_ticks: Optional[int] = None,
+    compile: bool = False,
 ) -> Tuple[BrainTensorState, Decisions]:
     """Run one full `decide()` for every (genome, run) in the batch.
 
@@ -214,69 +215,28 @@ def decide_batch(
     move_slots = torch.tensor(spec.move_slots, dtype=ilong, device=dev)
     move_actions = torch.tensor(spec.move_actions, dtype=ilong, device=dev)
 
+    # One brain tick is one call of `_decide_step` (R5): eager and compiled runs share
+    # it, and compiling one tick (not the unrolled K-tick loop) keeps compile time short.
+    g = StepGenome.of(batch)
+    step = compiled_decide_step() if compile else _decide_step
+    ticks = torch.arange(K, dtype=ilong, device=dev)   # the tick as a tensor: no recompile
+    carry = (state.act, state.Wabs, prop_win, candidates, cand_locked, stab_count,
+             stab_ticks, decided, action, decided_at)
     for t in range(K):
-        # An agent runs only while undecided and within ITS OWN max_ticks.
-        active = (~decided) & (t < max_ticks)
-
-        new_state, snap = brain_tick(
-            batch,
-            state,
-            sens,
-            None if noise is None else noise[t],
-            contraction=contraction,
-        )
-
-        in_prop = t < warmup                      # (P,1) -> broadcasts to (P,R)
-
-        # Candidates are frozen at the first stability tick, from the propagation
-        # window as it stands BEFORE this tick's snapshot is filed (F3.1). An empty
-        # result is kept, which locks the agent into the fallback -- the common
-        # case, not an edge case.
-        #
-        # `cand_locked` here is defensive rather than load-bearing: prop_win writes
-        # are masked by `active & in_prop`, so an agent's window is frozen the
-        # moment it leaves propagation and recomputing would be idempotent. What
-        # actually enforces F3.1 is that empty `candidates` can never yield a
-        # non-empty `stable`, so such an agent never decides. The guard is kept so
-        # that stays true if the window ever becomes mutable post-warmup.
-        at_boundary = active & (~in_prop) & (~cand_locked)
-        counts = prop_win.sum(dim=2)                              # (P,R,n_out)
-        fresh = (counts >= CANDIDATE_MIN) & (prop_filled >= CANDIDATE_MIN).unsqueeze(-1)
-        candidates = torch.where(at_boundary.unsqueeze(-1), fresh, candidates)
-        cand_locked = cand_locked | at_boundary
-
-        # Commit the brain, but only for agents still running (F3.8).
-        state = BrainTensorState(
-            act=torch.where(active.unsqueeze(-1), new_state.act, state.act),
-            Wabs=torch.where(
-                active.unsqueeze(-1).unsqueeze(-1), new_state.Wabs, state.Wabs
-            ),
-        )
-
-        # File this tick's snapshot into the phase it belongs to, after the commit,
-        # exactly as decide() does.
-        write_prop = (active & in_prop).unsqueeze(-1)
-        slot = t % PROP_WINDOW
-        prop_win[:, :, slot, :] = torch.where(
-            write_prop, snap, prop_win[:, :, slot, :]
-        )
-        in_stab = active & (~in_prop)
-        stab_count = stab_count + snap * in_stab.unsqueeze(-1).to(dt)
-        stab_ticks = stab_ticks + in_stab.to(dt)
-
-        # Strict majority, with a denominator that grows every tick (F3.3).
-        stable = candidates & (stab_count > (stab_ticks * 0.5).unsqueeze(-1))
-        eligible = (
-            active
-            & cand_locked
-            & (stab_ticks >= STABILITY_MIN)
-            & candidates.any(dim=-1)
-        )
-        newly = eligible & stable.any(dim=-1)
-        act_now = _resolve(stable, spec, move_slots, move_actions, decision_uniform)
-        action = torch.where(newly, act_now, action)
-        decided_at = torch.where(newly, torch.full_like(decided_at, t), decided_at)
-        decided = decided | newly
+        try:
+            carry = step(g, spec, contraction, carry, ticks[t],
+                         None if noise is None else noise[t], sens, warmup, max_ticks,
+                         prop_filled, move_slots, move_actions, decision_uniform)
+        except Exception as e:
+            if not compile:
+                raise
+            raise RuntimeError(
+                f"torch.compile failed for the decision step on {act_device(carry)}. "
+                f"Set experiment.evaluator.compile: false for this machine. "
+                f"({type(e).__name__}: {str(e)[:300]})") from e
+    (act, Wabs, prop_win, candidates, cand_locked, stab_count, stab_ticks, decided,
+     action, decided_at) = carry
+    state = BrainTensorState(act=act, Wabs=Wabs)
 
     # Whatever never decided takes `_get_random_decision`: int(u * 5) over
     # FALLBACK_ACTIONS, whose index order is the action encoding.
@@ -291,6 +251,90 @@ def decide_batch(
         via_fallback=via_fallback,
         n_brain_ticks=K,
     )
+
+
+def _decide_step(g, spec, contraction, carry, t, noise_t, sens, warmup, max_ticks,
+                 prop_filled, move_slots, move_actions, decision_uniform):
+    """One brain tick of `decide_batch` for every agent: brain update, candidate
+    freezing, stability bookkeeping, resolution. Pure tensors in, tensors out, no
+    data-dependent branches -- so `torch.compile` can fuse it (R5). `t` is a 0-d tensor.
+    """
+    (act, Wabs, prop_win, candidates, cand_locked, stab_count, stab_ticks, decided,
+     action, decided_at) = carry
+    dt = act.dtype
+    # An agent runs only while undecided and within ITS OWN max_ticks.
+    active = (~decided) & (t < max_ticks)
+
+    new_state, snap = tick_core(g, BrainTensorState(act=act, Wabs=Wabs), sens, noise_t,
+                                contraction)
+
+    in_prop = t < warmup                      # (P,1) -> broadcasts to (P,R)
+
+    # Candidates are frozen at the first stability tick, from the propagation window as
+    # it stands BEFORE this tick's snapshot is filed (F3.1). An empty result is kept,
+    # which locks the agent into the fallback -- the common case, not an edge case.
+    #
+    # `cand_locked` here is defensive rather than load-bearing: prop_win writes are
+    # masked by `active & in_prop`, so an agent's window is frozen the moment it leaves
+    # propagation and recomputing would be idempotent. What actually enforces F3.1 is
+    # that empty `candidates` can never yield a non-empty `stable`, so such an agent
+    # never decides. The guard is kept so that stays true if the window ever becomes
+    # mutable post-warmup.
+    at_boundary = active & (~in_prop) & (~cand_locked)
+    counts = prop_win.sum(dim=2)                              # (P,R,n_out)
+    fresh = (counts >= CANDIDATE_MIN) & (prop_filled >= CANDIDATE_MIN).unsqueeze(-1)
+    candidates = torch.where(at_boundary.unsqueeze(-1), fresh, candidates)
+    cand_locked = cand_locked | at_boundary
+
+    # Commit the brain, but only for agents still running (F3.8).
+    act = torch.where(active.unsqueeze(-1), new_state.act, act)
+    Wabs = torch.where(active.unsqueeze(-1).unsqueeze(-1), new_state.Wabs, Wabs)
+
+    # File this tick's snapshot into the phase it belongs to, after the commit, exactly
+    # as decide() does: window position t % PROP_WINDOW, selected by a mask (the same
+    # values as indexing with a Python int, without making t a compile-time constant).
+    write_prop = (active & in_prop).unsqueeze(-1).unsqueeze(-1)           # (P,R,1,1)
+    at_slot = (torch.arange(PROP_WINDOW, device=t.device) == t % PROP_WINDOW)
+    prop_win = torch.where(write_prop & at_slot.view(1, 1, PROP_WINDOW, 1),
+                           snap.unsqueeze(2), prop_win)
+    in_stab = active & (~in_prop)
+    stab_count = stab_count + snap * in_stab.unsqueeze(-1).to(dt)
+    stab_ticks = stab_ticks + in_stab.to(dt)
+
+    # Strict majority, with a denominator that grows every tick (F3.3).
+    stable = candidates & (stab_count > (stab_ticks * 0.5).unsqueeze(-1))
+    eligible = (
+        active
+        & cand_locked
+        & (stab_ticks >= STABILITY_MIN)
+        & candidates.any(dim=-1)
+    )
+    newly = eligible & stable.any(dim=-1)
+    act_now = _resolve(stable, spec, move_slots, move_actions, decision_uniform)
+    action = torch.where(newly, act_now, action)
+    decided_at = torch.where(newly, t.to(decided_at.dtype), decided_at)
+    decided = decided | newly
+    return (act, Wabs, prop_win, candidates, cand_locked, stab_count, stab_ticks,
+            decided, action, decided_at)
+
+
+def act_device(carry) -> str:
+    return str(carry[0].device)
+
+
+_COMPILED_STEP = None
+
+
+def compiled_decide_step():
+    """`_decide_step` compiled once per process (R5), with PyTorch's default "automatic
+    dynamic" shapes: the batch width changes with every compaction, so after the first
+    width change ONE recompile makes it a variable size and no further ones happen
+    (tests/test_compile.py counts them). dynamic=True would also turn the integer
+    constants into variables."""
+    global _COMPILED_STEP
+    if _COMPILED_STEP is None:
+        _COMPILED_STEP = torch.compile(_decide_step)
+    return _COMPILED_STEP
 
 
 def _resolve(
