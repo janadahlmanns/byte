@@ -309,7 +309,10 @@ def save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_s
                     ('source', np.int32),
                     ('target', np.int32),
                     ('modulating_neuron', np.int32),
-                    ('modulation_weight', np.float32)
+                    # float64, like the genome itself: float32 rounded the weight, so a
+                    # replay from this file ran with slightly different plasticity
+                    # (plan_evotorch.md Step 8, R1 -- single-run replay requirement).
+                    ('modulation_weight', np.float64)
                 ])
                 elite_subgroup.create_dataset("modulation_spec", data=np.array(mod_records, dtype=mod_dtype))
         
@@ -545,6 +548,24 @@ def main():
         print(f"[predrawn] enabled (max_brain_ticks="
               f"{RANDOMNESS_CFG['max_brain_ticks']})")
 
+    # Optional batched tensor evaluator (plan_evotorch.md Step 6, option A). Absent, or
+    # backend: scalar, => the scalar eval_generation, byte-identical to before. torch is
+    # imported only when the tensor backend is selected, so scalar runs never load it.
+    EVALUATOR_CFG = experiment_cfg.get("evaluator", None)
+    if EVALUATOR_CFG is None:
+        evaluate_generation = eval_generation
+    elif EVALUATOR_CFG.get("backend") == "scalar":
+        if set(EVALUATOR_CFG) != {"backend"}:
+            raise KeyError("[ERROR] evaluator.backend is 'scalar' but other evaluator "
+                           f"keys are set: {sorted(set(EVALUATOR_CFG) - {'backend'})}")
+        evaluate_generation = eval_generation
+    elif EVALUATOR_CFG.get("backend") == "tensor":
+        from mvb_torch.adapter import make_tensor_evaluator
+        evaluate_generation = make_tensor_evaluator(EVALUATOR_CFG, cfg, RANDOMNESS_CFG)
+    else:
+        raise ValueError(f"[ERROR] evaluator.backend must be 'scalar' or 'tensor', "
+                         f"got {EVALUATOR_CFG.get('backend')!r}")
+
     MAX_TICKS = experiment_cfg["max_ticks"]
     N_RUNS = experiment_cfg["n_runs"]
     
@@ -667,7 +688,7 @@ def main():
     # 5. EVALUATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
 
-    lifespans, run_seeds_gen0 = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+    lifespans, run_seeds_gen0 = evaluate_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
                                     randomness_cfg=RANDOMNESS_CFG)
@@ -716,7 +737,7 @@ def main():
         # ============================================================
         genomes_combined = elite_genomes + genomes_new  # ELITE_SIZE + n_offspring = POPULATION_SIZE
 
-        lifespans_combined, run_seeds_gen = eval_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+        lifespans_combined, run_seeds_gen = evaluate_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
                                     randomness_cfg=RANDOMNESS_CFG)

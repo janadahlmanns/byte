@@ -281,6 +281,33 @@ def load_and_reconstruct_hdf5_cfg(hdf5_path):
 # ============================================================
 
 
+def check_replay_rounds(source_path, evaluator_cfg, randomness_cfg):
+    """Refuse a tensor live replay whose Philox round count differs from the source file's."""
+    replay_live_tensor = (evaluator_cfg is not None
+                          and evaluator_cfg.get("backend") == "tensor"
+                          and not (randomness_cfg or {}).get("enabled", False))
+    if not replay_live_tensor:
+        return
+    with h5py.File(source_path, "r") as f:
+        src_backend = f.attrs.get("experiment_evaluator_backend", None)
+        src_predrawn = bool(f.attrs.get("experiment_predrawn_randomness_enabled", False))
+        src_rounds = f.attrs.get("experiment_evaluator_philox_rounds", None)
+    if src_backend != "tensor" or src_predrawn:
+        return      # scalar or pre-drawn source: no Philox stream to match
+    if src_rounds is None:
+        raise ValueError(
+            f"[ERROR] {source_path} was produced by the tensor evaluator in live mode but "
+            f"does not record experiment.evaluator.philox_rounds (it predates the key). "
+            f"Its random numbers cannot be reproduced exactly, so it cannot be replayed."
+        )
+    if int(src_rounds) != int(evaluator_cfg["philox_rounds"]):
+        raise ValueError(
+            f"[ERROR] the source file used philox_rounds={int(src_rounds)}, but the replay "
+            f"config says {evaluator_cfg['philox_rounds']}. Set evaluator.philox_rounds: "
+            f"{int(src_rounds)} to replay it exactly."
+        )
+
+
 def main():
     # ============================================================
     # 1. IMPORTS & CONFIGURATION LOADING
@@ -641,6 +668,33 @@ def main():
     rng_decision = np.random.default_rng(streams_sim[1])
     rng_world = np.random.default_rng(streams_sim[2])
 
+    # Optional batched tensor evaluator (plan_evotorch.md Step 7; same block as in
+    # run_ea.py). Absent, or backend: scalar, => the scalar eval_generation, byte-identical
+    # to before. torch is imported only when the tensor backend is selected, so scalar
+    # runs never load it.
+    EVALUATOR_CFG = experiment_cfg.get("evaluator", None)
+    if EVALUATOR_CFG is None:
+        evaluate_generation = eval_generation
+    elif EVALUATOR_CFG.get("backend") == "scalar":
+        if set(EVALUATOR_CFG) != {"backend"}:
+            raise KeyError("[ERROR] evaluator.backend is 'scalar' but other evaluator "
+                           f"keys are set: {sorted(set(EVALUATOR_CFG) - {'backend'})}")
+        evaluate_generation = eval_generation
+    elif EVALUATOR_CFG.get("backend") == "tensor":
+        from mvb_torch.adapter import make_tensor_evaluator
+        evaluate_generation = make_tensor_evaluator(EVALUATOR_CFG, cfg, RANDOMNESS_CFG)
+    else:
+        raise ValueError(f"[ERROR] evaluator.backend must be 'scalar' or 'tensor', "
+                         f"got {EVALUATOR_CFG.get('backend')!r}")
+
+    # Replay guard (plan_evotorch.md Step 8, R1.1). A tensor live run's noise and
+    # decisions come from Philox with the file's round count; replaying it with another
+    # count would silently produce a different run. So when both the source file and
+    # this replay are tensor live, the counts must match -- and a tensor live file that
+    # does not record its count (made before the key existed) cannot be replayed exactly.
+    if GENOME_FROM_FILE and SEEDS_FROM_FILE:
+        check_replay_rounds(hdf5_source_path, EVALUATOR_CFG, RANDOMNESS_CFG)
+
     # Benchmark mode: now that RNGs are ready, build pre_computed_seeds_dict.
     # run_seeds come from the source HDF5; noise/decision seeds are generated fresh
     # so each benchmark variant gets its own independent stochastic stream.
@@ -663,7 +717,7 @@ def main():
             genomes.append(genome)
     # else: genomes already loaded from HDF5 in replay mode block above
 
-    all_lifespans, run_seeds_generated = eval_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
+    all_lifespans, run_seeds_generated = evaluate_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, N_VARIANTS,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg,
                                     pre_computed_seeds_dict=pre_computed_seeds_dict, replay_info=replay_info, switch_phases=switch_phases,

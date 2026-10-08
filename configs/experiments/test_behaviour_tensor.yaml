@@ -1,0 +1,81 @@
+# ============================================================
+# TENSOR-EVALUATOR TWIN OF test_behaviour.yaml  (plan_evotorch.md Step 7)
+# ============================================================
+# Identical to test_behaviour.yaml except for the experiment.evaluator block: the
+# batched PyTorch evaluator runs run_batch with all three tracking flags on and writes
+# the same HDF5 layout as the scalar path. simulation_name is kept the same so the two
+# configs are interchangeable in the timing scripts.
+#
+# Live randomness on the GPU is statistically, not bit-, equivalent to the scalar
+# (reproducibility.md), so this file is NOT a drop-in for
+# `ea_drift --mode behaviour` against test_behaviour_ref.h5.
+#
+#   python -m simulate.run_batch --config test_behaviour_tensor
+# ============================================================
+experiment:
+  output_folder: "data/temp/"
+  simulation_name: "test_behaviour"
+  simulation_seed: 1
+
+  evaluator:
+    backend: tensor
+    device: mps
+    dtype: float32
+    philox_rounds: 10     # Philox4x32 rounds, 7-10 (live mode; replay must match)
+
+  max_ticks: 2000           # never reached; worms starve first
+  n_runs: 20
+  evolutionary_algorithm_enabled: false
+
+  genome_type: "random"
+  population_size: 100
+  random_genome:
+    wiring_randomization_seed: 1
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.1
+    modulation_degree_potentiation: 0.1
+    modulation_degree_depression: 0.1
+
+  viz_enabled: false
+  viz_fps: 4
+  viz_brain_enabled: false
+  viz_brain_fps: 4
+
+  # All three required: per_tick carries the decision record, per_run the
+  # outcome summary, heat map the order-free spatial occupancy.
+  enable_per_run_tracking: true
+  enable_per_tick_tracking: true
+  enable_heat_map_tracking: true
+
+world:
+  grid_width: 51
+  grid_height: 51
+  start_pos: [26, 26]
+
+food:
+  - phase_from: 0
+    feeding_paradigm: {initial: true, regrow: false}
+    initial_fraction_per_cell: 0.1
+    regrow_time: 3000
+
+worm:
+  speed: 1
+  energy_capacity: 30
+  metabolic_rate: 1
+  movement_cost: 1
+  sensors:
+    active: [current_field, adjacent_binary]
+  decisionmaking: {version: plasticity, brain: true}
+
+brain:
+  n_neurons: 11
+  threshold: 0.5
+  noise_level: 0.05
+  sensory_mapping:
+    on_food: [0, 1.0, 0.9]
+    food_north: [1, 0.8, 0.9]
+    food_east: [2, 0.8, 0.9]
+    food_south: [3, 0.8, 0.9]
+    food_west: [4, 0.8, 0.9]
+  output_mapping: {5: stay, 6: move_north, 7: move_east, 8: move_south, 9: move_west}
+  max_decision_delay: 2.0
