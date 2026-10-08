@@ -26,6 +26,7 @@ from mvb.worm import Worm
 from mvb.feeding import seed_food
 from mvb.simulation_API import simulate_run
 from mvb.simulation_helper_functions import load_brain_module
+from viz.brain_recorder import BrainFrameRecorder
 from viz.replay_recorder import WorldFrameRecorder
 from viz.run_source import (
     RunSource,
@@ -41,8 +42,8 @@ from viz.verify import verify, format_report
 # Replay
 # ============================================================
 
-def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
-    """Re-run one recorded run with a recorder attached.
+def replay(source: RunSource, max_ticks: int = None):
+    """Re-run one recorded run with recorders attached.
 
     Mirrors the per-run setup in `eval_variant` so the replayed run sees exactly
     the same world, genome and rng streams as the original.
@@ -52,7 +53,7 @@ def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
         max_ticks: Override the tick limit (defaults to the experiment's)
 
     Returns:
-        The WorldFrameRecorder holding the recorded frames.
+        (world_recorder, brain_recorder) holding the recorded frames.
     """
     cfg = source.cfg
     world_cfg, worm_cfg, brain_cfg = cfg["world"], cfg["worm"], cfg["brain"]
@@ -61,8 +62,6 @@ def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
     feeding_cfg, switch_phases = phases[0], phases[1:]
 
     brain_module = load_brain_module(str(worm_cfg["decisionmaking"]["version"]))
-    # Never attach a Qt brain window during export
-    brain_module._brain_renderer = None
 
     world = World(
         world_cfg["grid_width"],
@@ -95,6 +94,10 @@ def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
     recorder.start()
     worm.renderer = recorder
 
+    # The brain module calls this once per beat, in place of the Qt window.
+    brain = BrainFrameRecorder(worm)
+    brain_module._brain_renderer = brain
+
     simulate_run(
         world,
         worm,
@@ -104,7 +107,8 @@ def replay(source: RunSource, max_ticks: int = None) -> WorldFrameRecorder:
         max_ticks if max_ticks is not None else source.max_ticks,
         None,                                        # no pause manager
     )
-    return recorder
+    brain.finish()
+    return recorder, brain
 
 
 # ============================================================
@@ -282,8 +286,9 @@ def main(argv=None):
     print(f"[export] seeds  world={source.world_seed}  noise={source.noise_seed}  "
           f"decision={source.decision_seed}")
 
-    recorder = replay(source, max_ticks=args.max_ticks)
+    recorder, brain = replay(source, max_ticks=args.max_ticks)
     print(f"[export] {recorder.summary()}")
+    print(f"[export] brain  {brain.summary()}")
 
     # The replay should live exactly as long as the original. A mismatch means
     # it diverged, and nothing downstream can be trusted. --verify compares every
@@ -310,6 +315,7 @@ def main(argv=None):
     out_path = Path(args.out) if args.out else Path(hdf5_path).with_name(f"{stem}.html")
 
     payload = recorder.to_dict()
+    payload["brain"] = brain.to_dict()
     payload["meta"] = {
         "source_file": str(hdf5_path),
         "layout": source.layout,
