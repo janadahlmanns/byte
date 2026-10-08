@@ -62,16 +62,31 @@
   // Events (for scrub markers)
   // ---------------------------------------------------------------
 
-  const events = [];
+  // Beyond this many meals they stop being individually interesting.
+  const EAT_MARKER_LIMIT = 40;
+
+  const eatTicks = [];
+  const notable = [];
   FRAMES.forEach(function (f, i) {
-    if (f.ate !== null && f.ate !== undefined) events.push({ i: i, kind: "ate" });
+    if (f.ate !== null && f.ate !== undefined) eatTicks.push(i);
     // A whole-grid reseed at a phase boundary changes far more cells than
     // ordinary eating or regrowth ever does.
     if (f.food_added.length + f.food_removed.length > 30) {
-      events.push({ i: i, kind: "phase" });
+      notable.push({ i: i, kind: "phase" });
     }
-    if (!f.alive) events.push({ i: i, kind: "death" });
+    // Only the tick the agent died on, not every tick after it.
+    if (!f.alive && (i === 0 || FRAMES[i - 1].alive)) {
+      notable.push({ i: i, kind: "death" });
+    }
   });
+
+  // A camping agent eats hundreds of times. Marking each one turns the scrub
+  // bar into a solid band and leaves the jump buttons stepping through meals
+  // instead of reaching the phase switch or the death. Keep meal markers only
+  // while they are sparse enough to read; phase and death always show.
+  const events = eatTicks.length <= EAT_MARKER_LIMIT
+    ? notable.concat(eatTicks.map(i => ({ i: i, kind: "ate" })))
+    : notable;
 
   const EVENT_COLOR = { ate: C.food, phase: C.warn, death: C.dead };
 
