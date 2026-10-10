@@ -1,0 +1,12 @@
+# Whitelist: only what the image needs (plan_evotorch.md, Step 9). data/ is mounted at
+# run time, never copied in.
+*
+!requirements.txt
+!mvb/
+!mvb_torch/
+!simulate/
+!configs/
+!tests/
+**/__pycache__
+**/*.pyc
+**/.DS_Store

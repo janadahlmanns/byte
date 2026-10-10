@@ -17,8 +17,6 @@ import h5py
 from mvb.world import World
 from mvb.feeding import seed_food
 from mvb.worm import Worm
-from mvb.world_renderer_qt import QtRenderer
-from mvb.brain_renderer_qt import BrainQtRenderer
 from simulate.pause_manager import get_pause_manager, cleanup_pause_manager, PauseManagerExit
 from simulate.hdf5_utils import (
     create_hdf5_file,
@@ -279,6 +277,10 @@ def eval_variant(
 
         # Create world renderer independently if world visualization is enabled
         if viz_enabled:
+            # Imported here, not at module level: Qt (PySide6) is only needed for
+            # visualisation, so headless machines (e.g. the Docker image) need not have
+            # it. Outside the try, so a missing Qt fails loudly instead of as a warning.
+            from mvb.world_renderer_qt import QtRenderer
             try:
                 if viz_fps > 0:
                     worm.renderer = QtRenderer(world, worm, viz_fps)
@@ -292,6 +294,7 @@ def eval_variant(
             worm.renderer = None       
         # Create brain renderer independently if brain visualization is enabled
         if viz_brain_enabled:
+            from mvb.brain_renderer_qt import BrainQtRenderer   # lazy, as above
             try:
                 if viz_brain_fps > 0:
                     brain_renderer = BrainQtRenderer(fps=viz_brain_fps)

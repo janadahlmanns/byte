@@ -38,7 +38,7 @@ from tests.devices import accelerators, all_devices  # noqa: E402
 
 import mvb.simulation_API as api  # noqa: E402
 from mvb_torch.adapter import MARKER, make_tensor_evaluator, validate_evaluator_cfg  # noqa: E402
-from mvb_torch.generation import draw_seeds, make_simulation_rngs  # noqa: E402
+from mvb_torch.generation import draw_seeds, live_contraction, make_simulation_rngs  # noqa: E402
 from tests.ea_drift import _values_equal, _walk_attrs, _walk_datasets  # noqa: E402
 
 BASE = ROOT / "configs" / "experiments" / "test_ea_predrawn.yaml"
@@ -250,8 +250,9 @@ def test_live_smoke(tmp):
                   for k in ("mean", "max")))
         check(f"{dev}: elite lifespans within [1, max_ticks]",
               bool(((L >= 1) & (L <= T)).all()))
-        check(f"{dev}: reported mode=live contraction=einsum",
-              "mode=live" in out and "contraction=einsum" in out)
+        want = live_contraction(dev)        # sequential on CUDA, einsum elsewhere
+        check(f"{dev}: reported mode=live contraction={want}",
+              "mode=live" in out and f"contraction={want}" in out)
 
 
 # ============================================================

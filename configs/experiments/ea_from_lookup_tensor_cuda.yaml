@@ -76,6 +76,7 @@ experiment:
     device: cuda
     dtype: float32
     philox_rounds: 10     # Philox4x32 rounds, 7-10 (live mode; replay must match)
+    compile: true          # torch.compile (live mode; replay must match): fuses the decision step and Philox; CUDA probe: decide 7x, Philox 20x
 
 
 # ============================================================

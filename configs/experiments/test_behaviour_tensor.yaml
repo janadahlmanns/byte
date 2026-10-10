@@ -22,6 +22,7 @@ experiment:
     device: mps
     dtype: float32
     philox_rounds: 10     # Philox4x32 rounds, 7-10 (live mode; replay must match)
+    compile: true           # torch.compile (live mode; replay must match): on MPS verified bit-identical to eager and 2.2x per iteration (2026-10-09)
 
   max_ticks: 2000           # never reached; worms starve first
   n_runs: 20

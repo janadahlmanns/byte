@@ -17,8 +17,6 @@ import h5py
 
 from mvb.world import World
 from mvb.worm import Worm
-from mvb.world_renderer_qt import QtRenderer
-from mvb.brain_renderer_qt import BrainQtRenderer
 from simulate.pause_manager import get_pause_manager
 from simulate.hdf5_utils import (
     save_variant_summary_to_hdf5,
