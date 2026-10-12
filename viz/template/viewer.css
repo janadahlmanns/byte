@@ -34,7 +34,9 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100%;
-  max-width: 1100px;
+  /* Past this the world canvas is height-bound anyway, so extra width only
+     stretches the brain panel into a thin band. */
+  max-width: 1600px;
   margin: 0 auto;
   padding: 14px;
   gap: 10px;
