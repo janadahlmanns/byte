@@ -324,6 +324,12 @@
   let bChanges = null;    // beat index -> [[edge, value], ...]
   let bOffsets = null;    // first beat index of each decision
   let bBuiltTo = -1;      // beat the weights currently represent
+  let bModByEdge = null;  // edge index -> modulators acting on it
+  // "active": only modulators that are firing, which is the only time they do
+  // anything. "all": the full wiring, signal edges pushed back. "off": bare
+  // network, nothing drawn on top of it.
+  const MOD_MODES = ["active", "all", "off"];
+  let modMode = "active";
   let bCell = 0;          // px per unit, set by fitCanvas
 
   if (BRAIN) {
@@ -361,6 +367,14 @@
         bLayout[key] = { x: (ci + 0.5) / row.length, y: y };
       });
     });
+
+    // Modulators grouped by the edge they act on, so the drawing can ask
+    // "what changes this connection" without rescanning the list.
+    bModByEdge = new Map();
+    for (const m of S2.modulation) {
+      if (!bModByEdge.has(m.edge)) bModByEdge.set(m.edge, []);
+      bModByEdge.get(m.edge).push(m);
+    }
 
     bChanges = new Map();
     for (const [beat, edge, val] of BRAIN.weight_changes) {
@@ -428,10 +442,10 @@
     const fired = id => (act >> id & 1) === 1;
 
     // --- edges ---
+    const mid = new Array(S2.edges.length);          // where modulation attaches
     for (let i = 0; i < S2.edges.length; i++) {
       const e = S2.edges[i];
       const w = bWeights[i];
-      if (Math.abs(w) < 0.01) continue;              // invisible anyway
       const a = nodePos(e.src, W2, H2, pad);
       const b = nodePos(e.tgt, W2, H2, pad);
       const live = typeof e.src === "number" ? fired(e.src) : false;
@@ -439,14 +453,21 @@
       // Opacity carries magnitude and reliability; a firing source brightens
       // it so signal flow is visible without changing the encoding.
       const mag = Math.min(1, Math.abs(w));
-      bctx.globalAlpha = (0.06 + 0.5 * mag * e.rel) * (live ? 2.0 : 1);
+      // The signal wiring is the network itself, so it is the primary layer and
+      // never fades below the modulation overlay drawn on top of it. Only the
+      // dedicated modulation view pushes it back.
+      bctx.globalAlpha = (0.18 + 0.62 * mag * e.rel) * (live ? 1.6 : 1)
+                         * (modMode === "all" ? 0.22 : 1);
       bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
       bctx.lineWidth = 0.5 + 3 * mag;
 
       if (e.src === e.tgt) {
-        bctx.beginPath();
-        bctx.arc(a.x, a.y - r * 1.5, r * 0.85, 0, 6.2832);
-        bctx.stroke();
+        mid[i] = { x: a.x, y: a.y - r * 2.35 };      // top of the loop
+        if (Math.abs(w) >= 0.01) {
+          bctx.beginPath();
+          bctx.arc(a.x, a.y - r * 1.5, r * 0.85, 0, 6.2832);
+          bctx.stroke();
+        }
       } else {
         const dx = b.x - a.x, dy = b.y - a.y;
         const len = Math.hypot(dx, dy) || 1;
@@ -456,14 +477,34 @@
         // Curve every edge the same way round so opposing pairs stay distinct.
         const cx = (sx + ex) / 2 - (ey - sy) * 0.18;
         const cy = (sy + ey) / 2 + (ex - sx) * 0.18;
-        bctx.beginPath();
-        bctx.moveTo(sx, sy);
-        bctx.quadraticCurveTo(cx, cy, ex, ey);
-        bctx.stroke();
-        arrowHead(ex, ey, ex - cx, ey - cy, 3 + 3 * mag);
+        // Midpoint of the quadratic curve, not of the straight line, so the
+        // marker sits on the stroke that is actually drawn.
+        mid[i] = { x: 0.25 * sx + 0.5 * cx + 0.25 * ex,
+                   y: 0.25 * sy + 0.5 * cy + 0.25 * ey };
+        if (Math.abs(w) >= 0.01) {
+          bctx.beginPath();
+          bctx.moveTo(sx, sy);
+          bctx.quadraticCurveTo(cx, cy, ex, ey);
+          bctx.stroke();
+          arrowHead(ex, ey, ex - cx, ey - cy, 3 + 3 * mag);
+        }
       }
     }
     bctx.globalAlpha = 1;
+
+    drawModulation(mid, fired, r);
+
+    if (modMode !== "active") {
+      bctx.globalAlpha = 1;
+      bctx.fillStyle = C.sensor;
+      bctx.font = "600 10px Consolas, monospace";
+      bctx.textAlign = "right";
+      bctx.textBaseline = "top";
+      bctx.fillText(modMode === "all" ? "ALL MODULATION  (m)"
+                                      : "MODULATION OFF  (m)", W2 - 4, 2);
+      bctx.textAlign = "center";
+      bctx.textBaseline = "middle";
+    }
 
     // --- input sources ---
     bctx.font = "600 9px Consolas, monospace";
@@ -513,6 +554,65 @@
         bctx.fillText(ACTION_LABEL[action] || action, p.x, p.y + r * 1.9);
       }
     }
+  }
+
+  /* Modulatory connections: which neurons CHANGE a connection, as opposed to
+     signalling through it.
+
+     A modulator only has an effect on the beat its neuron fires -- that is the
+     only time the weight moves. Drawing just those keeps roughly seven links on
+     screen instead of all hundred, and what is shown is what is actually acting.
+     Press 'm' to see the full wiring instead. */
+  function drawModulation(mid, fired, r) {
+    if (modMode === "off") return;
+    const showAll = modMode === "all";
+    const S2 = BRAIN.static;
+    const dia = Math.max(2.5, r * 0.3);
+
+    for (const [edgeIndex, mods] of bModByEdge) {
+      const m0 = mid[edgeIndex];
+      if (!m0) continue;
+      const anyActive = mods.some(m => fired(m.by));
+
+      // A diamond marks every modulated connection, faint until something acts.
+      bctx.globalAlpha = anyActive ? 0.95 : (showAll ? 0.6 : 0.16);
+      bctx.fillStyle = C.dim;
+      diamond(m0.x, m0.y, dia);
+      bctx.fill();
+
+      for (const m of mods) {
+        const active = fired(m.by);
+        if (!active && !showAll) continue;
+        const from = nodePos(m.by, bCell.w, bCell.h, Math.min(bCell.w, bCell.h) * 0.14);
+        const strength = Math.min(1, Math.abs(m.w) * 2);
+
+        bctx.globalAlpha = active ? 0.3 + 0.6 * strength : 0.25 + 0.35 * strength;
+        bctx.strokeStyle = m.w >= 0 ? C.exc : C.inh;
+        bctx.lineWidth = active ? 1 + 1.5 * strength : 0.6 + 0.9 * strength;
+        bctx.setLineDash(active ? [4, 3] : [3, 3]);
+        bctx.beginPath();
+        bctx.moveTo(from.x, from.y);
+        bctx.lineTo(m0.x, m0.y);
+        bctx.stroke();
+        bctx.setLineDash([]);
+
+        if (active) {
+          bctx.fillStyle = m.w >= 0 ? C.exc : C.inh;
+          diamond(m0.x, m0.y, dia * 0.85);
+          bctx.fill();
+        }
+      }
+    }
+    bctx.globalAlpha = 1;
+  }
+
+  function diamond(x, y, s) {
+    bctx.beginPath();
+    bctx.moveTo(x, y - s);
+    bctx.lineTo(x + s, y);
+    bctx.lineTo(x, y + s);
+    bctx.lineTo(x - s, y);
+    bctx.closePath();
   }
 
   function shortSensor(key) {
@@ -668,6 +768,10 @@
     else if (e.key === "ArrowRight") { setPlaying(false); show(cur + (e.shiftKey ? 10 : 1)); }
     else if (e.key === "Home") { setPlaying(false); show(0); }
     else if (e.key === "End") { setPlaying(false); show(N - 1); }
+    else if (e.key === "m" || e.key === "M") {
+      modMode = MOD_MODES[(MOD_MODES.indexOf(modMode) + 1) % MOD_MODES.length];
+      drawBrain(cur);
+    }
   });
 
   window.addEventListener("resize", function () { fitCanvas(); draw(cur); drawBrain(cur); });

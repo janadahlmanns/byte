@@ -80,7 +80,7 @@
 
   <div class="hint">
     <kbd>space</kbd> play/pause &nbsp; <kbd>←</kbd><kbd>→</kbd> step
-    (<kbd>shift</kbd> ×10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump
+    (<kbd>shift</kbd> ×10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp; <kbd>m</kbd> modulation view
   </div>
 
 </div>
