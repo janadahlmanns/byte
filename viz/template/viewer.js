@@ -333,8 +333,22 @@
     // the output neurons. Derived from the recording, not hardcoded, so a
     // different brain size still lays out sensibly.
     const byRole = r => S2.neurons.filter(n => n.role === r).map(n => n.id);
+
+    // Order the input row by the neuron each sensor feeds. Sensors are listed
+    // in config order, which need not match neuron ids, so without this the
+    // five input edges cross each other on the way down for no reason.
+    const inputTarget = {};
+    for (const e of S2.edges) {
+      if (typeof e.src === "string" && !(e.src in inputTarget)) {
+        inputTarget[e.src] = e.tgt;
+      }
+    }
+    const inputRow = S2.inputs
+      .map(k => "in:" + k)
+      .sort((a, b) => (inputTarget[a] ?? 1e9) - (inputTarget[b] ?? 1e9));
+
     const rows = [
-      S2.inputs.map(k => "in:" + k),
+      inputRow,
       byRole("sensory"),
       byRole("hidden"),
       byRole("output"),
