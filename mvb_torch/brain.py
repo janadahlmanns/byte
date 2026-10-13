@@ -83,19 +83,23 @@ class StepGenome(NamedTuple):
 
     Wsign: torch.Tensor
     Rel: torch.Tensor
-    Mod: torch.Tensor
+    Mod: Optional[torch.Tensor]   # dense, einsum only; None on the sparse path
     Tonic: torch.Tensor
     Eta: torch.Tensor
     S_w: torch.Tensor
     S_r: torch.Tensor
     sensor_keys: Tuple[str, ...]
     threshold_raw: float
+    mod_edge: torch.Tensor        # sparse modulation (plan Step 11), see GenomeBatch
+    mod_k: torch.Tensor
+    mod_w: torch.Tensor
 
     @staticmethod
     def of(batch: GenomeBatch) -> "StepGenome":
         return StepGenome(batch.Wsign, batch.Rel, batch.Mod, batch.Tonic, batch.Eta,
                           batch.S_w, batch.S_r, tuple(batch.sensor_keys),
-                          float(batch.threshold_raw))
+                          float(batch.threshold_raw), batch.mod_edge, batch.mod_k,
+                          batch.mod_w)
 
 
 def init_state(batch: GenomeBatch, n_runs: int) -> BrainTensorState:
@@ -158,6 +162,13 @@ def _modulation_sum(
 ) -> torch.Tensor:
     """tanh of the modulator-weighted activity sum, per edge -> (P, R, n, n).
 
+    `sequential` sums only the real entries (sparse, plan Step 11): for each modulated
+    edge, its entries in ascending modulator index, accumulated from 0 -- exactly the
+    additions the former dense loop `for k in range(n): total += act[k] * Mod[k]` made,
+    minus its `+0.0` terms, which change no value. So it is bit-identical to that loop
+    for every genome (tests/test_sparse_modulation.py), and costs L x E multiply-adds
+    instead of n^3 (n = 50: ~10^3 vs 125,000). `einsum` keeps the dense tensor.
+
     Bit-exactness caveat: the scalar sim accumulates in `modulation_spec` LIST order
     while any dense form must sum over ascending modulator index. With <= 2
     modulators on an edge the orders agree exactly (float addition is commutative,
@@ -165,16 +176,25 @@ def _modulation_sum(
     `lookup_soft` generators. Mutated genomes can exceed that on a few edges; see
     plan_evotorch.md Step 2, "Where bit-exactness stops".
     """
+    P, R, n = state.act.shape
     if contraction == "sequential":
-        P, R, n = state.act.shape
-        total = torch.zeros((P, R, n, n), dtype=state.act.dtype, device=state.act.device)
-        for k in range(n):
-            # act[:, :, k] -> (P, R, 1, 1);  Mod[:, k] -> (P, 1, n, n)
-            total.addcmul_(
-                state.act[..., k].unsqueeze(-1).unsqueeze(-1),
-                batch.Mod[:, k].unsqueeze(1),
-            )
+        E = batch.mod_edge.shape[-1]
+        acc = torch.zeros((P, R, E), dtype=state.act.dtype, device=state.act.device)
+        for l_ in range(batch.mod_k.shape[1]):
+            # Activity of entry l's modulator, per edge: (P, R, E). act * w is the
+            # same product the dense loop formed (multiplication commutes exactly).
+            a_l = torch.gather(state.act, 2, batch.mod_k[:, l_].unsqueeze(1).expand(P, R, E))
+            acc.addcmul_(a_l, batch.mod_w[:, l_].unsqueeze(1))
+        # Into the n*n edges; padding edges land in the scratch columns n*n..n*n+E-1
+        # (unique indices: deterministic) and are dropped.
+        flat = torch.zeros((P, R, n * n + E), dtype=acc.dtype, device=acc.device)
+        flat.scatter_(2, batch.mod_edge.unsqueeze(1).expand(P, R, E), acc)
+        total = flat[..., : n * n].reshape(P, R, n, n)
     else:
+        if batch.Mod is None:
+            raise ValueError(
+                "the einsum contraction needs the dense modulation tensor, but the "
+                "genomes were encoded with dense_modulation=False")
         total = torch.einsum("pkij,prk->prij", batch.Mod, state.act)
     return _tanh(total)
 

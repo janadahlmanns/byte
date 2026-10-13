@@ -225,22 +225,28 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
             noise_level=float(brain_cfg["noise_level"]),
         )
 
-        # Width (R3): from the config and the device's total memory only, so it is the
-        # same every generation and every run on this machine. Upper bounds (K from
-        # n_neurons x max_decision_delay, all n^2 connections tracked) keep it
-        # independent of the particular genomes.
+        # The dense modulation tensor is needed only by the einsum contraction; the
+        # sequential one sums the sparse lists (plan Step 11).
+        t0 = time.perf_counter()
+        sparse = contraction == "sequential"
+        batch = encode_genomes(genomes, brain_cfg, device=device, dtype=dtype,
+                               dense_modulation=not sparse)
+
+        # Width (R3): from the device's total memory, the config and the encoded batch.
+        # Upper bounds (K from n_neurons x max_decision_delay, all n^2 connections
+        # tracked) are used where they exist. On the sparse path the per-slot
+        # modulation copy depends on the genomes' (L, E), so the width can differ
+        # between generations -- which never changes results (width is scheduling).
         n = int(brain_cfg["n_neurons"])
         slot_bytes = estimate_slot_bytes(
             height=sim.height, width_cells=sim.width, n=n,
             K=int(n * float(brain_cfg["max_decision_delay"])), dtype=dtype, mode=mode,
             max_ticks=sim.max_ticks,
+            sparse_shape=(tuple(batch.mod_k.shape[1:]) if sparse else None),
             tracked_connections=(n * n if flags.per_tick else 0 if flags.heat_map else None),
         )
         width, width_reason = choose_width(
-            P, R, slot_bytes, device, batch_bytes=genome_batch_bytes(P, n, dtype))
-
-        t0 = time.perf_counter()
-        batch = encode_genomes(genomes, brain_cfg, device=device, dtype=dtype)
+            P, R, slot_bytes, device, batch_bytes=genome_batch_bytes(batch))
         tracker = (trk.Tracker(genomes, flags, R, width, sim.active_sensors, device, dtype)
                    if flags.per_run else None)
         res = eval_generation_batch(

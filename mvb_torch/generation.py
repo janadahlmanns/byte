@@ -376,10 +376,11 @@ class _Context:
 def slot_view(batch: GenomeBatch, slot_genome: torch.Tensor) -> GenomeBatch:
     """The genome tensors of each slot's current genome, as a batch of B "genomes".
 
-    A real copy per slot (`Mod`: B x n^3, ~42 MB at B = 7,800 in float32), which plan
-    5.2's correction allows: the binding rule exists to forbid P x R copies, and this
-    is per slot, not per run. Gathering copies values exactly, so every downstream
-    product and sum is the same as with the (P, ...) tensors.
+    A real copy per slot, which plan 5.2's correction allows: the binding rule exists
+    to forbid P x R copies, and this is per slot, not per run. Gathering copies values
+    exactly, so every downstream product and sum is the same as with the (P, ...)
+    tensors. The dense `Mod` (B x n^3: 500 KB per slot at n = 50) is copied only when
+    the batch has it (einsum path); the sparse lists are small (plan Step 11).
     """
     g = slot_genome.reshape(-1)
     return replace(
@@ -387,7 +388,10 @@ def slot_view(batch: GenomeBatch, slot_genome: torch.Tensor) -> GenomeBatch:
         Wabs0=batch.Wabs0[g],          # (B, 1, n, n)
         Wsign=batch.Wsign[g],
         Rel=batch.Rel[g],
-        Mod=batch.Mod[g],              # (B, n, n, n)
+        Mod=None if batch.Mod is None else batch.Mod[g],   # (B, n, n, n)
+        mod_edge=batch.mod_edge[g],    # (B, E)
+        mod_k=batch.mod_k[g],          # (B, L, E)
+        mod_w=batch.mod_w[g],
         Tonic=batch.Tonic[g],          # (B, 1, n)
         Eta=batch.Eta[g],              # (B, 1, 1, 1)
         warmup_ticks=batch.warmup_ticks[g],
@@ -566,19 +570,29 @@ def release_device_cache(device) -> None:
 
 def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
                         dtype: torch.dtype, mode: str, max_ticks: int,
+                        sparse_shape: Optional[Tuple[int, int]],
                         tracked_connections: Optional[int] = None,
                         flush_every: int = 64) -> int:
-    """Peak bytes one slot needs, from the config alone (deterministic).
+    """Peak bytes one slot needs (deterministic).
 
     The slot's state and per-iteration buffers are counted exactly from their shapes;
     PEAK_FACTOR (measured) covers the temporaries. Pre-drawn bundles and tracker
     buffers are added when used -- they are large and do not scale with the factor.
+    `sparse_shape` = (L, E) of the encoded batch on the sparse (sequential) path, whose
+    per-slot modulation copy is L x E entries; None on the dense (einsum) path, which
+    copies the n^3 tensor (plan Step 11).
     """
     ds = torch.tensor([], dtype=dtype).element_size()
     cells = height * width_cells
+    if sparse_shape is None:
+        modulation = n ** 3 * ds
+    else:
+        L, E = sparse_shape
+        modulation = L * E * (8 + ds) + E * 8
     state = (
         cells * 2                                # avail int16 (regrow clock, R4)
-        + (n ** 3 + 3 * n * n + n + 1) * ds      # per-slot genome copy (slot_view)
+        + modulation                             # per-slot modulation copy (slot_view)
+        + (3 * n * n + n + 1) * ds               # per-slot genome copy (slot_view)
         + (n * n + n) * ds                       # brain: Wabs, act
         + 16 * 8                                 # worm, phase, run, genome indices
     )
@@ -595,14 +609,13 @@ def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
     return int(math.ceil(total))
 
 
-def genome_batch_bytes(P: int, n: int, dtype: torch.dtype) -> int:
-    """Device bytes of the encoded genome batch (`encode_genomes`): per genome the same
-    tensors `slot_view` copies per slot -- Mod (n^3), Wabs0 / Wsign / Rel (n^2 each),
-    Tonic (n), Eta (1) -- plus two int64 tick counts. Negligible at n = 11 (P = 260:
-    1.8 MB), but 0.5 GB at n = 50, P = 1000 (plan Step 10), so the width budget
+def genome_batch_bytes(batch: GenomeBatch) -> int:
+    """Device bytes of an encoded genome batch: every tensor it holds, as encoded
+    (with or without the dense Mod). Negligible at n = 11 (P = 260: ~2 MB), but
+    0.5 GB with the dense Mod at n = 50, P = 1000 (plan Step 10), so the width budget
     subtracts it."""
-    ds = torch.tensor([], dtype=dtype).element_size()
-    return int(P) * ((n ** 3 + 3 * n * n + n + 1) * ds + 2 * 8)
+    return sum(t.numel() * t.element_size() for t in vars(batch).values()
+               if isinstance(t, torch.Tensor))
 
 
 def choose_width(P: int, R: int, slot_bytes: int, device, *, batch_bytes: int,

@@ -262,7 +262,7 @@ def test_width():
     check(f"device memory is the device's TOTAL memory, never the free amount "
           f"({', '.join(f'{d} {v / GB:.1f} GB' for d, v in expected_total.items())})",
           all(G.device_memory(d) == v for d, v in expected_total.items()))
-    kw = dict(n=11, K=22, dtype=torch.float32, max_ticks=200)
+    kw = dict(n=11, K=22, dtype=torch.float32, max_ticks=200, sparse_shape=None)
     live = G.estimate_slot_bytes(height=51, width_cells=51, mode="live", **kw)
     small = G.estimate_slot_bytes(height=21, width_cells=21, mode="live", **kw)
     pre = G.estimate_slot_bytes(height=51, width_cells=51, mode="predrawn", **kw)

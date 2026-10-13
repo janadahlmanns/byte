@@ -60,7 +60,7 @@ DEFAULT_CONFIG = "ea_from_lookup"
 _GENERATORS = {"lookup_hard": generate_lookup_hard_genome, "random": generate_random_genome}
 
 
-def production_setup(dev, name):
+def production_setup(dev, name, dense_modulation):
     cfg = yaml.safe_load(open(os.path.join(ROOT, f"configs/experiments/{name}.yaml")))
     gtype = cfg["experiment"]["genome_type"]
     if gtype not in _GENERATORS:
@@ -73,7 +73,8 @@ def production_setup(dev, name):
         for _ in range(i % 4):                      # generation-1-like: elites + mutants
             g = generate_genome_mutate_simple(g, 0.1, 0.2, rng)
         genomes.append(g)
-    return cfg, genomes, encode_genomes(genomes, cfg["brain"], device=dev, dtype=DT)
+    return cfg, genomes, encode_genomes(genomes, cfg["brain"], device=dev, dtype=DT,
+                                        dense_modulation=dense_modulation)
 
 
 def env(dev):
@@ -177,18 +178,21 @@ def phase_profile(dev, cfg, batch, width, compile, n_iter=20, warm=5):
     return {k: 1000 * v / n_iter for k, v in T.items()}, used / width / 1024
 
 
-def width_rule(dev, cfg):
+def width_rule(dev, cfg, batch):
     """The width the evaluator would choose for this config, its reason, and the
-    estimated bytes per slot (the adapter's computation)."""
+    estimated bytes per slot (the adapter's computation; the genome batch scaled from
+    the profile's 260 genomes to the config's population)."""
     brain, x = cfg["brain"], cfg["experiment"]
     n = int(brain["n_neurons"])
     sim = G.sim_config_from_yaml(cfg)
     slot = G.estimate_slot_bytes(
         height=sim.height, width_cells=sim.width, n=n,
         K=int(n * float(brain["max_decision_delay"])), dtype=DT, mode="live",
-        max_ticks=sim.max_ticks)
+        max_ticks=sim.max_ticks,
+        sparse_shape=None if batch.Mod is not None else tuple(batch.mod_k.shape[1:]))
     Pc, Rc = int(x["population_size"]), int(x["n_runs"])
-    W, why = G.choose_width(Pc, Rc, slot, dev, batch_bytes=G.genome_batch_bytes(Pc, n, DT))
+    gb = G.genome_batch_bytes(batch) * Pc // batch.n_pop
+    W, why = G.choose_width(Pc, Rc, slot, dev, batch_bytes=gb)
     return W, why, slot
 
 
@@ -311,14 +315,17 @@ def main():
     print(f"GPU diagnostics on {dev}")
     print("=" * 74)
     env(dev)
-    cfg, genomes, batch = production_setup(dev, args.config)
-    W, why, slot = width_rule(dev, cfg)
+    cfg, genomes, batch = production_setup(
+        dev, args.config, dense_modulation=G.live_contraction(dev) == "einsum")
+    W, why, slot = width_rule(dev, cfg, batch)
     K = int(batch.max_ticks.max().item())
     print(f"\n[2] One iteration by phase (ms, synchronized between phases), config "
           f"{args.config}: n_neurons {batch.n_neurons}, 260 gen-1-like "
           f"{cfg['experiment']['genome_type']} genomes")
     print(f"  contraction: {G.live_contraction(dev)}; brain ticks per decision: max K = {K}, "
-          f"mean warmup {batch.warmup_ticks.float().mean().item():.1f}")
+          f"mean warmup {batch.warmup_ticks.float().mean().item():.1f}; modulation "
+          + ("dense (n^3)" if batch.Mod is not None else
+             f"sparse, L x E = {batch.mod_k.shape[1]} x {batch.mod_k.shape[2]}"))
     print(f"  width rule for this config: {W} ({why}); estimated {slot / 1024:.1f} KB/slot")
     if args.config == DEFAULT_CONFIG:
         widths = (7_800, 26_000, 78_000)

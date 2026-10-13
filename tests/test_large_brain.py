@@ -226,22 +226,31 @@ def test_live(dev):
 def test_memory():
     print("\n[5] Memory: per-slot estimate and the genome batch in the width budget")
     live = G.estimate_slot_bytes(height=51, width_cells=51, n=11, K=22,
-                                 dtype=torch.float32, mode="live", max_ticks=2000)
+                                 dtype=torch.float32, mode="live", max_ticks=2000,
+                                 sparse_shape=None)
     pre = G.estimate_slot_bytes(height=51, width_cells=51, n=11, K=22, dtype=torch.float64,
-                                mode="predrawn", max_ticks=200, tracked_connections=30)
+                                mode="predrawn", max_ticks=200, tracked_connections=30,
+                                sparse_shape=None)
     check(f"n = 11 estimates unchanged ({live}, {pre} bytes)",
           live == FROZEN_SLOT_BYTES["live"] and pre == FROZEN_SLOT_BYTES["predrawn"])
     K = 2 * N
     est50 = G.estimate_slot_bytes(height=51, width_cells=51, n=N, K=K,
-                                  dtype=torch.float32, mode="live", max_ticks=2000)
+                                  dtype=torch.float32, mode="live", max_ticks=2000,
+                                  sparse_shape=None)
     by_hand = math.ceil(G.PEAK_FACTOR * (
         51 * 51 * 2 + (N ** 3 + 3 * N * N + N + 1) * 4 + (N * N + N) * 4 + 16 * 8
         + K * N * 4 + K * 13 * 4 * 8 * 6 + 2 * 51 * 51))
     check(f"n = 50 estimate {est50 / 1024:.0f} KB/slot counts 13 Philox blocks",
           est50 == by_hand)
-    gb = G.genome_batch_bytes(1000, N, torch.float32)
-    check(f"genome batch at P = 1000, n = 50: {gb / 2**20:.0f} MB (Mod alone is "
-          f"{1000 * N ** 3 * 4 / 2**20:.0f} MB)", gb > 1000 * N ** 3 * 4)
+    genomes = pool50(brain50())
+    dense = encode_genomes(genomes, brain50(), dtype=torch.float32)
+    gb1 = G.genome_batch_bytes(dense)
+    P = len(genomes)
+    check(f"genome batch bytes = all its tensors ({gb1 / 2**20:.1f} MB for {P} genomes "
+          f"with the dense Mod, {P * N ** 3 * 4 / 2**20:.1f} MB of it Mod)",
+          gb1 == sum(t.numel() * t.element_size() for t in vars(dense).values()
+                     if isinstance(t, torch.Tensor)) and gb1 > P * N ** 3 * 4)
+    gb = gb1 * 1000 // P                             # a P = 1000 batch of such genomes
     total, slot = 8 * 2**30, est50
     budget = int(0.8 * total) - G.BASE_BYTES
     w0, _ = G.choose_width(1000, 300, slot, "cuda", batch_bytes=0, total_memory=total)

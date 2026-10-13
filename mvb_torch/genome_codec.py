@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -51,9 +51,22 @@ class GenomeBatch:
                           #               because plasticity acts on |w| alone
 
     # --- fixed genome parameters -----------------------------------------
-    Mod: torch.Tensor     # (P, n, n, n)  Mod[p, k, i, j] = weight of modulator k on edge i->j
+    # Dense modulation (the `einsum` contraction): None when encoded with
+    # dense_modulation=False, which the sequential path uses (plan Step 11).
+    Mod: Optional[torch.Tensor]  # (P, n, n, n)  Mod[p, k, i, j] = weight of modulator k on edge i->j
     Tonic: torch.Tensor   # (P, 1, n)     per-neuron tonic drive
     Eta: torch.Tensor     # (P, 1, 1, 1)  global plasticity factor, broadcast over edges
+
+    # Sparse modulation (the `sequential` contraction, plan Step 11): the nonzero
+    # entries of Mod, per modulated edge in ASCENDING modulator index -- the order the
+    # dense sequential sum adds them in, so the sum is bit-identical to it. E = most
+    # modulated edges in any genome, L = most entries on any edge rounded up to a power
+    # of two (>= 2; a loop count, so compile sees few values). Padding: entries k = 0,
+    # w = 0.0 after the real ones (adds +0.0: no effect); padding edges point to unique
+    # scratch columns n*n + e, which the sum drops.
+    mod_edge: torch.Tensor  # (P, E)     int64 flat edge index i*n + j (or n*n + e)
+    mod_k: torch.Tensor     # (P, L, E)  int64 modulator index of entry l
+    mod_w: torch.Tensor     # (P, L, E)  modulator weight of entry l (= Mod[p, k, i, j])
 
     # --- derived per-genome integers --------------------------------------
     warmup_ticks: torch.Tensor  # (P,) int64
@@ -123,14 +136,15 @@ def _require(condition: bool, message: str) -> None:
 # ============================================================
 
 def _fill_modulation(
-    mod_out: np.ndarray,
     modulation_spec: Dict[Tuple[int, int], Sequence[Tuple[int, float]]],
     weights: np.ndarray,
     n_neurons: int,
     p: int,
     folded: List[Tuple[int, int, int, int]],
-) -> None:
-    """Write one genome's modulation spec into ``mod_out[k, i, j]``.
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """One genome's modulation spec as ``{(i, j): {k: weight}}`` -- the nonzero
+    entries of the dense ``Mod[k, i, j]``, from which both the dense tensor and the
+    sparse lists are built (plan Step 11), so the two hold identical values.
 
     Two behaviours here are not obvious and both are required to match
     ``init_brain``:
@@ -154,6 +168,7 @@ def _fill_modulation(
         floating-point sum -- so it can differ in the last bit.  Every collision
         is recorded so an equivalence failure can be attributed instead of hunted.
     """
+    entries: Dict[Tuple[int, int], Dict[int, float]] = {}
     for (src, tgt), modulators in modulation_spec.items():
         _require(
             0 <= src < n_neurons and 0 <= tgt < n_neurons,
@@ -163,6 +178,7 @@ def _fill_modulation(
         if weights[src, tgt] == 0.0:
             # No Connection object exists for this edge; init_brain ignores it.
             continue
+        edge = entries.setdefault((int(src), int(tgt)), {})
         for mod_id, mod_weight in modulators:
             mod_id = int(mod_id)
             _require(
@@ -170,9 +186,49 @@ def _fill_modulation(
                 f"genome {p}: modulator id {mod_id} on edge ({src}, {tgt}) out of "
                 f"range for n_neurons={n_neurons}",
             )
-            if mod_out[mod_id, src, tgt] != 0.0:
+            # The same float64 additions, in the same order, as the former
+            # `mod_out[k, i, j] += w` on a zero-initialised array.
+            if edge.get(mod_id, 0.0) != 0.0:
                 folded.append((p, mod_id, src, tgt))
-            mod_out[mod_id, src, tgt] += float(mod_weight)
+            edge[mod_id] = edge.get(mod_id, 0.0) + float(mod_weight)
+    return entries
+
+
+def _sparse_modulation(
+    mod_entries: List[Dict[Tuple[int, int], Dict[int, float]]], n: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(mod_edge (P, E), mod_k (P, L, E), mod_w (P, L, E)) from the per-genome entries.
+
+    Zero-valued entries are left out: the dense sequential sum adds them as
+    `act * 0.0 = +0.0`, which changes no value (the accumulator starts at +0.0 and
+    can never become -0.0), so leaving them out keeps the sum bit-identical. Entries
+    of an edge are in ascending modulator index -- the dense loop's order.
+    """
+    P = len(mod_entries)
+    per_genome = []
+    for entries in mod_entries:
+        edges = []
+        for (i, j) in sorted(entries):
+            ks = sorted(k for k, w in entries[(i, j)].items() if w != 0.0)
+            if ks:
+                edges.append((i * n + j, [(k, entries[(i, j)][k]) for k in ks]))
+        per_genome.append(edges)
+    E = max(1, max(len(edges) for edges in per_genome))
+    L_real = max([len(ents) for edges in per_genome for _, ents in edges], default=0)
+    L = 2
+    while L < L_real:
+        L *= 2
+    mod_edge = np.zeros((P, E), dtype=np.int64)
+    mod_k = np.zeros((P, L, E), dtype=np.int64)
+    mod_w = np.zeros((P, L, E), dtype=np.float64)
+    for p, edges in enumerate(per_genome):
+        mod_edge[p] = n * n + np.arange(E)             # unique scratch columns
+        for e, (flat, ents) in enumerate(edges):
+            mod_edge[p, e] = flat
+            for l_, (k, w) in enumerate(ents):
+                mod_k[p, l_, e] = k
+                mod_w[p, l_, e] = w
+    return mod_edge, mod_k, mod_w
 
 
 def _warmup_and_max_ticks(
@@ -204,6 +260,8 @@ def encode_genomes(
     brain_cfg: Dict[str, Any],
     device: Any = "cpu",
     dtype: torch.dtype = torch.float64,
+    *,
+    dense_modulation: bool = True,
 ) -> GenomeBatch:
     """Encode P scalar genomes into a :class:`GenomeBatch`.
 
@@ -222,6 +280,11 @@ def encode_genomes(
         See the device/dtype policy in the package docstring.  Defaults are the
         reference configuration (cpu/float64), so a test that forgets to pass
         them still gets the exact one.
+    dense_modulation
+        Also build the dense ``Mod`` (P, n, n, n), which only the ``einsum``
+        contraction uses. The sparse lists are always built. The adapter passes
+        False on the sequential path: at n = 50, P = 1000 the dense tensor is 0.5 GB
+        (plan Step 11).
 
     Raises
     ------
@@ -272,7 +335,7 @@ def encode_genomes(
     Wabs0_np = np.zeros((P, n, n), dtype=np.float64)
     Wsign_np = np.zeros((P, n, n), dtype=np.float64)
     Rel_np = np.zeros((P, n, n), dtype=np.float64)
-    Mod_np = np.zeros((P, n, n, n), dtype=np.float64)
+    mod_entries: List[Dict[Tuple[int, int], Dict[int, float]]] = []
     Tonic_np = np.zeros((P, n), dtype=np.float64)
     Eta_np = np.zeros((P,), dtype=np.float64)
     warmup_np = np.zeros((P,), dtype=np.int64)
@@ -317,7 +380,8 @@ def encode_genomes(
             f"genome {p}: sign/magnitude disagree about which edges exist",
         )
 
-        _fill_modulation(Mod_np[p], genome["modulation_spec"], weights, n, p, folded)
+        mod_entries.append(
+            _fill_modulation(genome["modulation_spec"], weights, n, p, folded))
 
         tonic = np.asarray(genome["tonic_activations"], dtype=np.float64)
         _require(
@@ -341,11 +405,24 @@ def encode_genomes(
     def _t(array: np.ndarray) -> torch.Tensor:
         return torch.as_tensor(array, dtype=dtype, device=device)
 
+    Mod = None
+    if dense_modulation:
+        Mod_np = np.zeros((P, n, n, n), dtype=np.float64)
+        for p, entries in enumerate(mod_entries):
+            for (i, j), mods in entries.items():
+                for k, w in mods.items():
+                    Mod_np[p, k, i, j] = w
+        Mod = _t(Mod_np)                   # (P, n, n, n) -- no run axis, ever
+    mod_edge_np, mod_k_np, mod_w_np = _sparse_modulation(mod_entries, n)
+
     return GenomeBatch(
         Wabs0=_t(Wabs0_np).unsqueeze(1),   # (P, 1, n, n)
         Wsign=_t(Wsign_np).unsqueeze(1),
         Rel=_t(Rel_np).unsqueeze(1),
-        Mod=_t(Mod_np),                    # (P, n, n, n) -- no run axis, ever
+        Mod=Mod,
+        mod_edge=torch.as_tensor(mod_edge_np, device=device),
+        mod_k=torch.as_tensor(mod_k_np, device=device),
+        mod_w=_t(mod_w_np),
         Tonic=_t(Tonic_np).unsqueeze(1),   # (P, 1, n)
         Eta=_t(Eta_np).reshape(P, 1, 1, 1),
         warmup_ticks=torch.as_tensor(warmup_np, device=device),
