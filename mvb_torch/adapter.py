@@ -45,7 +45,8 @@ from . import philox
 from . import tracking as trk
 from .decision import build_output_spec
 from .generation import (SeedSet, SimConfig, choose_width, configure_device, draw_seeds,
-                         estimate_slot_bytes, eval_generation_batch, live_contraction)
+                         estimate_slot_bytes, eval_generation_batch, genome_batch_bytes,
+                         live_contraction)
 from .genome_codec import encode_genomes
 
 # Printed once per generation. tests/test_ea_tensor.py looks for it to prove the tensor
@@ -235,7 +236,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
             max_ticks=sim.max_ticks,
             tracked_connections=(n * n if flags.per_tick else 0 if flags.heat_map else None),
         )
-        width, width_reason = choose_width(P, R, slot_bytes, device)
+        width, width_reason = choose_width(
+            P, R, slot_bytes, device, batch_bytes=genome_batch_bytes(P, n, dtype))
 
         t0 = time.perf_counter()
         batch = encode_genomes(genomes, brain_cfg, device=device, dtype=dtype)

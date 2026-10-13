@@ -40,8 +40,8 @@ DT = torch.float32
 
 
 def words_fn(seed, tick, rounds, philox_fn=None):
-    """(K, B, 3, 4) Philox words, exactly as standard_normals computes them."""
-    nb = P._BLOCKS_PER_BRAIN_TICK
+    """(K, B, nb, 4) Philox words, exactly as standard_normals computes them."""
+    nb = P.blocks_per_brain_tick(N)
     dev = seed.device
     k = torch.arange(K, dtype=torch.int64, device=dev).view(K, 1, 1)
     blk = torch.arange(nb, dtype=torch.int64, device=dev).view(1, 1, nb)
@@ -56,14 +56,14 @@ def words_fn(seed, tick, rounds, philox_fn=None):
 
 
 def uniforms_fn(words):
-    return P.open_uniform(words.reshape(K, words.shape[1], 6, 2), DT)
+    return P.open_uniform(words.reshape(K, words.shape[1], 2 * P.blocks_per_brain_tick(N), 2), DT)
 
 
 def box_muller_fn(u):
     r = torch.sqrt(-2.0 * torch.log(u[..., 0]))
     theta = P._TWO_PI * u[..., 1]
     z = torch.stack((r * torch.cos(theta), r * torch.sin(theta)), dim=-1)
-    return z.reshape(K, u.shape[1], 12)[..., :N].unsqueeze(2)
+    return z.reshape(K, u.shape[1], 4 * P.blocks_per_brain_tick(N))[..., :N].unsqueeze(2)
 
 
 def _mulhilo(a, m):

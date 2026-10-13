@@ -59,7 +59,7 @@ def _words(rounds, K=22):
     expand/stack). With the old direct product, x86 CPU code compiled from THIS layout
     came out wrong, while a simpler layout happened to compile correctly (laptop
     negative control, 2026-10-10): undefined behaviour depends on the generated code."""
-    nb = philox._BLOCKS_PER_BRAIN_TICK
+    nb = philox.blocks_per_brain_tick(11)
 
     def f(seed, tick):
         dev, B = seed.device, seed.shape[0]

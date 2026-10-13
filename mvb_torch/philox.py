@@ -37,9 +37,12 @@ Layout of the address
 ---------------------
 One Philox call maps a 128-bit counter and a 64-bit key to four 32-bit words.
 
-    noise     key = (noise_seed, 0),    counter = (t, 3*k + block, 0, STREAM_NOISE)
-              blocks 0..2 give 12 words -> 12 uniforms -> 6 Box-Muller pairs -> 12
-              normals, of which the first n = 11 are used (neuron i <- normal i).
+    noise     key = (noise_seed, 0),    counter = (t, nb*k + block, 0, STREAM_NOISE)
+              with nb = blocks_per_brain_tick(n) = ceil(n / 4): blocks 0..nb-1 give
+              4*nb words -> 4*nb uniforms -> 2*nb Box-Muller pairs -> 4*nb normals,
+              of which the first n are used (neuron i <- normal i). For n = 11, nb = 3
+              (12 normals); n = 50 needs nb = 13 (plan Step 10). nb is part of the
+              address, so the same run's numbers differ between brain sizes.
     decision  key = (decision_seed, 0), counter = (t, 0, 0, STREAM_DECISION), word 0.
 
 Uniforms use the top 24 bits of a word: exact in float32 and float64 alike, so the
@@ -63,7 +66,6 @@ _WEYL_A, _WEYL_B = 0x9E3779B9, 0xBB67AE85     # key schedule increments
 
 STREAM_NOISE = 0
 STREAM_DECISION = 1
-_BLOCKS_PER_BRAIN_TICK = 3                    # 12 words >= 11 neurons, in pairs
 _TWO_PI = 2.0 * math.pi
 _INV_2_24 = 2.0 ** -24
 
@@ -105,6 +107,14 @@ def philox4x32(c0, c1, c2, c3, k0, k1, *, rounds: int):
     return c0, c1, c2, c3
 
 
+def blocks_per_brain_tick(n: int) -> int:
+    """Philox blocks per brain tick for n neurons: each block gives 4 words -> 4 normals.
+    3 for n <= 12, so the 11-neuron numbers are what they were before n was general."""
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    return -(-int(n) // 4)
+
+
 def open_uniform(word: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     """(0, 1]: never 0, so log() is finite."""
     return ((word >> 8) + 1).to(dtype) * _INV_2_24
@@ -124,7 +134,7 @@ def standard_normals(seed: torch.Tensor, tick: torch.Tensor, K: int, n: int,
     """
     B = seed.shape[0]
     dev = seed.device
-    nb = _BLOCKS_PER_BRAIN_TICK
+    nb = blocks_per_brain_tick(n)
     k = torch.arange(K, dtype=torch.int64, device=dev).view(K, 1, 1)
     blk = torch.arange(nb, dtype=torch.int64, device=dev).view(1, 1, nb)
     shape = (K, B, nb)
@@ -135,10 +145,10 @@ def standard_normals(seed: torch.Tensor, tick: torch.Tensor, K: int, n: int,
     k0 = seed.view(1, B, 1).expand(shape)
     words = torch.stack(philox4x32(c0, c1, zero, c3, k0, zero, rounds=check_rounds(rounds)),
                         dim=-1)                                            # (K, B, nb, 4)
-    u = open_uniform(words.reshape(K, B, 2 * nb, 2), dtype)               # 6 pairs
+    u = open_uniform(words.reshape(K, B, 2 * nb, 2), dtype)               # 2*nb pairs
     r = torch.sqrt(-2.0 * torch.log(u[..., 0]))
     theta = _TWO_PI * u[..., 1]
-    z = torch.stack((r * torch.cos(theta), r * torch.sin(theta)), dim=-1)  # (K, B, 6, 2)
+    z = torch.stack((r * torch.cos(theta), r * torch.sin(theta)), dim=-1)  # (K, B, 2*nb, 2)
     return z.reshape(K, B, 4 * nb)[..., :n].unsqueeze(2)                  # (K, B, 1, n)
 
 

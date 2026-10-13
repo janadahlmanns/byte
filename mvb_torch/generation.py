@@ -584,7 +584,7 @@ def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
     )
     per_iteration = (
         K * n * ds                               # noise (K, B, 1, n)
-        + K * 3 * 4 * 8 * 6                      # Philox int64 words, ~6 alive at once
+        + K * philox.blocks_per_brain_tick(n) * 4 * 8 * 6   # Philox int64 words, ~6 alive
         + 2 * cells                              # the reseed gather (int16)
     )
     total = PEAK_FACTOR * (state + per_iteration)
@@ -595,16 +595,27 @@ def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
     return int(math.ceil(total))
 
 
-def choose_width(P: int, R: int, slot_bytes: int, device, *,
+def genome_batch_bytes(P: int, n: int, dtype: torch.dtype) -> int:
+    """Device bytes of the encoded genome batch (`encode_genomes`): per genome the same
+    tensors `slot_view` copies per slot -- Mod (n^3), Wabs0 / Wsign / Rel (n^2 each),
+    Tonic (n), Eta (1) -- plus two int64 tick counts. Negligible at n = 11 (P = 260:
+    1.8 MB), but 0.5 GB at n = 50, P = 1000 (plan Step 10), so the width budget
+    subtracts it."""
+    ds = torch.tensor([], dtype=dtype).element_size()
+    return int(P) * ((n ** 3 + 3 * n * n + n + 1) * ds + 2 * 8)
+
+
+def choose_width(P: int, R: int, slot_bytes: int, device, *, batch_bytes: int,
                  memory_fraction: Optional[float] = None,
                  total_memory: Optional[int] = None) -> Tuple[int, str]:
-    """`min(P*R, (fraction x total - BASE_BYTES) // slot_bytes)` and a one-line reason
-    for the log; the fraction is MEMORY_FRACTION[device type]. `memory_fraction` and
-    `total_memory` override them (tests)."""
+    """`min(P*R, (fraction x total - BASE_BYTES - batch_bytes) // slot_bytes)` and a
+    one-line reason for the log; the fraction is MEMORY_FRACTION[device type].
+    `batch_bytes` is the genome batch (`genome_batch_bytes`), which lives on the device
+    beside the slots. `memory_fraction` and `total_memory` override them (tests)."""
     if memory_fraction is None:
         memory_fraction = MEMORY_FRACTION[torch.device(device).type]
     total = device_memory(device) if total_memory is None else int(total_memory)
-    budget = int(memory_fraction * total) - BASE_BYTES
+    budget = int(memory_fraction * total) - BASE_BYTES - int(batch_bytes)
     cap = budget // int(slot_bytes)
     if cap < 1:
         raise RuntimeError(
@@ -612,11 +623,13 @@ def choose_width(P: int, R: int, slot_bytes: int, device, *,
             f"{budget / 2**30:.2f} GB ({memory_fraction:.0%} of {total / 2**30:.2f} GB)")
     Q = P * R
     est = lambda b: b * slot_bytes / 2**30   # noqa: E731
+    genomes = (f" (after {batch_bytes / 2**30:.1f} GB of genomes)"
+               if batch_bytes >= 0.1 * 2**30 else "")
     if Q <= cap:
         return Q, (f"all runs; est. {est(Q):.1f} GB of a {budget / 2**30:.1f} GB "
-                   f"budget")
+                   f"budget{genomes}")
     return cap, (f"memory cap: all {Q} runs would need ~{est(Q):.1f} GB of a "
-                 f"{budget / 2**30:.1f} GB budget; the queue feeds the rest")
+                 f"{budget / 2**30:.1f} GB budget{genomes}; the queue feeds the rest")
 
 
 # Compact once the queue is empty and at most this fraction of the width is still

@@ -240,16 +240,16 @@ def test_width():
     from tests.devices import accelerators, allocator_bytes, live_bytes, sync
     GB = 2**30
     slot = 100 * 1024
-    w_all, why_all = G.choose_width(260, 300, slot, "cpu", total_memory=64 * GB)
-    w_cap, why_cap = G.choose_width(260, 300, slot, "cpu", total_memory=8 * GB)
+    w_all, why_all = G.choose_width(260, 300, slot, "cpu", batch_bytes=0, total_memory=64 * GB)
+    w_cap, why_cap = G.choose_width(260, 300, slot, "cpu", batch_bytes=0, total_memory=8 * GB)
     exp_cap = (int(0.5 * 8 * GB) - G.BASE_BYTES) // slot
     check(f"all P*R runs when they fit ({w_all}, '{why_all[:9]}'); the memory cap when "
           f"not ({w_cap} = (0.5 x 8 GB - base) / 100 KB, '{why_cap[:10]}')",
           w_all == 78000 and why_all.startswith("all runs")
           and w_cap == exp_cap and why_cap.startswith("memory cap"))
     check("the width is deterministic for a given machine (same inputs, same width)",
-          G.choose_width(260, 300, slot, "cpu", total_memory=8 * GB)[0] == w_cap)
-    w_cuda, _ = G.choose_width(260, 300, slot, "cuda", total_memory=8 * GB)
+          G.choose_width(260, 300, slot, "cpu", batch_bytes=0, total_memory=8 * GB)[0] == w_cap)
+    w_cuda, _ = G.choose_width(260, 300, slot, "cuda", batch_bytes=0, total_memory=8 * GB)
     check(f"dedicated GPU memory (CUDA) gets the larger share: {w_cuda} slots from 8 GB "
           f"vs {w_cap} on shared memory (0.8 vs 0.5)",
           w_cuda == (int(0.8 * 8 * GB) - G.BASE_BYTES) // slot and w_cuda > w_cap)

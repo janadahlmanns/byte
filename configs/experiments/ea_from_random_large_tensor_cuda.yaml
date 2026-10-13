@@ -1,0 +1,138 @@
+# ============================================================
+# Large-scale run (plan_evotorch.md, Step 10; agreed with the supervisor 2026-10-13)
+# ============================================================
+# ea_from_random_tensor_cuda.yaml with only these changes:
+#   population_size 260 -> 1000, num_generations 70 -> 150,
+#   elite_size 10 -> 50 (5% of population_size), brain.n_neurons 11 -> 50,
+#   simulation_name -> flex_task_random_large.
+# Neurons 0-4 stay sensory and 5-9 output (mappings below unchanged); 10-49 are hidden
+# neurons, wired by the random genome. Note: mutation_rate is a fraction of
+# n_neurons^2 (250 mutations per child at 50 neurons) and connectivity_degree_* of
+# n_neurons^2 (~500 initial connections) -- unchanged on purpose.
+#
+#   python -m simulate.run_ea --config ea_from_random_large_tensor_cuda
+# ============================================================
+# EXPERIMENT CONFIGURATION
+# ============================================================
+experiment:
+  # Output and file naming
+  output_folder: "data/flex_task/"
+  simulation_name: "flex_task_random_large"
+  simulation_seed: 1
+  
+  # Simulation runtime
+  max_ticks: 2000
+  n_runs: 300
+  evolutionary_algorithm_enabled: true
+
+  # Genome generation for first generation
+  genome_type: "random"  # Options: "random", "lookup_soft", "lookup_hard"
+  population_size: 1000
+    # Genome type specific parameters - random
+  random_genome:
+    wiring_randomization_seed: 1
+    connectivity_degree_excitatory: 0.1
+    connectivity_degree_inhibitory: 0.1
+    modulation_degree_potentiation: 0.1
+    modulation_degree_depression: 0.1
+
+  # evolutionary algorithm
+  evolutionary_algorithm:
+    num_generations: 150
+    elite_size: 50          # 5% of population_size
+    elite_selection_metric: 'average'  # Options: 'average', 'max', 'median'
+    mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
+    mutation_strength: 0.2    # Gaussian std for all mutations (weights, reliability, eta, tonic activations)
+    mutation_method: simple  # Options: 'simple'
+
+  # Visualization
+  viz_enabled: false
+  viz_fps: 4
+  viz_brain_enabled: false 
+  viz_brain_fps: 4
+  
+  # Data tracking
+  enable_per_run_tracking: false
+  enable_per_tick_tracking: false
+  enable_heat_map_tracking: false
+
+  evaluator:
+    backend: tensor
+    device: cuda
+    dtype: float32
+    philox_rounds: 10     # Philox4x32 rounds, 7-10 (live mode; replay must match)
+    compile: true          # torch.compile (live mode; replay must match): fuses the decision step and Philox; CUDA probe: decide 7x, Philox 20x
+  
+
+# ============================================================
+# EMBEDDING CONFIGURATION
+# ============================================================
+world:
+  grid_width: 51
+  grid_height: 51
+  start_pos:
+  - 26
+  - 26
+
+food:
+  - phase_from: 0
+    feeding_paradigm:
+      initial: true
+      regrow: false
+    initial_fraction_per_cell: 0.1
+    regrow_time: 31
+  - phase_from: 100
+    feeding_paradigm:
+      initial: true
+      regrow: true
+    initial_fraction_per_cell: 0.025
+    regrow_time: 8
+
+
+worm:
+  speed: 1
+  energy_capacity: 30
+  metabolic_rate: 1
+  movement_cost: 1
+  
+  sensors:
+    active:
+    - current_field
+    - adjacent_binary
+  
+  decisionmaking:
+    version: plasticity
+    brain: true
+
+# ============================================================
+# BRAIN CONFIGURATION
+# ============================================================
+brain:
+  n_neurons: 50
+  threshold: 0.5          # Applied to all neurons
+  noise_level: 0.05       # Applied to all neurons
+  
+  # Neurons 0-4: sensory input, 5-9: output, 10: always-on
+  # Tonic levels are set in genome generation (1.0 for neuron 10, random for others)
+  
+  # Sensory input mappings: which neuron receives which sensor
+  # Format: sensor_key: [target_neuron_id, weight, reliability]
+  sensory_mapping:
+    on_food: [0, 1.0, 0.9]
+    food_north: [1, 0.8, 0.9]
+    food_east: [2, 0.8, 0.9]
+    food_south: [3, 0.8, 0.9]
+    food_west: [4, 0.8, 0.9]
+  
+  # Output mappings: which neurons drive which actions
+  # Format: neuron_id: action_name
+  output_mapping:
+    5: stay
+    6: move_north
+    7: move_east
+    8: move_south
+    9: move_west
+  
+  # Decision-making parameters
+  max_decision_delay: 2.0  # Factor for calculating max_ticks from warmup
+

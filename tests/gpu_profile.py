@@ -14,10 +14,16 @@ next decisions need, on whichever GPU is present (CUDA preferred, else MPS):
   [4] deterministic-algorithms probe: does any operation we use refuse
       torch.use_deterministic_algorithms(True)?
 
+With `--config NAME` the brain, world and genome type come from that config (plan
+Step 10): 260 generation-1-like genomes of its `genome_type`, profiled at 10%, 33% and
+100% of the width the width rule chooses for it, with the estimated vs measured memory
+per slot. Without it: ea_from_lookup at the fixed widths 7,800 / 26,000 / 78,000.
+
 Usage
 -----
     python -m tests.gpu_profile              # ~5-10 minutes
     python -m tests.gpu_profile --device mps
+    python -m tests.gpu_profile --config ea_from_random_large_tensor_cuda
 """
 
 import argparse
@@ -36,6 +42,7 @@ sys.path.insert(0, ROOT)
 import mvb_torch.generation as G  # noqa: E402
 from mvb.genome.generate_genome_lookup_hard import generate_lookup_hard_genome  # noqa: E402
 from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simple  # noqa: E402
+from mvb.genome.generate_genome_random import generate_random_genome  # noqa: E402
 from mvb_torch import philox  # noqa: E402
 from mvb_torch.brain import BrainTensorState  # noqa: E402
 from mvb_torch.decision import build_output_spec, decide_batch  # noqa: E402
@@ -49,12 +56,20 @@ DT = torch.float32
 P = 260
 
 
-def production_setup(dev):
-    cfg = yaml.safe_load(open(os.path.join(ROOT, "configs/experiments/ea_from_lookup.yaml")))
+DEFAULT_CONFIG = "ea_from_lookup"
+_GENERATORS = {"lookup_hard": generate_lookup_hard_genome, "random": generate_random_genome}
+
+
+def production_setup(dev, name):
+    cfg = yaml.safe_load(open(os.path.join(ROOT, f"configs/experiments/{name}.yaml")))
+    gtype = cfg["experiment"]["genome_type"]
+    if gtype not in _GENERATORS:
+        raise ValueError(f"gpu_profile supports genome_type {sorted(_GENERATORS)}, "
+                         f"not {gtype!r}")
     rng = np.random.default_rng(5)
     genomes = []
     for i in range(P):
-        g = generate_lookup_hard_genome(cfg, rng_seed=i)
+        g = _GENERATORS[gtype](cfg, rng_seed=i)
         for _ in range(i % 4):                      # generation-1-like: elites + mutants
             g = generate_genome_mutate_simple(g, 0.1, 0.2, rng)
         genomes.append(g)
@@ -162,9 +177,25 @@ def phase_profile(dev, cfg, batch, width, compile, n_iter=20, warm=5):
     return {k: 1000 * v / n_iter for k, v in T.items()}, used / width / 1024
 
 
-def compile_probe(dev, batch):
+def width_rule(dev, cfg):
+    """The width the evaluator would choose for this config, its reason, and the
+    estimated bytes per slot (the adapter's computation)."""
+    brain, x = cfg["brain"], cfg["experiment"]
+    n = int(brain["n_neurons"])
+    sim = G.sim_config_from_yaml(cfg)
+    slot = G.estimate_slot_bytes(
+        height=sim.height, width_cells=sim.width, n=n,
+        K=int(n * float(brain["max_decision_delay"])), dtype=DT, mode="live",
+        max_ticks=sim.max_ticks)
+    Pc, Rc = int(x["population_size"]), int(x["n_runs"])
+    W, why = G.choose_width(Pc, Rc, slot, dev, batch_bytes=G.genome_batch_bytes(Pc, n, DT))
+    return W, why, slot
+
+
+def compile_probe(dev, batch, cfg, B):
     print("\n[3] torch.compile probe (R5): the evaluator's compiled functions vs eager")
-    B = 7800
+    n = batch.n_neurons
+    w2, w3 = max(1, B * 3 // 8), max(1, B * 5 // 8)
 
     def bench(fn, *a, reps=20):
         for _ in range(3):
@@ -186,10 +217,10 @@ def compile_probe(dev, batch):
     seed = torch.randint(0, 2**32, (B, 1), dtype=torch.int64, device=dev)
     tick = torch.randint(0, 300, (B, 1), device=dev)
     try:
-        cn = philox.compiled_normals(K, 11, DT, 10)
+        cn = philox.compiled_normals(K, n, DT, 10)
         cu = philox.compiled_uniforms(DT, 10)
         ct, _ = first_call(cn, seed, tick)
-        te, ze = bench(lambda s, t: philox.standard_normals(s, t, K, 11, DT, rounds=10),
+        te, ze = bench(lambda s, t: philox.standard_normals(s, t, K, n, DT, rounds=10),
                        seed, tick)
         tc, zc = bench(cn, seed, tick)
         ue = philox.decision_uniforms(seed, tick, DT, rounds=10)
@@ -199,25 +230,24 @@ def compile_probe(dev, batch):
               f"({te / tc:.1f}x); normals bit-identical: {d == 0} (max |diff| {d:.1e}); "
               f"uniforms bit-identical: {torch.equal(ue, uc)}; first call {ct:.1f} s "
               f"(~0 = already compiled during [2])")
-        s2, t2 = seed[:3000], tick[:3000]
+        s2, t2 = seed[:w2], tick[:w2]
         cn(s2, t2)                                   # 2nd shape: marks the width dynamic
-        t3, _ = first_call(cn, seed[:5000], tick[:5000])
-        print(f"  Philox at a third width (5000): first call {1000 * t3:.0f} ms "
+        t3, _ = first_call(cn, seed[:w3], tick[:w3])
+        print(f"  Philox at a third width ({w3}): first call {1000 * t3:.0f} ms "
               f"(a few ms = no recompile)")
     except Exception as e:  # noqa: BLE001 -- a diagnostic: report and continue
         print(f"  Philox compile FAILED: {type(e).__name__}: {str(e)[:300]}")
 
-    spec = build_output_spec(yaml.safe_load(open(os.path.join(
-        ROOT, "configs/experiments/ea_from_lookup.yaml")))["brain"])
+    spec = build_output_spec(cfg["brain"])
     contraction = G.live_contraction(dev)
 
     def inputs(width):
         g = (torch.arange(width, device=dev) % P).view(width, 1)
         sb = G.slot_view(batch, g)
-        st = BrainTensorState(act=(torch.rand(width, 1, 11, device=dev) < 0.5).to(DT),
+        st = BrainTensorState(act=(torch.rand(width, 1, n, device=dev) < 0.5).to(DT),
                               Wabs=sb.Wabs0.clone())
         sens = (torch.rand(width, 1, len(batch.sensor_keys), device=dev) < 0.3).to(DT)
-        nz = torch.randn(K, width, 1, 11, device=dev) * 0.05
+        nz = torch.randn(K, width, 1, n, device=dev) * 0.05
         u = torch.rand(width, 1, device=dev)
         return sb, st, sens, nz, u
 
@@ -237,15 +267,17 @@ def compile_probe(dev, batch):
               f"compiled {tc:.1f} ms ({te / tc:.1f}x); bit-identical: {same} "
               f"(max |dW| {d:.1e}, {n_act} actions differ); first call {ct:.1f} s "
               f"(~0 = already compiled during [2])")
-        decide(True, *inputs(3000))                  # 2nd shape: marks the width dynamic
-        t3, _ = first_call(decide, True, *inputs(5000))
-        print(f"  decide at a third width (5000): first call {1000 * t3:.0f} ms "
-              f"(well under the first call above = no recompile)")
+        decide(True, *inputs(w2))                    # 2nd shape: marks the width dynamic
+        a3 = inputs(w3)
+        t3, _ = first_call(decide, True, *a3)
+        steady, _ = bench(decide, True, *a3, reps=3)
+        print(f"  decide at a third width ({w3}): first call {1000 * t3:.0f} ms, steady "
+              f"{steady:.0f} ms (first ≈ steady = no recompile)")
     except Exception as e:  # noqa: BLE001
         print(f"  decide compile FAILED: {type(e).__name__}: {str(e)[:300]}")
 
 
-def deterministic_probe(dev, cfg, batch):
+def deterministic_probe(dev, cfg, batch, W):
     print("\n[4] Deterministic-algorithms probe")
     c = dict(cfg)
     c["experiment"] = dict(cfg["experiment"], n_runs=20, max_ticks=60)
@@ -254,7 +286,7 @@ def deterministic_probe(dev, cfg, batch):
     torch.use_deterministic_algorithms(True)
     try:
         G.eval_generation_batch(batch, build_output_spec(cfg["brain"]), sim, seeds,
-                                width=P * 20, mode="live", philox_rounds=10,
+                                width=min(P * 20, W), mode="live", philox_rounds=10,
                                 contraction=G.live_contraction(dev))
         print("  a whole generation runs under torch.use_deterministic_algorithms(True): "
               "no operation lacks a deterministic implementation")
@@ -267,6 +299,8 @@ def deterministic_probe(dev, cfg, batch):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default=None, help="cuda or mps (default: cuda if present)")
+    ap.add_argument("--config", default=DEFAULT_CONFIG,
+                    help=f"experiment config to profile (default: {DEFAULT_CONFIG})")
     args = ap.parse_args()
     gpus = accelerators()
     dev = args.device or (gpus[0] if gpus else None)
@@ -277,11 +311,20 @@ def main():
     print(f"GPU diagnostics on {dev}")
     print("=" * 74)
     env(dev)
-    cfg, genomes, batch = production_setup(dev)
-    print("\n[2] One iteration by phase (ms, synchronized between phases), production "
-          "brain and world, 260 gen-1-like genomes")
-    print(f"  contraction: {G.live_contraction(dev)}")
-    for width in (7_800, 26_000, 78_000):
+    cfg, genomes, batch = production_setup(dev, args.config)
+    W, why, slot = width_rule(dev, cfg)
+    K = int(batch.max_ticks.max().item())
+    print(f"\n[2] One iteration by phase (ms, synchronized between phases), config "
+          f"{args.config}: n_neurons {batch.n_neurons}, 260 gen-1-like "
+          f"{cfg['experiment']['genome_type']} genomes")
+    print(f"  contraction: {G.live_contraction(dev)}; brain ticks per decision: max K = {K}, "
+          f"mean warmup {batch.warmup_ticks.float().mean().item():.1f}")
+    print(f"  width rule for this config: {W} ({why}); estimated {slot / 1024:.1f} KB/slot")
+    if args.config == DEFAULT_CONFIG:
+        widths = (7_800, 26_000, 78_000)
+    else:
+        widths = sorted({max(1, min(w, P * 300)) for w in (W // 10, W // 3, W)})
+    for width in widths:
         for compile in (False, True):
             try:
                 ms, kb = phase_profile(dev, cfg, batch, width, compile)
@@ -292,9 +335,9 @@ def main():
             print(f"  width {width:6d} {'compiled' if compile else 'eager   '}: "
                   f"total {total:7.1f} ms | "
                   + " | ".join(f"{k} {v:.1f}" for k, v in ms.items())
-                  + f" | peak memory {kb:.1f} KB/slot")
-    compile_probe(dev, batch)
-    deterministic_probe(dev, cfg, batch)
+                  + f" | peak memory {kb:.1f} KB/slot (estimate {slot / 1024:.1f})")
+    compile_probe(dev, batch, cfg, min(7800, W))
+    deterministic_probe(dev, cfg, batch, W)
     print("\nDone. Please send this whole output.")
     return 0
 

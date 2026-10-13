@@ -28,6 +28,7 @@ SUITES = [
     ("tests.test_scheduling", False),
     ("tests.test_compile", False),
     ("tests.test_replay", False),
+    ("tests.test_large_brain", False),
     ("tests.test_io_tensor", True),
     ("tests.test_ea_tensor", True),
     ("tests.test_predrawn", False),
