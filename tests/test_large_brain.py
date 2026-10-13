@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Brains larger than 12 neurons (plan Step 10: 50 neurons), on every device present.
 
-  [1] n = 11 is unchanged by making the noise general: the normals have the SHA-256
-      they had before (frozen 2026-10-13 with the old code)
+  [1] n = 11 is unchanged by making the noise general: the Philox words at the
+      documented 11-neuron addresses (t, 3k + block) have their frozen SHA-256
+      (integers: identical on every platform), and standard_normals(n = 11) is exactly
+      Box-Muller of those words on this platform
   [2] n = 50 noise: shape, distribution, independent of the batch, compiled == eager
   [3] scalar vs tensor EA at n = 50, pre-drawn: identical HDF5s, every dataset -- the
       brain, decision machine and plasticity are exact at the new size
@@ -40,11 +42,14 @@ _RESULTS = []
 FIELDS = ("lifespans", "eats", "distance", "final_energy")
 N = 50
 
-# Frozen 2026-10-13 from the code before Step 10 (constant 3 blocks per brain tick):
-# standard_normals(seed, tick, K=22, n=11, float64) for the seeds/ticks of _addresses().
-FROZEN_N11 = {
-    7: "eea60bfea2cfdec31a386a22bce92c5ff865109a3a61029fede24e23616ecfac",
-    10: "dd6c2a29bcce77b1856ad5226636d1b7c8a736dcf59da38d99e15537be1c995d",
+# Frozen 2026-10-13: SHA-256 of the int64 Philox words at the 11-neuron addresses
+# (counter (t, 3k + block, 0, STREAM_NOISE), K = 22, 3 blocks) for the seeds/ticks of
+# _addresses(). Integers, so the same on every platform. (A first version hashed the
+# float64 normals; their log/cos/sin differ in the last bit between arm64 and x86 --
+# university PC, 2026-10-13 -- so that hash only held on the Mac.)
+FROZEN_N11_WORDS = {
+    7: "0f8934ef72e8ac849579453c565111af724670b42d97cb0ef6561c1c598577f4",
+    10: "8f47c2f0afcbab682865eff72373bc266b4d630d572b2d396b1e92848a409055",
 }
 # estimate_slot_bytes before Step 10 (live float32; pre-drawn float64 with tracking).
 FROZEN_SLOT_BYTES = {"live": 63048, "predrawn": 486728}
@@ -83,16 +88,44 @@ def pool50(bcfg, n_random=6, n_mutant=6):
 
 # ============================================================
 
+def _reference_words(seed, tick, rounds, K=22, nb=3):
+    """The 11-neuron addresses as documented before Step 10, written out independently
+    of standard_normals: counter (t, nb*k + block, 0, STREAM_NOISE), key (seed, 0)."""
+    B = seed.shape[0]
+    k = torch.arange(K, dtype=torch.int64).view(K, 1, 1)
+    blk = torch.arange(nb, dtype=torch.int64).view(1, 1, nb)
+    shape = (K, B, nb)
+    zero = torch.zeros(shape, dtype=torch.int64)
+    return torch.stack(philox.philox4x32(
+        tick.view(1, B, 1).expand(shape), (k * nb + blk).expand(shape), zero,
+        torch.full(shape, philox.STREAM_NOISE, dtype=torch.int64),
+        seed.view(1, B, 1).expand(shape), zero, rounds=rounds), dim=-1)
+
+
+def _box_muller(words, K, B, n, dtype):
+    """Box-Muller exactly as standard_normals applies it (same operations, same order)."""
+    nb = words.shape[2]
+    u = philox.open_uniform(words.reshape(K, B, 2 * nb, 2), dtype)
+    r = torch.sqrt(-2.0 * torch.log(u[..., 0]))
+    theta = philox._TWO_PI * u[..., 1]
+    z = torch.stack((r * torch.cos(theta), r * torch.sin(theta)), dim=-1)
+    return z.reshape(K, B, 4 * nb)[..., :n].unsqueeze(2)
+
+
 def test_n11_unchanged():
     print("\n[1] n = 11: the noise is what it was before n became general")
     seed, tick = _addresses()
     check("11 neurons still use 3 Philox blocks per brain tick",
           philox.blocks_per_brain_tick(11) == 3)
-    for rounds, want in FROZEN_N11.items():
+    for rounds, want in FROZEN_N11_WORDS.items():
+        w = _reference_words(seed, tick, rounds).contiguous()
+        got = hashlib.sha256(w.numpy().tobytes()).hexdigest()
+        check(f"{rounds} rounds: SHA-256 of the 22 x 500 x 3 x 4 Philox words at the "
+              f"11-neuron addresses unchanged ({got[:12]}..)", got == want)
         z = philox.standard_normals(seed, tick, 22, 11, torch.float64, rounds=rounds)
-        got = hashlib.sha256(z.numpy().tobytes()).hexdigest()
-        check(f"{rounds} rounds: SHA-256 of 22 x 500 x 11 normals unchanged ({got[:12]}..)",
-              got == want)
+        check(f"{rounds} rounds: standard_normals(n = 11) == Box-Muller of exactly those "
+              f"words (this platform)",
+              torch.equal(z, _box_muller(w, 22, seed.shape[0], 11, torch.float64)))
 
 
 def test_n50_noise(dev):
