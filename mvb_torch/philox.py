@@ -24,9 +24,14 @@ every number, so a file can only be replayed with the round count that produced 
 the count is stored with the config in the HDF5, and run_batch's replay checks it.
 Every function takes `rounds` explicitly; there is no default.
 
-It is written with plain int64 tensor operations holding 32-bit lanes. Products of two
-32-bit values can exceed 2**63; int64 multiplication wraps around identically on CPU and
-MPS (verified), and only the low 64 bits are used, so the result is exact.
+It is written with plain int64 tensor operations holding 32-bit lanes. The 32x32-bit
+products are computed in 16-bit halves (`_mulhilo`), so no intermediate value exceeds
+2**49 and nothing ever overflows int64. The direct product `c * multiplier` exceeds 2**63
+for most c; eager PyTorch wraps it around, but in the C++ that torch.compile generates
+for the CPU it is signed overflow -- undefined behaviour -- and on x86 the compiled
+words came out wrong for ~38% of them (tests/philox_compile_probe.py, 2026-10-10; plan
+Step 9). The split form gives the same words as the wrapped product, bit for bit, in
+eager mode on every platform tested, so the change left every number unchanged.
 
 Layout of the address
 ---------------------
@@ -74,14 +79,26 @@ def check_rounds(rounds) -> int:
     return rounds
 
 
+def _mulhilo(a: torch.Tensor, m: int):
+    """(hi, lo): the upper and lower 32 bits of the 64-bit product a * m, for a in
+    [0, 2**32) and a 32-bit constant m, without overflow. With a = a_hi * 2**16 + a_lo,
+    a * m = x * 2**16 + y where x = a_hi * m and y = a_lo * m are each < 2**48, so
+        hi = (x + y // 2**16) // 2**16   (exact: y's low 16 bits cannot carry into bit 32)
+        lo = ((x mod 2**16) * 2**16 + y) mod 2**32
+    and no intermediate exceeds 2**49."""
+    a_hi, a_lo = a >> 16, a & 0xFFFF
+    x, y = a_hi * m, a_lo * m
+    hi = ((x + (y >> 16)) >> 16) & _M32
+    lo = (((x & 0xFFFF) << 16) + y) & _M32
+    return hi, lo
+
+
 def philox4x32(c0, c1, c2, c3, k0, k1, *, rounds: int):
     """Philox4x32 on int64 tensors holding unsigned 32-bit values. Returns 4 words.
     `rounds` is used as given (the known-answer tests also call it outside 7-10)."""
     for _ in range(rounds):
-        p0 = c0 * _MULT_A
-        p1 = c2 * _MULT_B
-        hi0, lo0 = (p0 >> 32) & _M32, p0 & _M32
-        hi1, lo1 = (p1 >> 32) & _M32, p1 & _M32
+        hi0, lo0 = _mulhilo(c0, _MULT_A)
+        hi1, lo1 = _mulhilo(c2, _MULT_B)
         c0, c1, c2, c3 = hi1 ^ c1 ^ k0, lo1, hi0 ^ c3 ^ k1, lo0
         k0 = (k0 + _WEYL_A) & _M32
         k1 = (k1 + _WEYL_B) & _M32
@@ -135,8 +152,9 @@ def decision_uniforms(seed: torch.Tensor, tick: torch.Tensor,
 
 
 # --- compiled variants (plan Step 8, R5) -----------------------------------------
-# Philox is ~120 small elementwise operations; fused by torch.compile it measured 18-20x
-# faster on MPS and CUDA and bit-identical to eager. Compiled with PyTorch's default
+# Philox is a few hundred small elementwise operations; fused by torch.compile it measured
+# 18-22x faster on MPS and CUDA and bit-identical to eager (and, since the overflow-free
+# `_mulhilo`, on the x86 CPU too). Compiled with PyTorch's default
 # "automatic dynamic" shapes: the first call compiles with fixed sizes; when the batch
 # width changes (compaction), ONE recompile makes that size variable, after which no
 # more happen. dynamic=True cannot be used: it makes every integer variable, and

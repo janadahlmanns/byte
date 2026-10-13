@@ -6,7 +6,10 @@ multiply-add, a different tanh), which is acceptable because the setting is reco
 replay must match it (run_batch.check_replay_rounds). What must hold for compiled runs
 is everything the user's requirements rest on:
 
-  [1] Philox compiled == eager, bit for bit (integer arithmetic)
+  [1] Philox compiled == eager: the words and decision uniforms bit for bit (integer
+      arithmetic), the normals within 1e-5 (Box-Muller's log/cos/sin may round
+      differently). Until 2026-10-10 the normals were only reported, which let int64
+      overflow in the compiled x86 CPU code go unnoticed (plan Step 9).
   [2] back-to-back identical; identical for every width; identical with compaction on
       and off (so a run does not depend on the batch around it -> single-run replay)
   [3] the number of compiled graphs stops growing after the first generation, although
@@ -51,25 +54,51 @@ def graphs():
     return int(dynamo_utils.counters["stats"]["unique_graphs"])
 
 
+def _words(rounds, K=22):
+    """The Philox words exactly as `standard_normals` lays them out (same counters, same
+    expand/stack). With the old direct product, x86 CPU code compiled from THIS layout
+    came out wrong, while a simpler layout happened to compile correctly (laptop
+    negative control, 2026-10-10): undefined behaviour depends on the generated code."""
+    nb = philox._BLOCKS_PER_BRAIN_TICK
+
+    def f(seed, tick):
+        dev, B = seed.device, seed.shape[0]
+        k = torch.arange(K, dtype=torch.int64, device=dev).view(K, 1, 1)
+        blk = torch.arange(nb, dtype=torch.int64, device=dev).view(1, 1, nb)
+        shape = (K, B, nb)
+        c0 = tick.view(1, B, 1).expand(shape)
+        c1 = (k * nb + blk).expand(shape)
+        zero = torch.zeros(shape, dtype=torch.int64, device=dev)
+        c3 = torch.full(shape, philox.STREAM_NOISE, dtype=torch.int64, device=dev)
+        k0 = seed.view(1, B, 1).expand(shape)
+        return torch.stack(philox.philox4x32(c0, c1, zero, c3, k0, zero, rounds=rounds),
+                           dim=-1)
+    return f
+
+
 def test_philox(dev):
     print(f"\n[1] [{dev}] Philox: compiled == eager")
     B = 3000
     seed = torch.randint(0, 2**32, (B, 1), dtype=torch.int64).to(dev)
     tick = torch.randint(0, 500, (B, 1)).to(dev)
     for rounds in (7, 10):
+        we = _words(rounds)(seed, tick)
+        wc = torch.compile(_words(rounds))(seed, tick)
+        check(f"[{dev}] {rounds} rounds: Philox words bit-identical "
+              f"({int((we != wc).sum())} of {we.numel()} differ)", torch.equal(we, wc))
         ze = philox.standard_normals(seed, tick, 22, 11, torch.float32, rounds=rounds)
         zc = philox.compiled_normals(22, 11, torch.float32, rounds)(seed, tick)
         ue = philox.decision_uniforms(seed, tick, torch.float32, rounds=rounds)
         uc = philox.compiled_uniforms(torch.float32, rounds)(seed, tick)
         # The integer part (Philox words -> uniforms) must be exact everywhere. The
-        # normals go through log/cos/sin, which a compiler may implement differently
-        # (on CPU it does); that is allowed because `compile` is recorded and replay
-        # must match it -- so it is reported, not required.
+        # normals go through log/cos/sin, which a compiler may round differently (on
+        # the arm CPU by up to 4.8e-7) -- allowed, because `compile` is recorded and
+        # replay must match it; anything larger means different numbers.
         check(f"[{dev}] {rounds} rounds: decision uniforms bit-identical (integer path)",
               torch.equal(ue, uc))
         d = (ze - zc).abs().max().item()
-        print(f"      [{dev}] {rounds} rounds: normals compiled vs eager "
-              f"{'identical' if d == 0 else f'max |diff| {d:.1e}'} (reported)")
+        check(f"[{dev}] {rounds} rounds: normals compiled vs eager within 1e-5 "
+              f"({'identical' if d == 0 else f'max |diff| {d:.1e}'})", d <= 1e-5)
 
 
 def test_generations(dev):
