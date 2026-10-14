@@ -291,6 +291,45 @@ def test_compile(dev):
           f"adds none ({g3} -> {g4})", g3 - g2 <= 3 and g4 == g3 and Ls[-1] == Ls[-2] > Ls[0])
 
 
+def test_evolving(dev):
+    """Step 13b: several generations of an evolving population, as the EA produces
+    them. Before 13b every first change of a list position's width (and every 1 -> 2)
+    recompiled the decide step mid-run: minutes per generation at n = 50."""
+    print(f"\n[4b] [{dev}] an evolving n = 50 population: no recompiles once settled")
+    import yaml
+    G.configure_device(dev)
+    cfg = yaml.safe_load(open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "configs/experiments/ea_from_random_large_tensor_cuda.yaml")))
+    cfg["experiment"]["n_runs"] = 4
+    rng = np.random.default_rng(0)
+    P = 40
+    pop = [generate_random_genome(cfg, rng_seed=i) for i in range(P)]
+    sim, spec = G.sim_config_from_yaml(cfg), build_output_spec(cfg["brain"])
+    added, Ls = [], []
+    try:
+        for gen in range(5):
+            b = encode_genomes(pop, cfg["brain"], device=dev, dtype=torch.float32,
+                               dense_modulation=False)
+            seeds = G.draw_seeds(*G.make_simulation_rngs(gen + 1), P, 4)
+            g0 = graphs()
+            G.eval_generation_batch(b, spec, sim, seeds, width=P * 4, mode="live",
+                                    philox_rounds=10, contraction="sequential", compile=True)
+            added.append(graphs() - g0)
+            Ls.append((len(b.mod_k), tuple(k.shape[1] for k in b.mod_k)))
+            elites = pop[:5]
+            pop = elites + [generate_genome_mutate_simple(elites[i % 5], 0.1, 0.2, rng)
+                            for i in range(P - 5)]
+    except RuntimeError as e:
+        check(f"[{dev}] compile works here ({str(e)[:150]})", False)
+        return
+    print(f"      new graphs per generation {added}; (L, widths) {Ls}")
+    check(f"[{dev}] widths never 1 (a size-1 dimension is compiled as a constant)",
+          all(min(w) >= 2 for _, w in Ls))
+    check(f"[{dev}] once L has settled no generation recompiles: gens 2-4 add "
+          f"{sum(added[2:])} graphs (<= 1), gens 3-4 add {sum(added[3:])} (0)",
+          sum(added[2:]) <= 1 and sum(added[3:]) == 0 and Ls[3][0] == Ls[4][0])
+
+
 def test_memory():
     print("\n[5] Memory and loud failures")
     n = 50
@@ -365,6 +404,8 @@ def main():
         test_generations(dev)
     for dev in all_devices():
         test_compile(dev)
+    for dev in all_devices():
+        test_evolving(dev)
     test_memory()
     test_adapter()
     failed = [nm for nm, ok in _RESULTS if not ok]

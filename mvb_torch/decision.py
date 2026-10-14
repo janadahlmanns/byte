@@ -218,6 +218,15 @@ def decide_batch(
     # One brain tick is one call of `_decide_step` (R5): eager and compiled runs share
     # it, and compiling one tick (not the unrolled K-tick loop) keeps compile time short.
     g = StepGenome.of(batch)
+    if compile:
+        # The sparse lists' widths change from generation to generation (mutation).
+        # Declared variable up front, they compile once instead of on each first change
+        # (Step 13b: those recompiles cost minutes per generation at n = 50).
+        for t in (g.mod_edge, *g.mod_k, *g.mod_w):
+            # maybe_mark_dynamic, not mark_dynamic: the strict form refuses the size
+            # guards dynamo generates (ConstraintViolationError), and with min alone
+            # torch 2.13 fails outright (None upper bound).
+            torch._dynamo.maybe_mark_dynamic(t, 1)
     step = compiled_decide_step() if compile else _decide_step
     ticks = torch.arange(K, dtype=ilong, device=dev)   # the tick as a tensor: no recompile
     carry = (state.act, state.Wabs, prop_win, candidates, cand_locked, stab_count,

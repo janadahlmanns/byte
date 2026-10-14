@@ -62,10 +62,10 @@ class GenomeBatch:
     # order the dense sequential sum adds them in, so the sum is bit-identical to it.
     # Each genome's modulated edges are ordered by entry count, longest first, so the
     # edges having an l-th entry are always a PREFIX: position l stores only the
-    # population's widest such prefix, E_l columns (E_0 >= E_1 >= ...). Padding (k = 0,
-    # w = 0.0) only adds +0.0: no effect. The tuple has L positions, L a power of two
-    # >= 2 (a loop count, so compile sees few values); extra positions are one zero
-    # column. Indices are int16 when 2 n^2 < 32767, else int32 (`mod_index_dtype`).
+    # population's widest such prefix, E_l columns (E_0 >= E_1 >= ... >= 2). Padding
+    # (k = 0, w = 0.0) only adds +0.0: no effect. The tuple has L positions, L a power of
+    # two >= 2 (a loop count, so compile sees few values); extra positions are two zero
+    # columns. Widths are never 1 (Step 13b: no 0/1 specialisation in torch.compile). Indices are int16 when 2 n^2 < 32767, else int32 (`mod_index_dtype`).
     mod_edge: torch.Tensor          # (P, E_0) flat edge index i*n + j, padding n*n + e
     mod_k: Tuple[torch.Tensor, ...]  # L x (P, E_l) modulator index of entry l
     mod_w: Tuple[torch.Tensor, ...]  # L x (P, E_l) weight of entry l (= Mod[p, k, i, j])
@@ -230,8 +230,11 @@ def _sparse_modulation(
     L = 2
     while L < L_real:
         L *= 2
-    # E_l: the widest prefix of edges having an l-th entry, over the population (>= 1).
-    widths = [max(1, max(sum(1 for _, ents in edges if len(ents) > l_) for edges in per_genome))
+    # E_l: the widest prefix of edges having an l-th entry, over the population, and at
+    # least 2. torch.compile treats a size of exactly 1 as a constant, so a position
+    # growing from 1 to 2 entries would force a recompile (Step 13b); the extra column
+    # is +0.0 padding.
+    widths = [max(2, max(sum(1 for _, ents in edges if len(ents) > l_) for edges in per_genome))
               for l_ in range(L)]
     E = widths[0]
     _require(n * n + E <= np.iinfo(idx).max,
