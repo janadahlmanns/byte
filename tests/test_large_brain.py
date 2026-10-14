@@ -227,16 +227,16 @@ def test_memory():
     print("\n[5] Memory: per-slot estimate and the genome batch in the width budget")
     live = G.estimate_slot_bytes(height=51, width_cells=51, n=11, K=22,
                                  dtype=torch.float32, mode="live", max_ticks=2000,
-                                 sparse_shape=None)
+                                 sparse_slot_bytes=None)
     pre = G.estimate_slot_bytes(height=51, width_cells=51, n=11, K=22, dtype=torch.float64,
                                 mode="predrawn", max_ticks=200, tracked_connections=30,
-                                sparse_shape=None)
+                                sparse_slot_bytes=None)
     check(f"n = 11 estimates unchanged ({live}, {pre} bytes)",
           live == FROZEN_SLOT_BYTES["live"] and pre == FROZEN_SLOT_BYTES["predrawn"])
     K = 2 * N
     est50 = G.estimate_slot_bytes(height=51, width_cells=51, n=N, K=K,
                                   dtype=torch.float32, mode="live", max_ticks=2000,
-                                  sparse_shape=None)
+                                  sparse_slot_bytes=None)
     by_hand = math.ceil(G.PEAK_FACTOR * (
         51 * 51 * 2 + (N ** 3 + 3 * N * N + N + 1) * 4 + (N * N + N) * 4 + 16 * 8
         + K * N * 4 + K * 13 * 4 * 8 * 6 + 2 * 51 * 51))

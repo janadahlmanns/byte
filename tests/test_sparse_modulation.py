@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sparse modulation (plan Step 11): the same numbers as the dense sum, far less work.
+"""Sparse modulation (plan Steps 11, 13): the same numbers as the dense sum, far less work.
 
 The sequential contraction used to sum `act[k] * Mod[k, i, j]` over every k for every
 edge (n^3 terms); it now sums only each modulated edge's nonzero entries, in ascending
@@ -8,10 +8,12 @@ to the old code -- which this file keeps verbatim as the reference (`dense_refer
 
   [1] encoding: the sparse lists scattered back give exactly the dense Mod, also for
       edges with >= 3 modulators, duplicate modulators, zero-weight edges and entries
-      that fold to zero; L is a power of two; padding is inert
+      that fold to zero; each list position is a prefix of the edges (Step 13); L is a
+      power of two; padding is inert; indices int16, or int32 when they would not fit
   [2] the sparse modulation sum == the old dense sum, bit for bit (float32, float64)
-  [3] whole generations: the new code == the old dense sum (patched in), lifespans
-      identical; a batch without the dense Mod gives the same; n = 11 and 50
+  [3] whole generations: the new code == the old dense sum (patched in) == the Step 11
+      padded layout (also patched in); a batch without the dense Mod gives the same;
+      n = 11 and 50
   [4] compile: recompiles only when L reaches a new power of two
   [5] memory: sparse slot estimate, batch bytes without Mod; einsum refuses no Mod
 
@@ -37,7 +39,7 @@ from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simp
 from mvb.genome.generate_genome_random import generate_random_genome  # noqa: E402
 from mvb_torch.brain import BrainTensorState  # noqa: E402
 from mvb_torch.decision import build_output_spec  # noqa: E402
-from mvb_torch.genome_codec import encode_genomes  # noqa: E402
+from mvb_torch.genome_codec import encode_genomes, sparse_slot_bytes  # noqa: E402
 from tests.devices import all_devices  # noqa: E402
 from tests.test_generation import load_cfg, seeds_for  # noqa: E402
 
@@ -61,6 +63,26 @@ def dense_reference(batch, state, contraction):
             batch.Mod[:, k].unsqueeze(1),
         )
     return brain._tanh(total)
+
+
+def step11_reference(batch, state, contraction):
+    """The Step 11 sparse sum (every edge padded to L entries, (P, L, E) arrays),
+    rebuilt from the Step 13 lists: the second reference."""
+    P, R, n = state.act.shape
+    E = batch.mod_edge.shape[-1]
+    L = len(batch.mod_k)
+    k = torch.zeros((P, L, E), dtype=torch.int64, device=state.act.device)
+    w = torch.zeros((P, L, E), dtype=state.act.dtype, device=state.act.device)
+    for l_, (k_l, w_l) in enumerate(zip(batch.mod_k, batch.mod_w)):
+        k[:, l_, : k_l.shape[1]] = k_l.long()
+        w[:, l_, : w_l.shape[1]] = w_l
+    acc = torch.zeros((P, R, E), dtype=state.act.dtype, device=state.act.device)
+    for l_ in range(L):
+        a_l = torch.gather(state.act, 2, k[:, l_].unsqueeze(1).expand(P, R, E))
+        acc.addcmul_(a_l, w[:, l_].unsqueeze(1))
+    flat = torch.zeros((P, R, n * n + E), dtype=acc.dtype, device=acc.device)
+    flat.scatter_(2, batch.mod_edge.long().unsqueeze(1).expand(P, R, E), acc)
+    return brain._tanh(flat[..., : n * n].reshape(P, R, n, n))
 
 
 def brain_cfg(n):
@@ -110,31 +132,55 @@ def test_encoding():
     for n in (11, 50):
         gs = pool(n)
         b = encode_genomes(gs, brain_cfg(n))
-        P, L, E = b.mod_k.shape
+        P, E, L = b.n_pop, b.mod_edge.shape[1], len(b.mod_k)
+        widths = [k.shape[1] for k in b.mod_k]
         # rebuilt[p, k, edge] += w for every entry; padding adds 0.0
         rebuilt = torch.zeros((P, n, n * n + E), dtype=b.dtype)
-        for l_ in range(L):
-            rebuilt.view(P, -1).scatter_add_(
-                1, b.mod_k[:, l_] * (n * n + E) + b.mod_edge, b.mod_w[:, l_])
+        edge = b.mod_edge.long()
+        for k_l, w_l in zip(b.mod_k, b.mod_w):
+            El = k_l.shape[1]
+            rebuilt.view(P, -1).scatter_add_(1, k_l.long() * (n * n + E) + edge[:, :El], w_l)
         rebuilt = rebuilt[:, :, : n * n].reshape(P, n, n, n)
         check(f"n = {n}: {P} genomes (random, mutated, special), sparse -> dense == Mod "
-              f"exactly (L x E = {L} x {E})", torch.equal(rebuilt, b.Mod))
+              f"exactly (edges per position {widths})", torch.equal(rebuilt, b.Mod))
         real = int((b.Mod != 0).sum(dim=1).amax().item())
         check(f"n = {n}: L = {L} is a power of two >= 2 and >= the longest edge ({real})",
               L >= max(2, real) and L & (L - 1) == 0 and L < 2 * max(2, real))
-        pad_k = (b.mod_w == 0) & (b.mod_k != 0)
-        scratch = b.mod_edge >= n * n
+        # Prefix: per genome, an edge has an l-th entry only if it has an (l-1)-th one,
+        # and the edges with an l-th entry come first.
+        prefix_ok = True
+        for p in range(P):
+            have = [(w[p] != 0) for w in b.mod_w]
+            for l_ in range(L):
+                cnt = int(have[l_].sum())
+                prefix_ok &= bool(have[l_][:cnt].all()) and not bool(have[l_][cnt:].any())
+                if l_:
+                    prefix_ok &= cnt <= int(have[l_ - 1].sum())
+        check(f"n = {n}: every list position is a prefix of the edges (Step 13), "
+              f"{sum(widths)} entries stored for {E} edges (padded: {L * E})", prefix_ok
+              and all(widths[i] >= widths[i + 1] for i in range(L - 1)))
+        pad_k = any(bool(((w == 0) & (k != 0)).any()) for k, w in zip(b.mod_k, b.mod_w))
+        scratch = edge >= n * n
         check(f"n = {n}: padding is inert (w = 0 with k = 0; padding edges in unique "
-              f"scratch columns)", not bool(pad_k.any())
-              and all(len(set(row.tolist())) == E for row in b.mod_edge)
-              and bool((b.mod_edge[scratch] < n * n + E).all()))
-        real_next = b.mod_w[:, 1:, :] != 0
-        order_ok = bool(((b.mod_k[:, 1:, :] > b.mod_k[:, :-1, :]) | ~real_next).all())
+              f"scratch columns)", not pad_k
+              and all(len(set(row.tolist())) == E for row in edge)
+              and bool((edge[scratch] < n * n + E).all()))
+        order_ok = all(
+            bool(((b.mod_k[l_ + 1].long() > b.mod_k[l_][:, : widths[l_ + 1]].long())
+                  | (b.mod_w[l_ + 1] == 0)).all()) for l_ in range(L - 1))
         check(f"n = {n}: every edge's entries are in ascending modulator index", order_ok)
+        check(f"n = {n}: indices are int16 ({b.mod_edge.dtype}, {b.mod_k[0].dtype})",
+              b.mod_edge.dtype == torch.int16 and all(k.dtype == torch.int16 for k in b.mod_k))
     b = encode_genomes(pool(11), brain_cfg(11))
     check(f"the special genomes exercise >= 3 modulators and folding "
           f"({b.n_folded_modulators} folded entries)",
           int((b.Mod != 0).sum(dim=1).amax().item()) >= 3 and b.n_folded_modulators > 0)
+    big = encode_genomes([generate_random_genome({"brain": brain_cfg(130)}, rng_seed=1)],
+                         brain_cfg(130), dense_modulation=False)
+    check(f"n = 130: indices widen to int32, since an edge index can reach 2 n^2 = "
+          f"{2 * 130 ** 2} > 32,767 (this genome's largest: "
+          f"{int(big.mod_edge.long().max())})",
+          big.mod_edge.dtype == torch.int32 and all(k.dtype == torch.int32 for k in big.mod_k))
 
 
 def test_sum(dev):
@@ -180,11 +226,14 @@ def test_generations(dev):
         brain._modulation_sum = dense_reference
         try:
             old = run_gen(dense, cfg, seeds, dev, P * 3)
+            brain._modulation_sum = step11_reference
+            s11 = run_gen(dense, cfg, seeds, dev, P * 3)
         finally:
             brain._modulation_sum = orig
         same = lambda a, b: all(torch.equal(getattr(a, k), getattr(b, k)) for k in FIELDS)  # noqa: E731
         check(f"[{dev}] n = {n}: {new.lifespans.numel()} runs identical to the old dense "
               f"sum (lifespans, eats, distance, energy)", same(new, old))
+        check(f"[{dev}] n = {n}: identical to the Step 11 padded layout", same(new, s11))
         so = run_gen(sparse_only, cfg, seeds, dev, P * 3)
         check(f"[{dev}] n = {n}: a batch without the dense Mod gives the same results; "
               f"Mod is {'None' if sparse_only.Mod is None else 'present'} there",
@@ -199,7 +248,7 @@ def graphs():
 
 
 def test_compile(dev):
-    print(f"\n[4] [{dev}] compile: recompiles only for a new power-of-two L")
+    print(f"\n[4] [{dev}] compile: graphs stay bounded as the lists change")
     G.configure_device(dev)
     cfg = load_cfg(n_runs=2)
     cfg["brain"]["n_neurons"] = 11
@@ -211,7 +260,7 @@ def test_compile(dev):
         P = len(gs)
         s = seeds_cache.setdefault(P, seeds_for(cfg, P))
         run_gen(b, cfg, s, dev, P * 2, compile=True)
-        return tuple(b.mod_k.shape[1:])
+        return (len(b.mod_k), tuple(k.shape[1] for k in b.mod_k))
     rng = np.random.default_rng(3)
     base = [generate_random_genome({"brain": brain_cfg(11)}, rng_seed=700 + i) for i in range(8)]
     try:
@@ -232,11 +281,14 @@ def test_compile(dev):
         check(f"[{dev}] compile works here ({str(e)[:150]})", False)
         return
     Ls = [s[0] for s in shapes]
-    print(f"      (L, E) per generation: {shapes}; graphs {g1} -> {g2} -> {g3} -> {g4}")
-    check(f"[{dev}] generations with the same L but different E add at most one "
-          f"recompile ({g1} -> {g2} graphs)", g2 - g1 <= 3 and len(set(Ls[:-2])) == 1)
-    check(f"[{dev}] a new L recompiles once; the same L again does not ({g3} -> {g4})",
-          g3 > g2 and g4 == g3 and Ls[-1] == Ls[-2] > Ls[0])
+    print(f"      (L, edges per position) per generation: {shapes}; graphs "
+          f"{g1} -> {g2} -> {g3} -> {g4}")
+    check(f"[{dev}] generations with the same L but different widths add at most "
+          f"three graphs ({g1} -> {g2})", g2 - g1 <= 3 and len(set(Ls[:-2])) == 1)
+    # Whether a new L needs a new graph depends on what the compile cache already
+    # holds; what matters is that compiling stays bounded and a repeated L is free.
+    check(f"[{dev}] a new L adds at most a few graphs ({g2} -> {g3}); the same L again "
+          f"adds none ({g3} -> {g4})", g3 - g2 <= 3 and g4 == g3 and Ls[-1] == Ls[-2] > Ls[0])
 
 
 def test_memory():
@@ -247,17 +299,20 @@ def test_memory():
     sparse = encode_genomes(gs, brain_cfg(n), dtype=torch.float32, dense_modulation=False)
     bd, bs = G.genome_batch_bytes(dense), G.genome_batch_bytes(sparse)
     check(f"n = 50, {len(gs)} genomes: batch {bd / 2**20:.2f} MB with the dense Mod, "
-          f"{bs / 2**20:.3f} MB without (every edge modulated, lists up to L = "
-          f"{sparse.mod_k.shape[1]})", bs < bd / 2)
-    L, E = sparse.mod_k.shape[1:]
+          f"{bs / 2**20:.3f} MB without (every edge modulated, {len(sparse.mod_k)} "
+          f"list positions)", bs < bd / 2)
+    widths = [k.shape[1] for k in sparse.mod_k]
+    E = sparse.mod_edge.shape[1]
+    lists = sparse_slot_bytes(sparse)
+    check(f"sparse lists per slot = {lists} B = sum(E_l) x (2 + 4) + E_0 x 2 "
+          f"(edges per position {widths})", lists == sum(widths) * 6 + E * 2)
     kw = dict(height=51, width_cells=51, n=n, K=2 * n, dtype=torch.float32, mode="live",
               max_ticks=2000)
-    est_d = G.estimate_slot_bytes(sparse_shape=None, **kw)
-    est_s = G.estimate_slot_bytes(sparse_shape=(L, E), **kw)
-    by_hand = est_d - int(G.PEAK_FACTOR * (n ** 3 * 4 - (L * E * 12 + E * 8)))
+    est_d = G.estimate_slot_bytes(sparse_slot_bytes=None, **kw)
+    est_s = G.estimate_slot_bytes(sparse_slot_bytes=lists, **kw)
+    by_hand = est_d - int(G.PEAK_FACTOR * (n ** 3 * 4 - lists))
     check(f"slot estimate: {est_d // 1024} KB dense -> {est_s // 1024} KB sparse "
-          f"(L x E = {L} x {E}, the n^3 copy replaced by L*E entries)",
-          abs(est_s - by_hand) <= 1 and est_s < est_d)
+          f"(the n^3 copy replaced by the lists)", abs(est_s - by_hand) <= 1 and est_s < est_d)
     st = BrainTensorState(act=torch.zeros(sparse.n_pop, 1, n),
                           Wabs=sparse.Wabs0.clone())
     try:

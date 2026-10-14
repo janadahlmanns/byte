@@ -390,8 +390,8 @@ def slot_view(batch: GenomeBatch, slot_genome: torch.Tensor) -> GenomeBatch:
         Rel=batch.Rel[g],
         Mod=None if batch.Mod is None else batch.Mod[g],   # (B, n, n, n)
         mod_edge=batch.mod_edge[g],    # (B, E)
-        mod_k=batch.mod_k[g],          # (B, L, E)
-        mod_w=batch.mod_w[g],
+        mod_k=tuple(k[g] for k in batch.mod_k),   # L x (B, E_l)
+        mod_w=tuple(w[g] for w in batch.mod_w),
         Tonic=batch.Tonic[g],          # (B, 1, n)
         Eta=batch.Eta[g],              # (B, 1, 1, 1)
         warmup_ticks=batch.warmup_ticks[g],
@@ -570,7 +570,7 @@ def release_device_cache(device) -> None:
 
 def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
                         dtype: torch.dtype, mode: str, max_ticks: int,
-                        sparse_shape: Optional[Tuple[int, int]],
+                        sparse_slot_bytes: Optional[int],
                         tracked_connections: Optional[int] = None,
                         flush_every: int = 64) -> int:
     """Peak bytes one slot needs (deterministic).
@@ -578,17 +578,13 @@ def estimate_slot_bytes(*, height: int, width_cells: int, n: int, K: int,
     The slot's state and per-iteration buffers are counted exactly from their shapes;
     PEAK_FACTOR (measured) covers the temporaries. Pre-drawn bundles and tracker
     buffers are added when used -- they are large and do not scale with the factor.
-    `sparse_shape` = (L, E) of the encoded batch on the sparse (sequential) path, whose
-    per-slot modulation copy is L x E entries; None on the dense (einsum) path, which
-    copies the n^3 tensor (plan Step 11).
+    `sparse_slot_bytes` = one slot's copy of the encoded batch's sparse modulation lists
+    (`genome_codec.sparse_slot_bytes`) on the sparse (sequential) path; None on the
+    dense (einsum) path, which copies the n^3 tensor (plan Steps 11, 13).
     """
     ds = torch.tensor([], dtype=dtype).element_size()
     cells = height * width_cells
-    if sparse_shape is None:
-        modulation = n ** 3 * ds
-    else:
-        L, E = sparse_shape
-        modulation = L * E * (8 + ds) + E * 8
+    modulation = n ** 3 * ds if sparse_slot_bytes is None else int(sparse_slot_bytes)
     state = (
         cells * 2                                # avail int16 (regrow clock, R4)
         + modulation                             # per-slot modulation copy (slot_view)

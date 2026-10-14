@@ -57,16 +57,18 @@ class GenomeBatch:
     Tonic: torch.Tensor   # (P, 1, n)     per-neuron tonic drive
     Eta: torch.Tensor     # (P, 1, 1, 1)  global plasticity factor, broadcast over edges
 
-    # Sparse modulation (the `sequential` contraction, plan Step 11): the nonzero
-    # entries of Mod, per modulated edge in ASCENDING modulator index -- the order the
-    # dense sequential sum adds them in, so the sum is bit-identical to it. E = most
-    # modulated edges in any genome, L = most entries on any edge rounded up to a power
-    # of two (>= 2; a loop count, so compile sees few values). Padding: entries k = 0,
-    # w = 0.0 after the real ones (adds +0.0: no effect); padding edges point to unique
-    # scratch columns n*n + e, which the sum drops.
-    mod_edge: torch.Tensor  # (P, E)     int64 flat edge index i*n + j (or n*n + e)
-    mod_k: torch.Tensor     # (P, L, E)  int64 modulator index of entry l
-    mod_w: torch.Tensor     # (P, L, E)  modulator weight of entry l (= Mod[p, k, i, j])
+    # Sparse modulation (the `sequential` contraction, plan Steps 11 and 13): the
+    # nonzero entries of Mod, per modulated edge in ASCENDING modulator index -- the
+    # order the dense sequential sum adds them in, so the sum is bit-identical to it.
+    # Each genome's modulated edges are ordered by entry count, longest first, so the
+    # edges having an l-th entry are always a PREFIX: position l stores only the
+    # population's widest such prefix, E_l columns (E_0 >= E_1 >= ...). Padding (k = 0,
+    # w = 0.0) only adds +0.0: no effect. The tuple has L positions, L a power of two
+    # >= 2 (a loop count, so compile sees few values); extra positions are one zero
+    # column. Indices are int16 when 2 n^2 < 32767, else int32 (`mod_index_dtype`).
+    mod_edge: torch.Tensor          # (P, E_0) flat edge index i*n + j, padding n*n + e
+    mod_k: Tuple[torch.Tensor, ...]  # L x (P, E_l) modulator index of entry l
+    mod_w: Tuple[torch.Tensor, ...]  # L x (P, E_l) weight of entry l (= Mod[p, k, i, j])
 
     # --- derived per-genome integers --------------------------------------
     warmup_ticks: torch.Tensor  # (P,) int64
@@ -194,17 +196,27 @@ def _fill_modulation(
     return entries
 
 
+def mod_index_dtype(n: int):
+    """The sparse lists' index dtype: int16 while every index fits (modulator < n,
+    edge < n^2 + E_0 <= 2 n^2), else int32 (plan Step 13)."""
+    return np.int16 if 2 * n * n < 32767 else np.int32
+
+
 def _sparse_modulation(
     mod_entries: List[Dict[Tuple[int, int], Dict[int, float]]], n: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(mod_edge (P, E), mod_k (P, L, E), mod_w (P, L, E)) from the per-genome entries.
+) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray]]:
+    """(mod_edge (P, E_0), mod_k [L x (P, E_l)], mod_w [L x (P, E_l)]) from the
+    per-genome entries.
 
     Zero-valued entries are left out: the dense sequential sum adds them as
     `act * 0.0 = +0.0`, which changes no value (the accumulator starts at +0.0 and
     can never become -0.0), so leaving them out keeps the sum bit-identical. Entries
-    of an edge are in ascending modulator index -- the dense loop's order.
+    of an edge are in ascending modulator index -- the dense loop's order. Edges are
+    ordered by entry count, longest first (ties: ascending edge index), so the edges
+    with an l-th entry are the first ones (plan Step 13).
     """
     P = len(mod_entries)
+    idx = mod_index_dtype(n)
     per_genome = []
     for entries in mod_entries:
         edges = []
@@ -212,23 +224,37 @@ def _sparse_modulation(
             ks = sorted(k for k, w in entries[(i, j)].items() if w != 0.0)
             if ks:
                 edges.append((i * n + j, [(k, entries[(i, j)][k]) for k in ks]))
+        edges.sort(key=lambda e: (-len(e[1]), e[0]))
         per_genome.append(edges)
-    E = max(1, max(len(edges) for edges in per_genome))
     L_real = max([len(ents) for edges in per_genome for _, ents in edges], default=0)
     L = 2
     while L < L_real:
         L *= 2
-    mod_edge = np.zeros((P, E), dtype=np.int64)
-    mod_k = np.zeros((P, L, E), dtype=np.int64)
-    mod_w = np.zeros((P, L, E), dtype=np.float64)
+    # E_l: the widest prefix of edges having an l-th entry, over the population (>= 1).
+    widths = [max(1, max(sum(1 for _, ents in edges if len(ents) > l_) for edges in per_genome))
+              for l_ in range(L)]
+    E = widths[0]
+    _require(n * n + E <= np.iinfo(idx).max,
+             f"sparse modulation index overflow: n*n + E = {n * n + E} does not fit {idx}")
+    mod_edge = np.zeros((P, E), dtype=idx)
+    mod_k = [np.zeros((P, w), dtype=idx) for w in widths]
+    mod_w = [np.zeros((P, w), dtype=np.float64) for w in widths]
     for p, edges in enumerate(per_genome):
         mod_edge[p] = n * n + np.arange(E)             # unique scratch columns
         for e, (flat, ents) in enumerate(edges):
             mod_edge[p, e] = flat
             for l_, (k, w) in enumerate(ents):
-                mod_k[p, l_, e] = k
-                mod_w[p, l_, e] = w
+                mod_k[l_][p, e] = k
+                mod_w[l_][p, e] = w
     return mod_edge, mod_k, mod_w
+
+
+def sparse_slot_bytes(batch: "GenomeBatch") -> int:
+    """Bytes of one slot's copy of the sparse modulation lists (`slot_view`)."""
+    per = batch.mod_edge.element_size() * batch.mod_edge.shape[1]
+    for k, w in zip(batch.mod_k, batch.mod_w):
+        per += k.shape[1] * (k.element_size() + w.element_size())
+    return per
 
 
 def _warmup_and_max_ticks(
@@ -421,8 +447,8 @@ def encode_genomes(
         Rel=_t(Rel_np).unsqueeze(1),
         Mod=Mod,
         mod_edge=torch.as_tensor(mod_edge_np, device=device),
-        mod_k=torch.as_tensor(mod_k_np, device=device),
-        mod_w=_t(mod_w_np),
+        mod_k=tuple(torch.as_tensor(a, device=device) for a in mod_k_np),
+        mod_w=tuple(_t(a) for a in mod_w_np),
         Tonic=_t(Tonic_np).unsqueeze(1),   # (P, 1, n)
         Eta=_t(Eta_np).reshape(P, 1, 1, 1),
         warmup_ticks=torch.as_tensor(warmup_np, device=device),

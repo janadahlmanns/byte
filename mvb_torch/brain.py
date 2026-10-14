@@ -90,9 +90,9 @@ class StepGenome(NamedTuple):
     S_r: torch.Tensor
     sensor_keys: Tuple[str, ...]
     threshold_raw: float
-    mod_edge: torch.Tensor        # sparse modulation (plan Step 11), see GenomeBatch
-    mod_k: torch.Tensor
-    mod_w: torch.Tensor
+    mod_edge: torch.Tensor        # sparse modulation (plan Steps 11, 13), see GenomeBatch
+    mod_k: Tuple[torch.Tensor, ...]
+    mod_w: Tuple[torch.Tensor, ...]
 
     @staticmethod
     def of(batch: GenomeBatch) -> "StepGenome":
@@ -166,8 +166,10 @@ def _modulation_sum(
     edge, its entries in ascending modulator index, accumulated from 0 -- exactly the
     additions the former dense loop `for k in range(n): total += act[k] * Mod[k]` made,
     minus its `+0.0` terms, which change no value. So it is bit-identical to that loop
-    for every genome (tests/test_sparse_modulation.py), and costs L x E multiply-adds
-    instead of n^3 (n = 50: ~10^3 vs 125,000). `einsum` keeps the dense tensor.
+    for every genome (tests/test_sparse_modulation.py), and costs about one
+    multiply-add per real entry instead of n^3 (n = 50: ~2-3 x 10^3 vs 125,000).
+    Position l updates only the prefix of edges that have an l-th entry (Step 13).
+    `einsum` keeps the dense tensor.
 
     Bit-exactness caveat: the scalar sim accumulates in `modulation_spec` LIST order
     while any dense form must sum over ascending modulator index. With <= 2
@@ -180,15 +182,17 @@ def _modulation_sum(
     if contraction == "sequential":
         E = batch.mod_edge.shape[-1]
         acc = torch.zeros((P, R, E), dtype=state.act.dtype, device=state.act.device)
-        for l_ in range(batch.mod_k.shape[1]):
-            # Activity of entry l's modulator, per edge: (P, R, E). act * w is the
-            # same product the dense loop formed (multiplication commutes exactly).
-            a_l = torch.gather(state.act, 2, batch.mod_k[:, l_].unsqueeze(1).expand(P, R, E))
-            acc.addcmul_(a_l, batch.mod_w[:, l_].unsqueeze(1))
+        for k_l, w_l in zip(batch.mod_k, batch.mod_w):
+            # Entry l of the first E_l edges: its modulator's activity, (P, R, E_l).
+            # act * w is the same product the dense loop formed (multiplication
+            # commutes exactly). The narrow index is widened here (fused when compiled).
+            E_l = k_l.shape[-1]
+            a_l = torch.gather(state.act, 2, k_l.long().unsqueeze(1).expand(P, R, E_l))
+            acc[..., :E_l].addcmul_(a_l, w_l.unsqueeze(1))
         # Into the n*n edges; padding edges land in the scratch columns n*n..n*n+E-1
         # (unique indices: deterministic) and are dropped.
         flat = torch.zeros((P, R, n * n + E), dtype=acc.dtype, device=acc.device)
-        flat.scatter_(2, batch.mod_edge.unsqueeze(1).expand(P, R, E), acc)
+        flat.scatter_(2, batch.mod_edge.long().unsqueeze(1).expand(P, R, E), acc)
         total = flat[..., : n * n].reshape(P, R, n, n)
     else:
         if batch.Mod is None:

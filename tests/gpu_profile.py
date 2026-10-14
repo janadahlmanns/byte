@@ -46,7 +46,7 @@ from mvb.genome.generate_genome_random import generate_random_genome  # noqa: E4
 from mvb_torch import philox  # noqa: E402
 from mvb_torch.brain import BrainTensorState  # noqa: E402
 from mvb_torch.decision import build_output_spec, decide_batch  # noqa: E402
-from mvb_torch.genome_codec import encode_genomes  # noqa: E402
+from mvb_torch.genome_codec import encode_genomes, sparse_slot_bytes  # noqa: E402
 from mvb_torch.world import active_key_mask, sense_batch  # noqa: E402
 from mvb_torch.worm import act_batch, metabolise  # noqa: E402
 from tests.devices import (accelerators, allocator_bytes, peak_allocator_bytes,  # noqa: E402
@@ -178,6 +178,15 @@ def phase_profile(dev, cfg, batch, width, compile, n_iter=20, warm=5):
     return {k: 1000 * v / n_iter for k, v in T.items()}, used / width / 1024
 
 
+def layout(batch):
+    """One line describing the modulation storage (dense, or the sparse lists)."""
+    if batch.Mod is not None:
+        return "dense (n^3)"
+    widths = [k.shape[1] for k in batch.mod_k]
+    return (f"sparse, {len(widths)} positions, edges per position {widths} "
+            f"({sum(widths)} entries, {str(batch.mod_edge.dtype)[6:]} indices)")
+
+
 def width_rule(dev, cfg, batch):
     """The width the evaluator would choose for this config, its reason, and the
     estimated bytes per slot (the adapter's computation; the genome batch scaled from
@@ -189,7 +198,7 @@ def width_rule(dev, cfg, batch):
         height=sim.height, width_cells=sim.width, n=n,
         K=int(n * float(brain["max_decision_delay"])), dtype=DT, mode="live",
         max_ticks=sim.max_ticks,
-        sparse_shape=None if batch.Mod is not None else tuple(batch.mod_k.shape[1:]))
+        sparse_slot_bytes=None if batch.Mod is not None else sparse_slot_bytes(batch))
     Pc, Rc = int(x["population_size"]), int(x["n_runs"])
     gb = G.genome_batch_bytes(batch) * Pc // batch.n_pop
     W, why = G.choose_width(Pc, Rc, slot, dev, batch_bytes=gb)
@@ -324,8 +333,7 @@ def main():
           f"{cfg['experiment']['genome_type']} genomes")
     print(f"  contraction: {G.live_contraction(dev)}; brain ticks per decision: max K = {K}, "
           f"mean warmup {batch.warmup_ticks.float().mean().item():.1f}; modulation "
-          + ("dense (n^3)" if batch.Mod is not None else
-             f"sparse, L x E = {batch.mod_k.shape[1]} x {batch.mod_k.shape[2]}"))
+          + layout(batch))
     print(f"  width rule for this config: {W} ({why}); estimated {slot / 1024:.1f} KB/slot")
     if args.config == DEFAULT_CONFIG:
         widths = (7_800, 26_000, 78_000)

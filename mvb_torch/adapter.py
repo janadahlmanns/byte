@@ -47,7 +47,7 @@ from .decision import build_output_spec
 from .generation import (SeedSet, SimConfig, choose_width, configure_device, draw_seeds,
                          estimate_slot_bytes, eval_generation_batch, genome_batch_bytes,
                          live_contraction)
-from .genome_codec import encode_genomes
+from .genome_codec import encode_genomes, sparse_slot_bytes
 
 # Printed once per generation. tests/test_ea_tensor.py looks for it to prove the tensor
 # path actually ran -- a toggle that silently did nothing would otherwise make the
@@ -242,7 +242,7 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
             height=sim.height, width_cells=sim.width, n=n,
             K=int(n * float(brain_cfg["max_decision_delay"])), dtype=dtype, mode=mode,
             max_ticks=sim.max_ticks,
-            sparse_shape=(tuple(batch.mod_k.shape[1:]) if sparse else None),
+            sparse_slot_bytes=(sparse_slot_bytes(batch) if sparse else None),
             tracked_connections=(n * n if flags.per_tick else 0 if flags.heat_map else None),
         )
         width, width_reason = choose_width(
