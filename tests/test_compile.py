@@ -17,6 +17,9 @@ is everything the user's requirements rest on:
   [4] reported, not asserted: compiled vs eager
   [5] compile=True really runs the compiled functions (and compile=False does not): on
       CPU and MPS compiled == eager, so no result above would notice a silent eager run
+  [6] a long evolving run (plan Step 13c): 12 generations whose modulation lists grow
+      until L = 8. No width 1, a new graph only for a new L, and torch.compile set to
+      FAIL at its recompile limit instead of silently running eager
 
 Usage
 -----
@@ -185,6 +188,56 @@ def test_routing(dev):
           all(v == 0 for v in counts[False].values()))
 
 
+def test_long_run(dev):
+    print(f"\n[6] [{dev}] 12 evolving generations: bounded recompiles, no eager fallback")
+    import numpy as np
+    import yaml
+    from mvb.genome.generate_genome_lookup_hard import generate_lookup_hard_genome
+    from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simple
+    G.configure_device(dev)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = yaml.safe_load(open(os.path.join(root, "configs/experiments/ea_from_lookup_tensor_cuda.yaml")))
+    R, P = 8, 60
+    cfg["experiment"]["n_runs"] = R
+    rng = np.random.default_rng(0)
+    pop = [generate_lookup_hard_genome(cfg, rng_seed=i) for i in range(P)]
+    sim, spec = G.sim_config_from_yaml(cfg), build_output_spec(cfg["brain"])
+    added, Ls, finals = [], [], []
+    try:
+        for gen in range(12):
+            b = encode_genomes(pop, cfg["brain"], device=dev, dtype=torch.float32,
+                               dense_modulation=False)
+            seeds = G.draw_seeds(*G.make_simulation_rngs(gen + 1), P, R)
+            g0 = graphs()
+            r = G.eval_generation_batch(b, spec, sim, seeds, width=P * R, mode="live",
+                                        philox_rounds=10, contraction="sequential",
+                                        compile=True)
+            added.append(graphs() - g0)
+            Ls.append(len(b.mod_k))
+            finals.append(r.final_width)
+            order = np.argsort(-r.lifespans.float().mean(1).cpu().numpy())
+            elites = [pop[i] for i in order[:6]]
+            pop = elites + [generate_genome_mutate_simple(elites[i % 6], 0.4, 0.2, rng)
+                            for i in range(P - 6)]
+    except RuntimeError as e:
+        check(f"[{dev}] the run completes without hitting the recompile limit "
+              f"({str(e)[:160]})", False)
+        return
+    print(f"      L per generation {Ls}; new graphs {added}; final widths {finals}")
+    new_L = [i for i in range(1, len(Ls)) if Ls[i] not in Ls[:i]]
+    check(f"[{dev}] compaction never leaves width 1 (final widths {sorted(set(finals))})",
+          min(finals) >= 2)
+    check(f"[{dev}] after generation 0, a graph is added only in a generation with a new "
+          f"L (generations {new_L}), at most one each: {added[1:]}",
+          all(a == 0 for i, a in enumerate(added) if i and i not in new_L)
+          and all(added[i] <= 1 for i in new_L) and max(Ls) == 8)
+    check(f"[{dev}] {sum(added)} graphs in all, below dynamo's recompile limit of "
+          f"{torch._dynamo.config.recompile_limit}, and hitting it would raise "
+          f"(fail_on_recompile_limit_hit = {torch._dynamo.config.fail_on_recompile_limit_hit})",
+          sum(added) < torch._dynamo.config.recompile_limit
+          and torch._dynamo.config.fail_on_recompile_limit_hit is True)
+
+
 def main():
     print("=" * 70)
     print("torch.compile on the live path (plan Step 8, R5)")
@@ -193,6 +246,7 @@ def main():
         test_philox(dev)
         test_generations(dev)
         test_routing(dev)
+        test_long_run(dev)
     failed = [nm for nm, ok in _RESULTS if not ok]
     print("\n" + "=" * 70)
     if failed:

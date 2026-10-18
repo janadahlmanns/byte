@@ -245,6 +245,7 @@ class KeyedSource:
         self.level, self.K, self.n = noise_level, K, n
         self.dtype = dtype
         self.rounds = philox.check_rounds(rounds)
+        self.compile = compile
         if compile:     # constants bound before compiling (see philox.compiled_normals)
             self._normals = philox.compiled_normals(K, n, dtype, self.rounds)
             self._uniforms = philox.compiled_uniforms(dtype, self.rounds)
@@ -270,12 +271,18 @@ class KeyedSource:
     def noise(self, tick: torch.Tensor, slot_genome: torch.Tensor,
               run_idx: torch.Tensor) -> torch.Tensor:
         seed = self._seed(self.noise_seeds, slot_genome, run_idx)
+        if self.compile:                 # the batch width is variable from the start (13c)
+            torch._dynamo.maybe_mark_dynamic(seed, 0)
+            torch._dynamo.maybe_mark_dynamic(tick, 0)
         z = self._normals(seed, tick)
         return z * self.level                                            # (K, B, 1, n)
 
     def decision(self, tick: torch.Tensor, slot_genome: torch.Tensor,
                  run_idx: torch.Tensor) -> torch.Tensor:
         seed = self._seed(self.decision_seeds, slot_genome, run_idx)
+        if self.compile:
+            torch._dynamo.maybe_mark_dynamic(seed, 0)
+            torch._dynamo.maybe_mark_dynamic(tick, 0)
         return self._uniforms(seed, tick)                                  # (B, 1)
 
 
@@ -641,6 +648,12 @@ def choose_width(P: int, R: int, slot_bytes: int, device, *, batch_bytes: int,
                  f"{budget / 2**30:.1f} GB budget{genomes}; the queue feeds the rest")
 
 
+# Compaction never shrinks the width below this (plan Step 13c): a width of 1 is a
+# size-1 dimension, which torch.compile specialises as a constant -- one more compiled
+# graph per list layout, enough to reach dynamo's recompile limit and its silent eager
+# fallback. The extra slot is a retired one and changes no result.
+MIN_WIDTH = 2
+
 # Compact once the queue is empty and at most this fraction of the width is still
 # running (plan Step 8, R2). A speed knob, not a result-affecting one: compaction only
 # drops finished slots, and results are identical for every value (tests enforce it).
@@ -878,10 +891,18 @@ def eval_generation_batch(
                 break
             # R2: once no run is waiting, drop finished slots -- they would otherwise
             # cost as much as live ones until the generation ends.
-            if queue_empty and n_live < B and n_live <= compact_below * B:
-                keep = active.reshape(-1).nonzero().reshape(-1)
+            n_keep = max(n_live, MIN_WIDTH)
+            if queue_empty and n_keep < B and n_live <= compact_below * B:
+                live = active.reshape(-1)
+                keep = live.nonzero().reshape(-1)
+                if n_live < MIN_WIDTH:
+                    # Keep retired slots (run_idx == R: masked everywhere, results to the
+                    # dummy index) so the width never becomes 1 -- torch.compile treats
+                    # size 1 as a constant and would compile yet another graph (13c).
+                    filler = (~live).nonzero().reshape(-1)[: MIN_WIDTH - n_live]
+                    keep = torch.sort(torch.cat((keep, filler))).values
                 compact_slots(state, keep, source, tracker)
-                B = n_live
+                B = n_keep
                 dummy = torch.full((B, 1), Q, dtype=i64, device=dev)
                 slot_batch = slot_view(batch, state.slot_genome)
                 active = state.run_idx < R

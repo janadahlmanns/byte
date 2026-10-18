@@ -192,6 +192,7 @@ def compiled_normals(K: int, n: int, dtype: torch.dtype, rounds: int):
     if key not in _COMPILED:
         f = _specialised(f"standard_normals(seed, tick, {int(K)}, {int(n)}, DTYPE, "
                          f"rounds={int(rounds)})", dtype)
+        torch._dynamo.config.fail_on_recompile_limit_hit = True   # no silent eager (13c)
         _COMPILED[key] = torch.compile(f)
     return _COMPILED[key]
 
@@ -202,5 +203,6 @@ def compiled_uniforms(dtype: torch.dtype, rounds: int):
     if key not in _COMPILED:
         f = _specialised(f"decision_uniforms(seed, tick, DTYPE, rounds={int(rounds)})",
                          dtype)
+        torch._dynamo.config.fail_on_recompile_limit_hit = True   # no silent eager (13c)
         _COMPILED[key] = torch.compile(f)
     return _COMPILED[key]

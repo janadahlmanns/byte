@@ -218,24 +218,34 @@ def decide_batch(
     # One brain tick is one call of `_decide_step` (R5): eager and compiled runs share
     # it, and compiling one tick (not the unrolled K-tick loop) keeps compile time short.
     g = StepGenome.of(batch)
-    if compile:
-        # The sparse lists' widths change from generation to generation (mutation).
-        # Declared variable up front, they compile once instead of on each first change
-        # (Step 13b: those recompiles cost minutes per generation at n = 50).
-        for t in (g.mod_edge, *g.mod_k, *g.mod_w):
-            # maybe_mark_dynamic, not mark_dynamic: the strict form refuses the size
-            # guards dynamo generates (ConstraintViolationError), and with min alone
-            # torch 2.13 fails outright (None upper bound).
-            torch._dynamo.maybe_mark_dynamic(t, 1)
     step = compiled_decide_step() if compile else _decide_step
     ticks = torch.arange(K, dtype=ilong, device=dev)   # the tick as a tensor: no recompile
     carry = (state.act, state.Wabs, prop_win, candidates, cand_locked, stab_count,
              stab_ticks, decided, action, decided_at)
+    if compile:
+        # Sizes that change during a run are declared variable up front, so they compile
+        # once instead of on their first change. maybe_mark_dynamic, not mark_dynamic:
+        # the strict form refuses the size guards dynamo generates
+        # (ConstraintViolationError), and with min alone torch 2.13 fails outright.
+        # - the sparse lists' widths, which mutation changes every generation (13b);
+        for t in (g.mod_edge, *g.mod_k, *g.mod_w):
+            torch._dynamo.maybe_mark_dynamic(t, 1)
+        # - the batch width, which compaction changes (13c).
+        per_slot = [g.Wsign, g.Rel, g.Tonic, g.Eta, g.mod_edge, *g.mod_k, *g.mod_w,
+                    *carry, warmup, max_ticks, prop_filled, decision_uniform]
+        if g.Mod is not None:
+            per_slot.append(g.Mod)
+        if sens is not None:
+            per_slot.append(sens)
+        for t in per_slot:
+            torch._dynamo.maybe_mark_dynamic(t, 0)
     for t in range(K):
+        noise_t = None if noise is None else noise[t]
+        if compile and noise_t is not None:
+            torch._dynamo.maybe_mark_dynamic(noise_t, 0)
         try:
-            carry = step(g, spec, contraction, carry, ticks[t],
-                         None if noise is None else noise[t], sens, warmup, max_ticks,
-                         prop_filled, move_slots, move_actions, decision_uniform)
+            carry = step(g, spec, contraction, carry, ticks[t], noise_t, sens, warmup,
+                         max_ticks, prop_filled, move_slots, move_actions, decision_uniform)
         except Exception as e:
             if not compile:
                 raise
@@ -342,8 +352,20 @@ def compiled_decide_step():
     constants into variables."""
     global _COMPILED_STEP
     if _COMPILED_STEP is None:
+        strict_compile()
         _COMPILED_STEP = torch.compile(_decide_step)
     return _COMPILED_STEP
+
+
+def strict_compile() -> None:
+    """Make torch.compile fail loudly instead of silently running eager (plan Step 13c).
+
+    Past `recompile_limit` (8) graphs per function, dynamo by default stops compiling
+    and runs that function eager for every new input shape. On CUDA eager and compiled
+    differ in the last bits, so a run's numbers would depend on its compile history.
+    With this set, hitting the limit raises, which `decide_batch` reports with its
+    "torch.compile failed" message."""
+    torch._dynamo.config.fail_on_recompile_limit_hit = True
 
 
 def _resolve(
