@@ -1,0 +1,20 @@
+# ============================================================
+# NEURON-COUNT SWEEP (plan_evotorch.md, Step 15)
+# ============================================================
+# How runtime and GPU memory grow with the number of neurons. Each value of
+# brain.n_neurons is one row in the selector (python -m simulate.run_selected), named
+# "neuron_scaling [n_neurons=20]" etc.; every other setting comes from the base config.
+#
+# Neurons 0-4 stay sensory and 5-9 output (the base config's mappings); all neurons
+# above are hidden and wired by the random genome, so any n >= 11 is valid.
+#
+# Rules (simulate/run_selected.py, expand_sweep): every key must already exist in the
+# base config, with a value of the same type -- a typo fails loudly, nothing is added.
+# Each point's simulation_name gets the suffix _n_neurons-<n>.
+# ============================================================
+base: ea_from_random_tensor_cuda
+set:
+  experiment.output_folder: "data/neuron_scaling/"
+  experiment.evolutionary_algorithm.num_generations: 10
+vary:
+  brain.n_neurons: [11, 20, 30, 40, 50, 75, 100]

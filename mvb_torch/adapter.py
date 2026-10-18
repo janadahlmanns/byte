@@ -44,7 +44,8 @@ from simulate.hdf5_utils import (
 from . import philox
 from . import tracking as trk
 from .decision import build_output_spec
-from .generation import (SeedSet, SimConfig, choose_width, configure_device, draw_seeds,
+from .generation import (BASE_BYTES, SeedSet, SimConfig, choose_width, configure_device,
+                         draw_seeds,
                          estimate_slot_bytes, eval_generation_batch, genome_batch_bytes,
                          live_contraction)
 from .genome_codec import encode_genomes, sparse_slot_bytes
@@ -227,6 +228,9 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
 
         # The dense modulation tensor is needed only by the einsum contraction; the
         # sequential one sums the sparse lists (plan Step 11).
+        # Peak memory of this generation alone (plan Step 15): a counter reset, no sync.
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         t0 = time.perf_counter()
         sparse = contraction == "sequential"
         batch = encode_genomes(genomes, brain_cfg, device=device, dtype=dtype,
@@ -263,6 +267,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
               f"utilisation {res.utilisation:.0%}, longest run {int(lifespans.max())} ticks, "
               f"{res.compactions} compactions, width {res.n_slots} -> {res.final_width}; "
               f"width: {width_reason})")
+        print(generation_stats_line(device, wall, int(lifespans.sum()), width, P * R,
+                                    BASE_BYTES + genome_batch_bytes(batch) + P * R * slot_bytes))
 
         if flags.per_run:
             t1 = time.perf_counter()
@@ -282,6 +288,28 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
         return all_lifespans, seeds.run_seeds
 
     return evaluate
+
+
+def generation_stats_line(device, wall, run_ticks, width, n_all, all_runs_bytes):
+    """The second per-generation line (plan Step 15), read by simulate/run_selected.py.
+
+    run-ticks: the sum of all P x R lifespans (worm-ticks simulated), so the time per
+    run-tick does not depend on how long the worms lived. Memory: torch's peak since the
+    reset before encoding (CUDA); MPS has no peak counter, so its driver allocation at
+    the end of the generation; nothing on the CPU. `all_runs_bytes` is the width rule's
+    estimate for holding every run at once (BASE_BYTES + genomes + P*R slots)."""
+    mib = lambda b: int(round(b / 2**20))   # noqa: E731
+    if device.type == "cuda":
+        mem = (f"peak reserved {mib(torch.cuda.max_memory_reserved(device))} MiB, "
+               f"peak allocated {mib(torch.cuda.max_memory_allocated(device))} MiB")
+    elif device.type == "mps":
+        mem = (f"driver allocated {mib(torch.mps.driver_allocated_memory())} MiB at the "
+               f"end of the generation (mps has no peak counter)")
+    else:
+        mem = "unavailable on cpu"
+    return (f"{MARKER} stats: run-ticks {run_ticks}, "
+            f"{1e6 * wall / max(run_ticks, 1):.2f} us/run-tick; memory: {mem}; "
+            f"width {width} of {n_all}, all runs need ~{mib(all_runs_bytes)} MiB (est.)")
 
 
 def write_tracking(hdf5_path, genomes, res, seeds: SeedSet, tracker, sim: SimConfig):

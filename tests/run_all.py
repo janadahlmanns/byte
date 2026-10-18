@@ -33,6 +33,8 @@ SUITES = [
     ("tests.test_io_tensor", True),
     ("tests.test_ea_tensor", True),
     ("tests.test_predrawn", False),
+    ("tests.test_run_selected", False),
+    ("tests.test_sweeps", False),
 ]
 
 

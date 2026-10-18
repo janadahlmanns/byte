@@ -50,4 +50,13 @@ ENV HOME=/cache \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUTF8=1
 
-CMD ["python", "-m", "tests.gpu_profile"]
+# The code version the reports name (plan Step 14). Required, after the dependencies so
+# a new commit does not reinstall them:
+#   docker build --build-arg CODE_VERSION=$(git rev-parse --short=10 HEAD) -t byte-sim:$TAG .
+ARG CODE_VERSION
+RUN test -n "$CODE_VERSION" || { echo "ERROR: build with --build-arg CODE_VERSION=\$(git rev-parse --short=10 HEAD)" >&2; exit 1; }
+ENV BYTE_CODE_VERSION=$CODE_VERSION
+
+# Default: the config selection screen (needs `docker run -it`). The GPU diagnostics
+# are still there: `docker run ... byte-sim:$TAG python -m tests.gpu_profile`.
+CMD ["python", "-m", "simulate.run_selected"]
