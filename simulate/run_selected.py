@@ -43,12 +43,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "configs" / "experiments"
 EXTRA_CONFIG_DIR = Path("/my_configs")          # mounted by the tester (README, option 2)
 SWEEP_DIR = ROOT / "configs" / "sweeps"
+PRESET_DIR = ROOT / "configs" / "presets"
+DEFAULT_PRESET = "tester_default"           # pre-ticked on the screen (plan Step 17)
+REFERENCE_IGNORED_ATTRS = {"experiment_output_folder"}
 DEFAULT_REPORT_DIR = ROOT / "data" / "runtime_reports"
 
 # Lines of the run_ea output this runner reads. The timing line is printed by the
@@ -304,6 +308,133 @@ def all_infos(available):
     return [describe(p, n, available) for n, p in config_files()] + sweep_infos(available)
 
 
+# ============================================================
+# Presets and reference results (plan Step 17)
+# ============================================================
+
+class PresetError(ValueError):
+    pass
+
+
+@dataclass
+class Preset:
+    name: str
+    description: str
+    configs: List[str]
+    references: dict                 # config name -> Path of a reference HDF5
+
+
+def load_preset(path):
+    """A preset file: description, configs (the run order), optional references."""
+    path = Path(path)
+    try:
+        d = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise PresetError(f"{path.name}: YAML cannot be read: {type(e).__name__}") from e
+    if not isinstance(d, dict):
+        raise PresetError(f"{path.name}: must be a mapping with description, configs")
+    extra = set(d) - {"description", "configs", "references"}
+    if extra:
+        raise PresetError(f"{path.name}: unknown keys {sorted(extra)} "
+                          f"(allowed: description, configs, references)")
+    for k in ("description", "configs"):
+        if k not in d:
+            raise PresetError(f"{path.name}: missing {k!r}")
+    cfgs = d["configs"]
+    if not isinstance(cfgs, list) or not cfgs or not all(isinstance(c, str) for c in cfgs):
+        raise PresetError(f"{path.name}: 'configs' must be a non-empty list of names")
+    dup = sorted({c for c in cfgs if cfgs.count(c) > 1})
+    if dup:
+        raise PresetError(f"{path.name}: duplicate configs {dup}")
+    refs = d.get("references") or {}
+    if not isinstance(refs, dict):
+        raise PresetError(f"{path.name}: 'references' must map config names to files")
+    unknown = sorted(set(refs) - set(cfgs))
+    if unknown:
+        raise PresetError(f"{path.name}: references for configs not in the preset: {unknown}")
+    return Preset(path.stem, str(d["description"]), list(cfgs),
+                  {k: (ROOT / v if not Path(v).is_absolute() else Path(v))
+                   for k, v in refs.items()})
+
+
+def load_presets(preset_dir=None):
+    preset_dir = PRESET_DIR if preset_dir is None else preset_dir
+    if not Path(preset_dir).is_dir():
+        return {}
+    return {p.stem: load_preset(p) for p in sorted(Path(preset_dir).glob("*.yaml"))}
+
+
+def preset_infos(preset, infos, devices):
+    """The preset's rows in order (names as in --list, or YAML paths, like --configs);
+    PresetError if any entry does not resolve."""
+    out, missing = [], []
+    for c in preset.configs:
+        try:
+            out.append(resolve(c, infos, devices))
+        except FileNotFoundError:
+            missing.append(c)
+    if missing:
+        raise PresetError(f"preset {preset.name}: no config named {missing} "
+                          f"(see `python -m simulate.run_selected --list`)")
+    return out
+
+
+def _walk_datasets(f):
+    out = {}
+    f.visititems(lambda n, o: out.__setitem__(n, o) if hasattr(o, "dtype") else None)
+    return out
+
+
+def _same_value(a, b):
+    a, b = np.asarray(a), np.asarray(b)
+    return a.dtype == b.dtype and a.shape == b.shape and a.tobytes() == b.tobytes()
+
+
+def compare_to_reference(path, ref):
+    """One line for summary.csv: is the result file bit-identical to the reference?
+
+    The config attributes must match (except the output folder), then every dataset is
+    compared bit for bit. Reports only; never fails a run."""
+    import h5py
+    ref = Path(ref)
+    if not ref.is_file():
+        return UNAVAILABLE + f"reference not found: {ref}"
+    path = Path(path) if Path(path).is_absolute() else ROOT / path
+    if not path.is_file():
+        return UNAVAILABLE + f"result file not found: {path}"
+    try:
+        h5py.File(ref, "r").close()
+    except OSError as e:
+        return UNAVAILABLE + (f"cannot read the reference {ref.name} ({e}); a git-LFS "
+                              f"pointer instead of the file? Run `git lfs pull` and rebuild")
+    with h5py.File(path, "r") as a, h5py.File(ref, "r") as b:
+        keys = (set(a.attrs) | set(b.attrs)) - REFERENCE_IGNORED_ATTRS
+        diff = sorted(k for k in keys if k not in a.attrs or k not in b.attrs
+                      or not _same_value(a.attrs[k], b.attrs[k]))
+        if diff:
+            return f"not comparable: config differs from the reference ({', '.join(diff[:4])})"
+        da, db = _walk_datasets(a), _walk_datasets(b)
+        only = sorted(set(da) ^ set(db))
+        common = sorted(set(da) & set(db))
+        bad = [n for n in common if not _same_value(da[n][()], db[n][()])]
+        if not bad and not only:
+            return f"identical ({len(common)} datasets)"
+        msg = f"differs: {len(bad)} of {len(common)} datasets"
+        if bad:
+            msg += f" ({', '.join(bad[:3])}{', ...' if len(bad) > 3 else ''})"
+        if only:
+            msg += f"; only in one file: {', '.join(only[:3])}"
+        if "generation_stats" in bad:
+            sa, sb = da["generation_stats"][()], db["generation_stats"][()]
+            first = next((i for i in range(min(len(sa), len(sb)))
+                          if sa[i].tobytes() != sb[i].tobytes()), None)
+            if first is not None:
+                g = (int(sa[first]["generation"]) if "generation" in (sa.dtype.names or ())
+                     else first)
+                msg += f"; generation stats first differ at generation {g}"
+        return msg
+
+
 def resolve(entry, infos, devices):
     """A --configs entry: a listed name, or a path to a YAML file."""
     by_name = {i.name: i for i in infos}
@@ -452,12 +583,20 @@ def system_info(probe):
     }
 
 
+def _compile_cache_module():
+    """mvb_torch/compile_cache.py, loaded from its file: importing the mvb_torch package
+    would import torch into the selector process."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_byte_compile_cache", ROOT / "mvb_torch" / "compile_cache.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def compile_cache_dir():
-    d = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-    if d:
-        return Path(d)
-    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
-    return Path(tempfile.gettempdir()) / f"torchinductor_{user}"
+    """The production path's compile-cache folder (plan Step 18b)."""
+    return Path(_compile_cache_module().versioned_cache_dir())
 
 
 def compile_cache_state():
@@ -484,6 +623,12 @@ class Result:
     gpu_before: dict = field(default_factory=dict)
     gpu_after: dict = field(default_factory=dict)
     gpu_mem_used_peak: str = ""
+    gpu_sm_clock: str = ""
+    gpu_temp_max: str = ""
+    gpu_power_max: str = ""
+    gpu_throttle: str = ""
+    matches_reference: str = ""
+    hdf5_copy: str = ""
     log: str = ""
 
 
@@ -530,27 +675,77 @@ def us_per_run_tick_gens_1plus(r):
     return f"{1e6 * sum(t) / sum(ticks):.2f}"
 
 
+# Clock-event (throttle) reason bits of nvidia-smi / NVML.
+THROTTLE_BITS = {0x1: "gpu_idle", 0x2: "applications_clocks_setting", 0x4: "sw_power_cap",
+                 0x8: "hw_slowdown", 0x10: "sync_boost", 0x20: "sw_thermal_slowdown",
+                 0x40: "hw_thermal_slowdown", 0x80: "hw_power_brake_slowdown",
+                 0x100: "display_clock_setting"}
+# Optional fields, sampled when this nvidia-smi knows them (names changed across driver
+# versions: clocks_event_reasons replaced clocks_throttle_reasons).
+OPTIONAL_FIELDS = {"sm_clock_mhz": ["clocks.sm"], "temp_c": ["temperature.gpu"],
+                   "power_w": ["power.draw"],
+                   "throttle": ["clocks_event_reasons.active", "clocks_throttle_reasons.active"]}
+
+
+def decode_throttle(mask):
+    names = [v for bit, v in THROTTLE_BITS.items() if mask & bit]
+    rest = mask & ~sum(THROTTLE_BITS)
+    return "+".join(names + ([hex(rest)] if rest else [])) or "none"
+
+
 class GpuSampler:
-    """Polls nvidia-smi once per second in a thread; `peak` is the highest memory.used
-    of each GPU (whole card: CUDA context and other users included)."""
+    """Polls nvidia-smi once per second in a thread, while a config runs (whole card:
+    CUDA context and other users included): peak memory.used, and -- where this
+    nvidia-smi offers them -- the SM clock range, peak temperature, peak power and every
+    clock-event (throttle) reason seen. Throttling makes runtimes incomparable, so it is
+    recorded rather than guessed afterwards."""
 
     def __init__(self, interval=1.0):
         self.interval = interval
         self.peaks = None
         self.error = None
+        self.fields = {}             # key -> the nvidia-smi field name that works here
+        self.stats = {}              # key -> per GPU aggregates
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
+    def _probe_fields(self):
+        for key, names in OPTIONAL_FIELDS.items():
+            for name in names:
+                q = _cmd(["nvidia-smi", f"--query-gpu={name}", "--format=csv,noheader,nounits"])
+                if not q.startswith(UNAVAILABLE) and "not supported" not in q.lower() \
+                        and "invalid" not in q.lower():
+                    self.fields[key] = name
+                    break
+
     def _sample(self):
-        q = _cmd(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+        names = ["memory.used"] + list(self.fields.values())
+        q = _cmd(["nvidia-smi", f"--query-gpu={','.join(names)}", "--format=csv,noheader,nounits"])
         if q.startswith(UNAVAILABLE):
             self.error = q
             return False
-        vals = [int(x.strip()) for x in q.splitlines() if x.strip()]
-        self.peaks = vals if self.peaks is None else [max(a, b) for a, b in zip(self.peaks, vals)]
+        rows = [[x.strip() for x in line.split(",")] for line in q.splitlines() if line.strip()]
+        mem = [int(r[0]) for r in rows]
+        self.peaks = mem if self.peaks is None else [max(a, b) for a, b in zip(self.peaks, mem)]
+        for j, key in enumerate(self.fields, start=1):
+            for g, r in enumerate(rows):
+                st = self.stats.setdefault(key, {}).setdefault(g, {})
+                raw = r[j]
+                try:
+                    v = int(raw, 16) if key == "throttle" else float(raw)
+                except ValueError:
+                    continue                   # "[N/A]" on this sample
+                if key == "throttle":
+                    st["mask"] = st.get("mask", 0) | v
+                else:
+                    st["min"] = min(st.get("min", v), v)
+                    st["max"] = max(st.get("max", v), v)
         return True
 
     def _run(self):
+        if not self._sample():
+            return
+        self._probe_fields()
         while not self._stop.is_set():
             if not self._sample():
                 return
@@ -570,6 +765,25 @@ class GpuSampler:
         if self.peaks is None:
             return self.error or UNAVAILABLE + "no sample taken"
         return "|".join(map(str, self.peaks))
+
+    def column(self, key):
+        """One summary.csv value per GPU, joined by '|'; explicit when unavailable."""
+        if self.peaks is None:
+            return self.error or UNAVAILABLE + "no sample taken"
+        if key not in self.fields:
+            return UNAVAILABLE + "not reported by this nvidia-smi"
+        out = []
+        for g in sorted(self.stats.get(key, {})):
+            st = self.stats[key][g]
+            if key == "throttle":
+                out.append(decode_throttle(st["mask"]) if "mask" in st else "n/a")
+            elif "min" not in st:
+                out.append("n/a")
+            elif key == "sm_clock_mhz":
+                out.append(f"{st['min']:.0f}-{st['max']:.0f}")
+            else:
+                out.append(f"{st['max']:.0f}")
+        return "|".join(out) or UNAVAILABLE + "no sample with this field"
 
 
 def run_one(cmd, log_path, echo=True):
@@ -623,8 +837,11 @@ def run_one(cmd, log_path, echo=True):
 
 SUMMARY_FIELDS = ["order", "config", "status", "exit_code", "wall_s", "gen0_s",
                   "gens_1plus_mean_s", "gens_timed", "us_per_run_tick_gens_1plus",
-                  "vram_measure", "vram_peak_mib", "gpu_mem_used_peak_mib", "runs_queued",
-                  "vram_needed_all_runs_est_mib", "hdf5", "compile_cache_at_start",
+                  "vram_measure", "vram_peak_mib", "gpu_mem_used_peak_mib",
+                  "gpu_sm_clock_min_max_mhz", "gpu_temp_max_c", "gpu_power_max_w",
+                  "gpu_throttle_reasons", "runs_queued",
+                  "vram_needed_all_runs_est_mib", "matches_reference", "hdf5",
+                  "hdf5_copy", "compile_cache_at_start",
                   "gpu_util_before_pct", "gpu_mem_used_before_mib", "gpu_util_after_pct",
                   "gpu_mem_used_after_mib", "config_path", "log"]
 
@@ -653,8 +870,9 @@ def write_reports(report_dir, results):
                         f"{sum(t[1:]) / len(t[1:]):.2f}" if len(t) > 1 else "",
                         len(t), us_per_run_tick_gens_1plus(r),
                         mem["vram_measure"], mem["vram_peak_mib"], r.gpu_mem_used_peak,
+                        r.gpu_sm_clock, r.gpu_temp_max, r.gpu_power_max, r.gpu_throttle,
                         mem["runs_queued"], mem["vram_needed_all_runs_est_mib"],
-                        r.hdf5, r.compile_cache_at_start, ub, mb, ua, ma, r.path, r.log])
+                        r.matches_reference, r.hdf5, r.hdf5_copy, r.compile_cache_at_start, ub, mb, ua, ma, r.path, r.log])
     with open(report_dir / "generations.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["order", "config", "generation", "seconds", "iterations",
@@ -674,9 +892,14 @@ def _slug(s):
     return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")[:40] or "machine"
 
 
-def run_queue(infos, report_root, probe, echo=True):
-    """Run `infos` in order; returns (results, report folder)."""
+def run_queue(infos, report_root, probe, echo=True, references=None, run_info=None):
+    """Run `infos` in order; returns (results, report folder).
+
+    `references`: config name -> reference HDF5, compared after the config ran ok.
+    `run_info`: how the selection was made, stored in system.json."""
+    references = references or {}
     sysinfo = system_info(probe)
+    sysinfo["run"] = run_info or {"selection": "not recorded"}
     hw = probe["gpus"][0]["name"] if probe["gpus"] else sysinfo["cpu_model"]
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     report_dir = Path(report_root) / f"{ts}_{_slug(str(hw))}"
@@ -705,6 +928,10 @@ def run_queue(infos, report_root, probe, echo=True):
         with GpuSampler() as sampler:
             rc, r.wall_s, parsed = run_one(cmd, report_dir / r.log, echo)
         r.gpu_mem_used_peak = sampler.peak
+        r.gpu_sm_clock = sampler.column("sm_clock_mhz")
+        r.gpu_temp_max = sampler.column("temp_c")
+        r.gpu_power_max = sampler.column("power_w")
+        r.gpu_throttle = sampler.column("throttle")
         r.gen_times, r.gen_stats, r.hdf5 = parsed["gens"], parsed["stats"], parsed["hdf5"]
         r.gpu_after = gpu_snapshot()
         r.exit_code = rc
@@ -716,6 +943,19 @@ def run_queue(infos, report_root, probe, echo=True):
             r.status = "failed (exit code 0 but no results written)"
         else:
             r.status = "ok"
+        if r.hdf5:
+            src = Path(r.hdf5) if Path(r.hdf5).is_absolute() else ROOT / r.hdf5
+            if src.is_file():
+                (report_dir / "results").mkdir(exist_ok=True)
+                dst = report_dir / "results" / f"{r.order:02d}_{_slug(r.config)}.h5"
+                shutil.copy2(src, dst)
+                r.hdf5_copy = str(dst.relative_to(report_dir))
+            else:
+                r.hdf5_copy = UNAVAILABLE + f"result file not found: {src}"
+        if r.config in references:
+            r.matches_reference = (compare_to_reference(r.hdf5, references[r.config])
+                                   if r.status == "ok" and r.hdf5
+                                   else UNAVAILABLE + "the run did not finish")
         write_reports(report_dir, results)
         if rc is None:
             print("\n[run_selected] Ctrl-C: the queue is stopped.", flush=True)
@@ -742,6 +982,15 @@ def print_summary(results, report_dir):
           "\n'us/tick' is microseconds per worm-tick over generations 1+; 'VRAM MiB' is the"
           "\npeak torch held; 'all runs' is 'fit' if every run fit at once, otherwise the"
           "\nestimated MiB that would need (the runs were queued).")
+    for r in results:
+        # The power cap is normal under full load (boost runs up to it); thermal and
+        # hardware slowdowns are what makes a card slower than it should be.
+        reasons = set(r.gpu_throttle.replace("|", "+").split("+")) & {
+            "hw_slowdown", "sw_thermal_slowdown", "hw_thermal_slowdown", "hw_power_brake_slowdown"}
+        if reasons and not r.gpu_throttle.startswith(UNAVAILABLE):
+            print(f"\nWARNING: {r.config} ran with the GPU slowed down ({r.gpu_throttle}; SM clock "
+                  f"{r.gpu_sm_clock} MHz, up to {r.gpu_temp_max} C); its times are slower "
+                  f"than this card can do.")
     print(f"\nSend this folder: {report_dir}\n")
 
 
@@ -755,11 +1004,11 @@ class Selection:
     Keys: "up", "down", "space" (tick/untick), "a" (tick all; again: untick all),
     "enter" (run), "q" (quit). Tick order is run order."""
 
-    def __init__(self, infos):
+    def __init__(self, infos, preticked=(), message=""):
         self.infos = infos
         self.cursor = 0
-        self.order: List[int] = []         # indices into infos, in tick order
-        self.message = ""
+        self.order: List[int] = [infos.index(i) for i in preticked if i in infos and i.selectable]
+        self.message = message
 
     def key(self, k):
         self.message = ""
@@ -849,7 +1098,20 @@ def _screen(stdscr, sel, name_width):
                 return r
 
 
-def select_interactively(infos):
+def preset_selection(infos, preset, devices):
+    """A Selection pre-ticked with `preset`, with a message about it."""
+    if preset is None:
+        return Selection(infos)
+    rows = preset_infos(preset, infos, devices)
+    skipped = [r for r in rows if not r.selectable]
+    msg = f"Pre-ticked: preset {preset.name} ({len(rows) - len(skipped)} configs). Enter runs it."
+    if skipped:
+        msg = (f"Preset {preset.name}: {len(skipped)} cannot run here and are not ticked: "
+               + "; ".join(f"{r.name} ({r.reasons[0]})" for r in skipped))
+    return Selection(infos, preticked=rows, message=msg)
+
+
+def select_interactively(infos, preset=None, devices=("cpu",)):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise SystemExit(
             "[run_selected] ERROR: the selection screen needs a terminal. With Docker, "
@@ -857,7 +1119,7 @@ def select_interactively(infos):
             "Without a terminal, name the configs: python -m simulate.run_selected "
             "--configs a,b  (list them with --list)")
     import curses
-    sel = Selection(infos)
+    sel = preset_selection(infos, preset, devices)
     name_width = min(42, max(len("config"), *(len(i.name) for i in infos)))
     if curses.wrapper(_screen, sel, name_width) == "quit":
         return []
@@ -873,6 +1135,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--configs", help="comma-separated config names or YAML paths; "
                                       "runs them in this order without the screen")
+    ap.add_argument("--preset", help=f"run a preset from {PRESET_DIR} without the screen")
     ap.add_argument("--list", action="store_true", help="print the config table and exit")
     ap.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR),
                     help=f"where the report folder is made (default: {DEFAULT_REPORT_DIR})")
@@ -881,6 +1144,10 @@ def main(argv=None):
     probe = torch_probe()
     devices = available_devices(probe)
     infos = all_infos(devices)
+    presets = load_presets()                 # a broken preset file stops here, loudly
+    default = presets.get(DEFAULT_PRESET)
+    if default is not None:
+        preset_infos(default, infos, devices)    # every name must exist
 
     if a.list:
         head, rows = table_lines(infos, min(42, max(len(i.name) for i in infos)))
@@ -888,8 +1155,18 @@ def main(argv=None):
         print("\n".join(rows))
         return 0
 
-    if a.configs:
+    if a.configs and a.preset:
+        raise SystemExit("[run_selected] ERROR: give --configs or --preset, not both")
+    preset_used = None
+    if a.preset:
+        if a.preset not in presets:
+            raise SystemExit(f"[run_selected] ERROR: no preset {a.preset!r} in {PRESET_DIR} "
+                             f"(presets: {sorted(presets)})")
+        preset_used = presets[a.preset]
+        chosen = preset_infos(preset_used, infos, devices)
+    elif a.configs:
         chosen = [resolve(e.strip(), infos, devices) for e in a.configs.split(",") if e.strip()]
+    if a.preset or a.configs:
         bad = [c for c in chosen if not c.selectable]
         if bad:
             for c in bad:
@@ -897,10 +1174,25 @@ def main(argv=None):
             print("[run_selected] Nothing was run.")
             return 2
     else:
-        chosen = select_interactively(infos)
+        chosen = select_interactively(infos, default, devices)
         if not chosen:
             print("[run_selected] Nothing selected; nothing was run.")
             return 0
+        preset_used = default
+
+    names = [c.name for c in chosen]
+    if preset_used is not None:
+        same = names == preset_used.configs
+        selection = (f"preset {preset_used.name} (unchanged)" if same
+                     else f"preset {preset_used.name} (modified)")
+    else:
+        selection = "--configs" if a.configs else "manual"
+    run_info = {"selection": selection, "selected": names,
+                "preset_configs": preset_used.configs if preset_used else None}
+    references = dict(preset_used.references) if preset_used else {}
+    if default is not None:
+        for k, v in default.references.items():
+            references.setdefault(k, v)
 
     print("[run_selected] Run order:")
     for i, c in enumerate(chosen):
@@ -909,7 +1201,9 @@ def main(argv=None):
     if shutil.which("nvidia-smi") is None and any(c.device == "cuda" for c in chosen):
         print("[run_selected] note: nvidia-smi not found; GPU load will be recorded as "
               "unavailable.")
-    results, report_dir = run_queue(chosen, a.report_dir, probe)
+    print(f"[run_selected] Selection: {selection}")
+    results, report_dir = run_queue(chosen, a.report_dir, probe, references=references,
+                                    run_info=run_info)
     print_summary(results, report_dir)
     return 0 if all(r.status == "ok" for r in results) else 1
 

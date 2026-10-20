@@ -19,8 +19,10 @@ Usage
     python -m tests.test_run_selected
 """
 
+import contextlib
 import copy
 import csv
+import io
 import json
 import subprocess
 import sys
@@ -266,6 +268,153 @@ def test_negative(tmp):
           p.returncode != 0 and "add -it" in (p.stdout + p.stderr))
 
 
+def test_presets(tmp):
+    print("\n[7] Presets: loading, errors, pre-ticking")
+    d = Path(tmp) / "presets"
+    d.mkdir()
+    good = {"description": "x", "configs": ["test_ea_predrawn", "test_ea"]}
+    cases = [("unknown_key", {**good, "config": []}, "unknown keys ['config']"),
+             ("no_configs", {"description": "x"}, "missing 'configs'"),
+             ("empty", {**good, "configs": []}, "non-empty list"),
+             ("dup", {**good, "configs": ["test_ea", "test_ea"]}, "duplicate configs"),
+             ("ref_outside", {**good, "references": {"ea_from_lookup": "x.h5"}},
+              "references for configs not in the preset")]
+    for tag, d_, msg in cases:
+        p = d / f"{tag}.yaml"
+        p.write_text(yaml.safe_dump(d_))
+        try:
+            RS.load_preset(p)
+            got = "no error"
+        except RS.PresetError as e:
+            got = str(e)
+        check(f"{tag}: PresetError containing {msg!r} (got {got!r})", msg in got)
+    devs = {"cpu"}
+    infos = RS.all_infos(devs)
+    p = d / "typo.yaml"
+    p.write_text(yaml.safe_dump({**good, "configs": ["test_ea", "test_eaa"]}))
+    try:
+        RS.preset_infos(RS.load_preset(p), infos, devs)
+        got = "no error"
+    except RS.PresetError as e:
+        got = str(e)
+    check(f"an unknown name is refused, not skipped ({got!r})", "test_eaa" in got)
+    p = d / "mixed.yaml"
+    p.write_text(yaml.safe_dump({**good, "configs": ["test_ea", "test_ea_tensor", "test_ea_predrawn"]}))
+    sel = RS.preset_selection(infos, RS.load_preset(p), devs)
+    check("pre-ticked in preset order, the unselectable entry (mps here) skipped",
+          [i.name for i in sel.chosen()] == ["test_ea", "test_ea_predrawn"])
+    check(f"... and the screen says so ({sel.message[:70]}...)",
+          "cannot run here" in sel.message and "test_ea_tensor" in sel.message)
+    both = {"cpu", "mps"}
+    sel = RS.preset_selection(RS.all_infos(both), RS.load_preset(p), both)
+    check("where everything can run, the message says enter runs it",
+          "Enter runs it" in sel.message)
+
+
+def test_preset_run(tmp):
+    print("\n[8] --preset: order, selection record, HDF5 copies, reference")
+    a = write_cfg(base_cfg(), tmp, "p_a")
+    b = write_cfg(base_cfg(), tmp, "p_b")
+    pdir = Path(tmp) / "presets_run"
+    pdir.mkdir()
+    ref = Path(tmp) / "ref.h5"
+    (pdir / "small.yaml").write_text(yaml.safe_dump(
+        {"description": "two", "configs": [str(a), str(b)], "references": {str(a): str(ref)}}))
+    old = RS.PRESET_DIR
+    RS.PRESET_DIR = pdir
+    root = Path(tmp) / "reports_p"
+    try:
+        # 1st run: the reference does not exist yet -> explicit "unavailable"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = RS.main(["--preset", "small", "--report-dir", str(root)])
+        rdir, rows = read_summary(root)
+        check(f"exit code 0 and both ok ({rc}, {[r['status'] for r in rows]})",
+              rc == 0 and [r["status"] for r in rows] == ["ok", "ok"])
+        check("run in the preset's order", [r["config"] for r in rows] == [str(a), str(b)])
+        s = json.loads((rdir / "system.json").read_text())
+        check(f"system.json: selection 'preset small (unchanged)' ({s['run']['selection']})",
+              s["run"]["selection"] == "preset small (unchanged)"
+              and s["run"]["selected"] == [str(a), str(b)])
+        copies = [rdir / r["hdf5_copy"] for r in rows]
+        check("each HDF5 copied into results/, byte-identical to the original",
+              all(c.parent == rdir / "results" and c.read_bytes()
+                  == (RS.ROOT / r["hdf5"] if not Path(r["hdf5"]).is_absolute()
+                      else Path(r["hdf5"])).read_bytes() for c, r in zip(copies, rows)))
+        check("missing reference -> 'unavailable: reference not found'",
+              rows[0]["matches_reference"].startswith("unavailable: reference not found"))
+        check("a config without a reference -> empty column", rows[1]["matches_reference"] == "")
+        # 2nd run: the reference is the first run's result -> identical
+        import shutil
+        shutil.copy(copies[0], ref)
+        shutil.rmtree(root)
+        with contextlib.redirect_stdout(io.StringIO()):
+            RS.main(["--preset", "small", "--report-dir", str(root)])
+        _, rows = read_summary(root)
+        check(f"rerun vs the first run as reference: {rows[0]['matches_reference']!r}",
+              rows[0]["matches_reference"].startswith("identical ("))
+    finally:
+        RS.PRESET_DIR = old
+
+
+def test_compare(tmp):
+    print("\n[9] Reference comparison")
+    import h5py
+    import shutil
+    a = write_cfg(base_cfg(), tmp, "c_a")
+    h5, _, rc = run_ea(yaml.safe_load(a.read_text()), tmp, "c_run")
+    if not check("a result file to compare", rc == 0 and h5):
+        return
+    ref = Path(tmp) / "c_ref.h5"
+    shutil.copy(h5, ref)
+    check("identical to a copy of itself", RS.compare_to_reference(h5, ref).startswith("identical ("))
+    changed = Path(tmp) / "c_changed.h5"
+    shutil.copy(h5, changed)
+    with h5py.File(changed, "a") as f:
+        st = f["generation_stats"][()]
+        st[1]["mean"] += 1.0
+        f["generation_stats"][...] = st
+    got = RS.compare_to_reference(changed, ref)
+    check(f"one changed generation -> differs, with the generation ({got!r})",
+          got.startswith("differs: 1 of") and "generation_stats" in got
+          and f"generation {int(st[1]['generation'])}" in got)
+    cfgdiff = Path(tmp) / "c_cfg.h5"
+    shutil.copy(h5, cfgdiff)
+    with h5py.File(cfgdiff, "a") as f:
+        f.attrs["experiment_n_runs"] = 999
+    got = RS.compare_to_reference(cfgdiff, ref)
+    check(f"a changed config attribute -> not comparable ({got!r})",
+          got.startswith("not comparable") and "experiment_n_runs" in got)
+    folder = Path(tmp) / "c_folder.h5"
+    shutil.copy(h5, folder)
+    with h5py.File(folder, "a") as f:
+        f.attrs["experiment_output_folder"] = "somewhere/else/"
+    check("only the output folder differs -> still identical",
+          RS.compare_to_reference(folder, ref).startswith("identical ("))
+    lfs = Path(tmp) / "c_lfs.h5"
+    lfs.write_text("version https://git-lfs.github.com/spec/v1\noid sha256:0\nsize 1\n")
+    got = RS.compare_to_reference(h5, lfs)
+    check(f"an LFS pointer as reference -> unavailable, says git lfs pull ({got[:60]}...)",
+          got.startswith("unavailable") and "git lfs pull" in got)
+    check("missing reference -> unavailable",
+          RS.compare_to_reference(h5, Path(tmp) / "nope.h5").startswith("unavailable: reference not found"))
+
+
+def test_default_preset():
+    print("\n[10] The shipped default preset")
+    presets = RS.load_presets()
+    if not check("configs/presets/tester_default.yaml exists and loads", RS.DEFAULT_PRESET in presets):
+        return
+    p = presets[RS.DEFAULT_PRESET]
+    devs = {"cpu", "cuda", "mps"}
+    rows = RS.preset_infos(p, RS.all_infos(devs), devs)
+    check(f"every entry resolves and can run on a CUDA machine ({len(rows)} configs)",
+          all(r.selectable for r in rows))
+    check("the lookup reproducibility run comes first", p.configs[0] == "ea_from_lookup_tensor_cuda")
+    for name, ref in p.references.items():
+        check(f"reference for {name} exists: {ref.relative_to(RS.ROOT)} "
+              f"(add the university PC's result file; see plan Step 17)", ref.is_file())
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="test_run_selected_") as tmp:
         test_facts()
@@ -274,6 +423,10 @@ def main():
         test_system(rdir)
         test_selection()
         test_negative(tmp)
+        test_presets(tmp)
+        test_preset_run(tmp)
+        test_compare(tmp)
+        test_default_preset()
     n_fail = sum(1 for _, ok in _RESULTS if not ok)
     if n_fail:
         print(f"\nFAILED -- {n_fail} of {len(_RESULTS)} checks failed")

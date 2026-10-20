@@ -48,6 +48,7 @@ from .generation import (BASE_BYTES, SeedSet, SimConfig, choose_width, configure
                          draw_seeds,
                          estimate_slot_bytes, eval_generation_batch, genome_batch_bytes,
                          live_contraction)
+from .compile_cache import use_versioned_compile_cache
 from .genome_codec import encode_genomes, sparse_slot_bytes
 
 # Printed once per generation. tests/test_ea_tensor.py looks for it to prove the tensor
@@ -143,6 +144,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
     `eval_generation` does. So a stored run can be replayed alone (plan Step 8, R1)."""
     device, dtype, rounds, compile_ = validate_evaluator_cfg(evaluator_cfg, randomness_cfg)
     configure_device(device)      # CUDA: TF32 off, reproducible cuBLAS -- before any work
+    # Step 18b: compiled modules in their own versioned folder, before the first compile.
+    cache_dir = use_versioned_compile_cache() if compile_ else None
     predrawn = _predrawn_enabled(randomness_cfg)
     spec = build_output_spec(cfg["brain"])
 
@@ -152,7 +155,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
     print(f"{MARKER} backend=tensor mode={mode} device={device} "
           f"dtype={str(dtype).split('.')[-1]} width=auto "
           f"contraction={contraction} rng={rng} compile={'on' if compile_ else 'off'}"
-          + (f" tf32=off gpu={torch.cuda.get_device_name(device)}" if device.type == "cuda" else ""))
+          + (f" tf32=off gpu={torch.cuda.get_device_name(device)}" if device.type == "cuda" else "")
+          + (f" compile_cache={cache_dir}" if cache_dir else ""))
 
     def evaluate(genomes, cfg_, EXPERIMENT_FOLDER, SIMULATION_NAME,
                  ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,

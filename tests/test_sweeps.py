@@ -303,6 +303,46 @@ def test_sampler():
         pass
     check("... also when the block is left by Ctrl-C", not s2._thread.is_alive())
 
+    # A stub nvidia-smi: an older driver (no clocks_event_reasons field), values that
+    # change between samples, and one "[N/A]".
+    import os
+    import time
+    d = Path(tempfile.mkdtemp(prefix="fake_smi_"))
+    stub = d / "nvidia-smi"
+    stub.write_text("""#!/usr/bin/env python3
+import sys, pathlib
+q = [a for a in sys.argv if a.startswith("--query-gpu=")][0].split("=", 1)[1].split(",")
+c = pathlib.Path(__file__).with_name("count"); n = int(c.read_text()) if c.exists() else 0
+if "clocks_event_reasons.active" in q:
+    print("Field clocks_event_reasons.active is not a valid field to query."); sys.exit(2)
+if len(q) > 1:
+    c.write_text(str(n + 1))
+hot = n >= 2
+vals = {"memory.used": "1200" if hot else "1000", "clocks.sm": "1200" if hot else "1500",
+        "temperature.gpu": "83" if hot else "70", "power.draw": "[N/A]" if hot else "150.4",
+        "clocks_throttle_reasons.active": "0x0000000000000024" if hot else "0x0000000000000000"}
+print(", ".join(vals[f] for f in q))
+""")
+    stub.chmod(0o755)
+    old_path = os.environ["PATH"]
+    os.environ["PATH"] = f"{d}{os.pathsep}{old_path}"
+    try:
+        with RS.GpuSampler(interval=0.05) as s3:
+            time.sleep(1.0)
+    finally:
+        os.environ["PATH"] = old_path
+    cols = {k: s3.column(k) for k in ("sm_clock_mhz", "temp_c", "power_w", "throttle")}
+    check(f"stub nvidia-smi: the old throttle field name is used ({s3.fields.get('throttle')})",
+          s3.fields.get("throttle") == "clocks_throttle_reasons.active")
+    check(f"peak memory, clock range, peak temperature, power without the [N/A] samples "
+          f"({s3.peak}, {cols})",
+          s3.peak == "1200" and cols["sm_clock_mhz"] == "1200-1500" and cols["temp_c"] == "83"
+          and cols["power_w"] == "150")
+    check(f"throttle reasons decoded and combined over samples ({cols['throttle']})",
+          cols["throttle"] == "sw_power_cap+sw_thermal_slowdown")
+    check("without nvidia-smi every new column says unavailable",
+          all(s.column(k).startswith(RS.UNAVAILABLE) for k in ("sm_clock_mhz", "throttle")))
+
 
 def main():
     with tempfile.TemporaryDirectory(prefix="test_sweeps_") as tmp:

@@ -20,6 +20,13 @@ is everything the user's requirements rest on:
   [6] a long evolving run (plan Step 13c): 12 generations whose modulation lists grow
       until L = 8. No width 1, a new graph only for a new L, and torch.compile set to
       FAIL at its recompile limit instead of silently running eager
+  [7] the compile warm-up (plan Step 18a), over an evolving population: every new graph
+      appears in the one-iteration warm-up at COMPILE_WARMUP_WIDTH and none in the real
+      loop, and results with the warm-up equal those without it
+  [8] the production compile-cache folder (plan Step 18b), in subprocesses with a
+      temporary base folder: a compiled run_ea writes only into <base>/byte-w512-v1, a
+      second run reuses it with identical results, and switching after something was
+      compiled raises
 
 Usage
 -----
@@ -238,6 +245,135 @@ def test_long_run(dev):
           and torch._dynamo.config.fail_on_recompile_limit_hit is True)
 
 
+def test_warmup(dev):
+    print(f"\n[7] [{dev}] Compile warm-up: graphs appear in the warm-up, results unchanged")
+    import numpy as np
+    import yaml
+    from mvb.genome.generate_genome_lookup_hard import generate_lookup_hard_genome
+    from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simple
+    G.configure_device(dev)
+    torch._dynamo.reset()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = yaml.safe_load(open(os.path.join(root, "configs/experiments/ea_from_lookup_tensor_cuda.yaml")))
+    R, P = 12, 60                     # P*R = 720 > COMPILE_WARMUP_WIDTH: a real warm-up width
+    cfg["experiment"]["n_runs"] = R
+    rng = np.random.default_rng(1)
+    pop = [generate_lookup_hard_genome(cfg, rng_seed=i) for i in range(P)]
+    sim, spec = G.sim_config_from_yaml(cfg), build_output_spec(cfg["brain"])
+    # `sequential` with the sparse lists, as on CUDA: only there does a new list layout
+    # need a new graph (einsum uses the dense Mod), which is what the warm-up must catch.
+    kw = dict(mode="live", philox_rounds=10, contraction="sequential", compile=True)
+    in_warmup, in_loop, Ls, same, auto = [], [], [], [], []
+    real = G.eval_generation_batch
+
+    def spy(*a, **k):                      # records the warm-up calls a normal call makes
+        if k.get("_warmup_run"):
+            auto.append((k["width"], k["compile"]))
+        return real(*a, **k)
+    for gen in range(6):
+        b = encode_genomes(pop, cfg["brain"], device=dev, dtype=torch.float32,
+                           dense_modulation=False)
+        seeds = G.draw_seeds(*G.make_simulation_rngs(gen + 1), P, R)
+        g0 = graphs()
+        G.eval_generation_batch(b, spec, sim, seeds, width=P * R, _warmup_run=True, **kw)
+        g1 = graphs()
+        without = G.eval_generation_batch(b, spec, sim, seeds, width=P * R,
+                                          _compile_warmup=False, **kw)
+        g2 = graphs()
+        n_auto = len(auto)
+        G.eval_generation_batch = spy
+        try:
+            with_ = G.eval_generation_batch(b, spec, sim, seeds, width=P * R, **kw)
+        finally:
+            G.eval_generation_batch = real
+        auto_this = auto[n_auto:]
+        if auto_this != [(min(G.COMPILE_WARMUP_WIDTH, P * R), True)]:
+            auto.append(("bad", gen, auto_this))
+        in_warmup.append(g1 - g0)
+        in_loop.append(g2 - g1)
+        Ls.append(len(b.mod_k))
+        same.append(all(torch.equal(getattr(with_, k), getattr(without, k)) for k in FIELDS))
+        order = np.argsort(-with_.lifespans.float().mean(1).cpu().numpy())
+        elites = [pop[i] for i in order[:6]]
+        pop = elites + [generate_genome_mutate_simple(elites[i % 6], 0.4, 0.2, rng)
+                        for i in range(P - 6)]
+    print(f"      L per generation {Ls}; new graphs in the warm-up {in_warmup}, in the loop "
+          f"{in_loop}")
+    check(f"[{dev}] the list layout changes during the test (L {sorted(set(Ls))}), so new "
+          f"graphs are needed after generation 0", len(set(Ls)) > 1)
+    new_L = [i for i in range(1, len(Ls)) if Ls[i] not in Ls[:i]]
+    check(f"[{dev}] every new graph appears in the warm-up (generation 0 and the new-L "
+          f"generations {new_L}), none in the real loop",
+          all(x == 0 for x in in_loop) and in_warmup[0] > 0
+          and all(in_warmup[i] > 0 for i in new_L)
+          and all(in_warmup[i] == 0 for i in range(1, len(Ls)) if i not in new_L))
+    check(f"[{dev}] results with the warm-up equal results without it, every generation",
+          all(same))
+    check(f"[{dev}] every normal compiled generation ran its own warm-up at width "
+          f"{min(G.COMPILE_WARMUP_WIDTH, P * R)} ({len(auto)} warm-ups for 6 generations)",
+          len(auto) == 6 and all(x[0] != "bad" for x in auto))
+    check(f"[{dev}] warm-up width {G.COMPILE_WARMUP_WIDTH} is below this test's P*R = {P * R}",
+          G.COMPILE_WARMUP_WIDTH < P * R)
+
+
+def test_cache_folder():
+    print("\n[8] The production compile-cache folder (subprocesses, cpu)")
+    import glob
+    import subprocess
+    import tempfile
+    import yaml
+    from mvb_torch.compile_cache import COMPILE_CACHE_VERSION
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with tempfile.TemporaryDirectory(prefix="test_cache_") as tmp:
+        base = os.path.join(tmp, "inductor_base")
+        cfg = yaml.safe_load(open(os.path.join(root, "configs/experiments/test_ea_predrawn.yaml")))
+        del cfg["experiment"]["predrawn_randomness"]
+        cfg["experiment"]["evolutionary_algorithm"]["num_generations"] = 2
+        cfg["experiment"]["evaluator"] = {"backend": "tensor", "device": "cpu",
+                                          "dtype": "float32", "philox_rounds": 10,
+                                          "compile": True}
+        env = dict(os.environ, TORCHINDUCTOR_CACHE_DIR=base)
+        env.pop("TRITON_CACHE_DIR", None)
+        outs, logs = [], []
+        for i in range(2):
+            out = os.path.join(tmp, f"out{i}")
+            os.makedirs(out)
+            cfg["experiment"]["output_folder"] = out + "/"
+            path = os.path.join(tmp, f"cfg{i}.yaml")
+            with open(path, "w") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False)
+            p = subprocess.run([sys.executable, "-m", "simulate.run_ea", "--config", path],
+                               input="n\n", text=True, capture_output=True, cwd=root,
+                               env=env, timeout=3600)
+            logs.append(p.stdout + p.stderr)
+            h5 = glob.glob(os.path.join(out, "*.h5"))
+            outs.append(h5[0] if p.returncode == 0 and len(h5) == 1 else None)
+        if not check("two compiled run_ea runs completed", all(outs)):
+            print(logs[-1][-2000:])
+            return
+        target = os.path.join(base, COMPILE_CACHE_VERSION)
+        check(f"the runs report the versioned folder (compile_cache={target})",
+              all(f"compile_cache={target}" in lg for lg in logs))
+        check(f"the base folder holds only {COMPILE_CACHE_VERSION}/ ({sorted(os.listdir(base))})",
+              sorted(os.listdir(base)) == [COMPILE_CACHE_VERSION])
+        check("compiled modules were written into it",
+              sum(len(fs) for _, _, fs in os.walk(target)) > 0)
+        from tests.test_ea_tensor import diff_h5
+        problems, n = diff_h5(outs[0], outs[1])
+        check(f"the second run (cache reused) is identical to the first ({n} datasets, "
+              f"{len(problems)} differences)", not problems)
+        import re
+        t = [float(re.findall(r"genomes x \d+ runs in ([\d.]+)s", lg)[0]) for lg in logs]
+        check(f"generation 0 is faster with the cache reused ({t[0]:.1f} s -> {t[1]:.1f} s)",
+              t[1] < t[0])
+        code = ("import torch; torch.compile(lambda x: x + 1)(torch.ones(3)); "
+                "from mvb_torch.compile_cache import use_versioned_compile_cache as u; u()")
+        p = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True,
+                           cwd=root, env=env, timeout=600)
+        check("switching after something was compiled raises (no mixed folders)",
+              p.returncode != 0 and "needs its own folder" in p.stderr)
+
+
 def main():
     print("=" * 70)
     print("torch.compile on the live path (plan Step 8, R5)")
@@ -247,6 +383,8 @@ def main():
         test_generations(dev)
         test_routing(dev)
         test_long_run(dev)
+        test_warmup(dev)
+    test_cache_folder()
     failed = [nm for nm, ok in _RESULTS if not ok]
     print("\n" + "=" * 70)
     if failed:

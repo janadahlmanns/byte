@@ -1,0 +1,21 @@
+# ============================================================
+# TESTER DEFAULT (plan_evotorch.md, Step 17)
+# ============================================================
+# What every tester runs, in this order. The selection screen opens with these ticked;
+# press enter. Cheapest first, so a run stopped early still sends back the most useful
+# part. ~1 h on an RTX 3070.
+#
+# references: after the lookup run, its HDF5 is compared bit for bit with the university
+# PC's result (summary.csv, column matches_reference). It reports only and never fails a
+# run: identical results across GPU models were observed, not guaranteed.
+# ============================================================
+description: "Reproducibility check (lookup EA, 50 generations) + neuron-count sweep 11-50"
+configs:
+  - ea_from_lookup_tensor_cuda
+  - "neuron_scaling [n_neurons=11]"
+  - "neuron_scaling [n_neurons=20]"
+  - "neuron_scaling [n_neurons=30]"
+  - "neuron_scaling [n_neurons=40]"
+  - "neuron_scaling [n_neurons=50]"
+references:
+  ea_from_lookup_tensor_cuda: tests/refs/cross_machine/ea_from_lookup_tensor_cuda.h5

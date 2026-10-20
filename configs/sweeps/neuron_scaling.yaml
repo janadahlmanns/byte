@@ -17,4 +17,4 @@ set:
   experiment.output_folder: "data/neuron_scaling/"
   experiment.evolutionary_algorithm.num_generations: 10
 vary:
-  brain.n_neurons: [11, 20, 30, 40, 50, 75, 100]
+  brain.n_neurons: [11, 20, 30, 40, 50]   # the experiment never exceeds 50 neurons (design decision, 2026-10-18)

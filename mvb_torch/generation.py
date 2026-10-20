@@ -663,6 +663,14 @@ MIN_WIDTH = 2
 # only every `sync_every` iterations.
 COMPACT_BELOW = 0.9
 
+# Every compiled graph is first compiled at this batch width (plan Step 18a). Inductor
+# sizes a kernel's block configs from the batch seen at the FIRST compile ("size hints");
+# the fused brain-tick kernel compiled at full width ran 2.2-2.4x slower than compiled
+# at ~512 slots, with identical results (RTX 3070, n = 30-50). A one-iteration warm-up
+# at this width before each generation makes that first compile the same everywhere.
+# Speed only: the warm-up's results are discarded and it shares no state with the run.
+COMPILE_WARMUP_WIDTH = 512
+
 
 def compact_slots(state: SlotState, keep: torch.Tensor, source, tracker=None) -> None:
     """Keep only the slots listed in `keep` (1-D int64), in order -- every per-slot
@@ -818,6 +826,8 @@ def eval_generation_batch(
     compact_below: float = COMPACT_BELOW,
     tracker=None,
     _state_hook=None,
+    _compile_warmup: bool = True,
+    _warmup_run: bool = False,
 ) -> GenerationResult:
     """Evaluate every genome on every run; the tensor `eval_generation`.
 
@@ -848,9 +858,21 @@ def eval_generation_batch(
     tracker
         Optional `mvb_torch.tracking.Tracker` (plan Step 7). It only reads state, so
         results are identical with and without it. None: no tracking work at all.
+
+    With `compile`, one throwaway iteration at COMPILE_WARMUP_WIDTH slots runs first, so
+    every graph this generation needs is first compiled at that width (Step 18a).
+    `_compile_warmup=False` skips it (tests only); `_warmup_run` marks that iteration.
     """
     if not 0.0 <= float(compact_below) <= 1.0:
         raise ValueError(f"compact_below must be in [0, 1], got {compact_below}")
+    if compile and _compile_warmup and not _warmup_run:
+        # Same code path, its own fresh state (setup_generation) and no tracker; the
+        # keyed randomness has no global state, so nothing here reaches the real run.
+        eval_generation_batch(
+            batch, spec, cfg, seeds, width=min(COMPILE_WARMUP_WIDTH, batch.n_pop * cfg.n_runs),
+            mode=mode, max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds,
+            contraction=contraction, compile=True, sync_every=sync_every,
+            compact_below=compact_below, tracker=None, _warmup_run=True)
     state, ctx, source = setup_generation(
         batch, cfg, seeds, width=width, mode=mode,
         max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds, compile=compile,
@@ -979,9 +1001,16 @@ def eval_generation_batch(
         refill = take.view(B, 1)
 
         slot_batch = slot_view(batch, state.slot_genome)
+        if _warmup_run:
+            break                     # one iteration compiles everything the loop calls
         if _state_hook is not None:
             _state_hook(it, state, refill)
         reset_slots(state, refill, ctx, source, slot_batch)
+
+    if _warmup_run:
+        del state, source, slot_batch, dummy, out
+        release_device_cache(dev)
+        return None
 
     res = {k: v[:Q].view(P, R) for k, v in out.items()}
     # Drop this generation's per-slot state, then hand the cache back (R3 memory fix):
