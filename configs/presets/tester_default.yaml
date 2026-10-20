@@ -11,6 +11,9 @@
 # ============================================================
 description: "Reproducibility check (lookup EA, 50 generations) + neuron-count sweep 11-50"
 configs:
+  - test_ea
+  - test_ea_tensor_cuda
+  - ea_from_lookup
   - ea_from_lookup_tensor_cuda
   - "neuron_scaling [n_neurons=11]"
   - "neuron_scaling [n_neurons=20]"

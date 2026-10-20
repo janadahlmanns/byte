@@ -1,0 +1,16 @@
+# ============================================================
+# FINE NEURON-COUNT SWEEP (plan_evotorch.md, Step 20b)
+# ============================================================
+# neuron_scaling.yaml at step 3 instead of ~10: 14 points from 11 to 50, the experiment's
+# range (it never exceeds 50 neurons). Same base and settings, so the points shared with
+# neuron_scaling (n = 11, 20, 50) are independent repeats of the same runs.
+# ~1.5 h on an RTX 3070. For the reference machine; the tester preset is unchanged.
+#
+# Plot with: python -m analysis.plot_neuron_scaling <report folder(s)> --out <folder>
+# ============================================================
+base: ea_from_random_tensor_cuda
+set:
+  experiment.output_folder: "data/neuron_scaling/"
+  experiment.evolutionary_algorithm.num_generations: 10
+vary:
+  brain.n_neurons: [11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50]

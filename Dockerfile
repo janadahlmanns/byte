@@ -3,7 +3,7 @@
 # The same stack as the validated Linux laptop: Ubuntu 24.04 (glibc 2.39, so the scalar
 # simulator's math.tanh matches tests/refs/linux-x86_64/), Python 3.12, torch 2.13.0+cu130.
 # The CUDA libraries come with the torch wheel; the host provides only the driver (NVIDIA
-# Container Toolkit, `docker run --gpus all`). Build, move and run: see README.md.
+# Container Toolkit, `docker run --gpus all`). Every machine builds its own image; see README.md.
 
 # ubuntu:24.04, pinned (digest of 2026-10-10) so every rebuild starts from the same base.
 FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55

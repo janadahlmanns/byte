@@ -86,7 +86,7 @@ def test_expansion():
           f"({bad[:3]})", not bad)
     names = [cfg["experiment"]["simulation_name"] for _, cfg in points]
     check("simulation names are unique", len(set(names)) == len(names))
-    infos = [i for i in RS.sweep_infos({"cpu", "cuda"}) if i.name.startswith("neuron_scaling")]
+    infos = [i for i in RS.sweep_infos({"cpu", "cuda"}) if i.name.startswith("neuron_scaling [")]
     check("the selector shows them with n, 260 variants, 300 runs, 10 gens, cuda",
           [(i.neurons, i.variants, i.runs, i.gens, i.device) for i in infos]
           == [(str(n), "260", "300", "10", "cuda") for n in ns] and all(i.selectable for i in infos))
