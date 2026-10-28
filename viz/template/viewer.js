@@ -28,6 +28,10 @@
     warn: css.getPropertyValue("--warn").trim(),
     exc: css.getPropertyValue("--gold-light").trim(),
     inh: css.getPropertyValue("--blue").trim(),
+    // Gold and blue are reserved for the sign of a weight. A weight moving is
+    // not a statement about sign, so it is marked in neutral white rather than
+    // in the same gold as every excitatory edge it is drawn on top of.
+    learn: css.getPropertyValue("--text").trim(),
     text: css.getPropertyValue("--text").trim(),
     dim: css.getPropertyValue("--dim").trim(),
     panelEdge: css.getPropertyValue("--edge").trim(),
@@ -133,20 +137,23 @@
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
+  /* Sized against the canvas box rather than the panel, so the panel keeps
+     the freedom to carry a key and a caption without the drawing code needing
+     to know their height. */
   function fitCanvas() {
-    const panels = document.querySelectorAll(".panel");
-    const wp = panels[0];
-    const avail = Math.min(wp.clientWidth - 20, wp.clientHeight - 34);
-    const size = Math.max(180, avail);
+    const boxes = document.querySelectorAll(".canvas-box");
+    const wb = boxes[0];
+    const size = Math.max(180, Math.min(wb.clientWidth, wb.clientHeight));
     cell = size / Math.max(W, H);
     sizeCanvas(canvas, ctx, W * cell, H * cell);
 
-    const bp = panels[1];
-    if (bp) {
-      const bw = Math.max(180, bp.clientWidth - 20);
-      const bh = Math.max(180, bp.clientHeight - 34);
-      bCell = { w: bw, h: bh };
-      sizeCanvas(document.getElementById("brain"), bctx, bw, bh);
+    const bb = boxes[1];
+    if (bb) {
+      bCell = {
+        w: Math.max(180, bb.clientWidth),
+        h: Math.max(180, bb.clientHeight),
+      };
+      sizeCanvas(document.getElementById("brain"), bctx, bCell.w, bCell.h);
     }
   }
 
@@ -332,6 +339,11 @@
   // network, nothing drawn on top of it.
   const MOD_MODES = ["active", "all", "off"];
   let modMode = "active";
+  // Clean view by default. A late-run network has roughly a third of its edges
+  // pruned and a third saturated, and drawing all of that at once buries the
+  // handful of connections that are actually carrying the decision. Detail
+  // view puts the structural marks back for debugging.
+  let detail = false;
   let bCell = 0;          // px per unit, set by fitCanvas
 
   if (BRAIN) {
@@ -465,12 +477,29 @@
 
     // --- edges ---
     const mid = new Array(S2.edges.length);          // where modulation attaches
+    const shown = new Array(S2.edges.length);        // drawn, so worth annotating
+    let nPruned = 0, nFrozen = 0;
+
     for (let i = 0; i < S2.edges.length; i++) {
       const e = S2.edges[i];
       const w = bWeights[i];
       const a = nodePos(e.src, W2, H2, pad);
       const b = nodePos(e.tgt, W2, H2, pad);
       const live = typeof e.src === "number" ? fired(e.src) : false;
+
+      // Both bounds of the plasticity rule are absorbing: the |w|(1-|w|) factor
+      // is zero at 0 and at +/-1 alike, so a weight that reaches either can
+      // never move again. A pruned edge is therefore permanently dead wiring,
+      // not a connection that happens to be quiet.
+      const pruned = Math.abs(w) < 0.01;
+      const frozen = Math.abs(w) >= 0.999;
+      if (pruned) nPruned++;
+      if (frozen) nFrozen++;
+
+      // Clean view drops dead wiring entirely rather than ghosting it. In a
+      // late-run network that is roughly a third of the edges, and leaving them
+      // in buries the few that are carrying the decision.
+      shown[i] = !pruned || detail;
 
       // Opacity carries magnitude and reliability; a firing source brightens
       // it so signal flow is visible without changing the encoding.
@@ -483,23 +512,18 @@
       bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
       bctx.lineWidth = 0.5 + 3 * mag;
 
-      // A weight driven to zero is effectively pruned. Drawing nothing would
-      // make it look like a rendering fault, so it stays as a faint ghost: the
-      // connection still exists in the genome, it just carries no signal.
-      const pruned = Math.abs(w) < 0.01;
+      // Detail view keeps pruned edges as faint ghosts, so the genome's full
+      // wiring stays inspectable alongside what survived.
       if (pruned) {
         bctx.globalAlpha = 0.07;
         bctx.strokeStyle = C.dim;
         bctx.lineWidth = 0.8;
         bctx.setLineDash([2, 3]);
       }
-      // Saturated weights can never move again: the plasticity rule carries a
-      // |w|(1-|w|) factor that is zero at the bound.
-      const frozen = Math.abs(w) >= 0.999;
 
       if (e.src === e.tgt) {
         mid[i] = { x: a.x, y: a.y - r * 2.35 };      // top of the loop
-        if (true) {
+        if (shown[i]) {
           bctx.beginPath();
           bctx.arc(a.x, a.y - r * 1.5, r * 0.85, 0, 6.2832);
           bctx.stroke();
@@ -517,7 +541,7 @@
         // marker sits on the stroke that is actually drawn.
         mid[i] = { x: 0.25 * sx + 0.5 * cx + 0.25 * ex,
                    y: 0.25 * sy + 0.5 * cy + 0.25 * ey };
-        if (true) {
+        if (shown[i]) {
           bctx.beginPath();
           bctx.moveTo(sx, sy);
           bctx.quadraticCurveTo(cx, cy, ex, ey);
@@ -527,8 +551,9 @@
       }
       bctx.setLineDash([]);
 
-      // Frozen at the bound: a small cap on the target end.
-      if (frozen && mid[i]) {
+      // Frozen at the bound: a small cap at the midpoint. Structural rather
+      // than momentary, so it belongs with the rest of the detail marks.
+      if (frozen && detail) {
         bctx.globalAlpha = 0.5;
         bctx.fillStyle = w >= 0 ? C.exc : C.inh;
         bctx.beginPath();
@@ -536,10 +561,12 @@
         bctx.fill();
       }
 
-      // Learned on this very tick: a bright halo over the stroke.
-      if (learned && learned.has(i) && mid[i]) {
+      // Learned on this very tick: a neutral halo over the stroke. This is the
+      // one mark that survives into clean view, because watching the network
+      // configure itself is the point of the panel.
+      if (learned && learned.has(i) && shown[i]) {
         bctx.globalAlpha = 0.9;
-        bctx.strokeStyle = C.sensor;
+        bctx.strokeStyle = C.learn;
         bctx.lineWidth = 1.5;
         bctx.beginPath();
         bctx.arc(mid[i].x, mid[i].y, Math.max(4, r * 0.4), 0, 6.2832);
@@ -549,19 +576,8 @@
     bctx.setLineDash([]);
     bctx.globalAlpha = 1;
 
-    drawModulation(mid, fired, r);
-
-    if (modMode !== "active") {
-      bctx.globalAlpha = 1;
-      bctx.fillStyle = C.sensor;
-      bctx.font = "600 10px Consolas, monospace";
-      bctx.textAlign = "right";
-      bctx.textBaseline = "top";
-      bctx.fillText(modMode === "all" ? "ALL MODULATION  (m)"
-                                      : "MODULATION OFF  (m)", W2 - 4, 2);
-      bctx.textAlign = "center";
-      bctx.textBaseline = "middle";
-    }
+    drawModulation(mid, shown, fired, r);
+    showBrainStats(S2.edges.length, nPruned, nFrozen);
 
     // --- input sources ---
     bctx.font = "600 9px Consolas, monospace";
@@ -620,16 +636,20 @@
      only time the weight moves. Drawing just those keeps roughly seven links on
      screen instead of all hundred, and what is shown is what is actually acting.
      Press 'm' to see the full wiring instead. */
-  function drawModulation(mid, fired, r) {
+  function drawModulation(mid, shown, fired, r) {
     if (modMode === "off") return;
     const showAll = modMode === "all";
-    const S2 = BRAIN.static;
     const dia = Math.max(2.5, r * 0.3);
 
     for (const [edgeIndex, mods] of bModByEdge) {
       const m0 = mid[edgeIndex];
-      if (!m0) continue;
+      // An edge the signal layer left out is dead wiring; marking what
+      // modulates it would annotate a connection that is not on screen.
+      if (!m0 || !shown[edgeIndex]) continue;
       const anyActive = mods.some(m => fired(m.by));
+      // Clean view marks a connection only while something is acting on it.
+      // Asking for the full wiring with 'm' overrides that, as does detail.
+      if (!anyActive && !showAll && !detail) continue;
 
       // A diamond marks every modulated connection, faint until something acts.
       bctx.globalAlpha = anyActive ? 0.95 : (showAll ? 0.6 : 0.16);
@@ -696,6 +716,31 @@
     bctx.arcTo(x, y + h, x, y, rad);
     bctx.arcTo(x, y, x + w, y, rad);
     bctx.closePath();
+  }
+
+  /* Edge census under the brain panel. Clean view does not draw the pruned and
+     saturated marks, so the counts keep that fact on the page rather than
+     letting it disappear with the marks. */
+  function showBrainStats(total, pruned, frozen) {
+    const el = document.getElementById("brain-stats");
+    if (!el) return;
+    el.textContent = total + " edges, " + pruned + " pruned, "
+                   + frozen + " saturated.";
+  }
+
+  /* Keep the view-mode buttons and the key telling the same story as the
+     canvas; both modes are also on the keyboard, so neither owns the state. */
+  function syncModes() {
+    document.getElementById("app").classList.toggle("detail", detail);
+
+    const detailBtn = document.getElementById("detail-btn");
+    if (detailBtn) detailBtn.classList.toggle("on", detail);
+
+    const modBtn = document.getElementById("mod-btn");
+    if (modBtn) {
+      modBtn.textContent = "modulation: " + modMode;
+      modBtn.classList.toggle("on", modMode !== "active");
+    }
   }
 
   // ---------------------------------------------------------------
@@ -821,6 +866,21 @@
     speed = parseFloat(e.target.value);
   });
 
+  function cycleModulation() {
+    modMode = MOD_MODES[(MOD_MODES.indexOf(modMode) + 1) % MOD_MODES.length];
+    syncModes();
+    drawBrain(cur);
+  }
+
+  function toggleDetail() {
+    detail = !detail;
+    syncModes();
+    drawBrain(cur);
+  }
+
+  document.getElementById("mod-btn").addEventListener("click", cycleModulation);
+  document.getElementById("detail-btn").addEventListener("click", toggleDetail);
+
   document.addEventListener("keydown", function (e) {
     if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
     if (e.key === " ") { e.preventDefault(); setPlaying(!playing); }
@@ -828,10 +888,8 @@
     else if (e.key === "ArrowRight") { setPlaying(false); show(cur + (e.shiftKey ? 10 : 1)); }
     else if (e.key === "Home") { setPlaying(false); show(0); }
     else if (e.key === "End") { setPlaying(false); show(N - 1); }
-    else if (e.key === "m" || e.key === "M") {
-      modMode = MOD_MODES[(MOD_MODES.indexOf(modMode) + 1) % MOD_MODES.length];
-      drawBrain(cur);
-    }
+    else if (e.key === "m" || e.key === "M") cycleModulation();
+    else if (e.key === "d" || e.key === "D") toggleDetail();
   });
 
   window.addEventListener("resize", function () { fitCanvas(); draw(cur); drawBrain(cur); });
@@ -839,5 +897,6 @@
   resetGrid();
   fitCanvas();
   drawMarkers();
+  syncModes();
   show(0);
 })();

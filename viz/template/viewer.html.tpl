@@ -13,27 +13,53 @@
 <div id="app">
 
   <header>
-    <h1>Byte <span class="accent">·</span> replay</h1>
+    <h1>Byte <span class="accent">/</span> replay</h1>
     <div class="meta">__META__</div>
   </header>
 
   <div id="stage">
+
     <section class="panel">
       <h2>World</h2>
-      <canvas id="world"></canvas>
+      <div class="canvas-box"><canvas id="world"></canvas></div>
+      <div class="key">
+        <span><i class="sw box" style="background:var(--blue)"></i>food</span>
+        <span><i class="sw dot" style="background:var(--blue-mid)"></i>regrowing</span>
+        <span><i class="sw ring" style="border-color:var(--blue)"></i>eaten</span>
+        <span><i class="sw dot" style="background:var(--gold)"></i>agent &amp; trail</span>
+        <span><i class="sw box hollow" style="border-color:var(--gold-light)"></i>sensed</span>
+      </div>
+      <p class="key-note">Energy is the arc around the agent, read as length rather than colour.</p>
     </section>
+
     <section class="panel">
       <h2>Brain</h2>
-      <canvas id="brain"></canvas>
+      <div class="canvas-box"><canvas id="brain"></canvas></div>
+      <div class="key" id="brain-key">
+        <span><i class="sw line" style="background:var(--gold-light)"></i>excitatory</span>
+        <span><i class="sw line" style="background:var(--blue)"></i>inhibitory</span>
+        <span><i class="sw dot" style="background:var(--gold)"></i>firing</span>
+        <span><i class="sw dia"></i>modulated</span>
+        <span><i class="sw line dash"></i>modulator active</span>
+        <span><i class="sw ring" style="border-color:var(--text)"></i>weight moved</span>
+        <span><i class="sw ring dash" style="border-color:var(--gold-light)"></i>candidate</span>
+        <span class="detail-only"><i class="sw line dotted"></i>pruned</span>
+        <span class="detail-only"><i class="sw pip"></i>saturated</span>
+      </div>
+      <p class="key-note">
+        Width and opacity carry |weight| x reliability; an edge brightens while its source
+        fires. <span id="brain-stats"></span>
+      </p>
     </section>
+
   </div>
 
   <div id="transport">
-    <button id="play" class="primary" title="Play (space)">▶</button>
-    <button id="prev" title="Back one tick (left arrow)">‹</button>
-    <button id="next" title="Forward one tick (right arrow)">›</button>
-    <button id="prev-ev" title="Previous event">|‹</button>
-    <button id="next-ev" title="Next event">›|</button>
+    <button id="play" class="primary" title="Play (space)">&#9658;</button>
+    <button id="prev" title="Back one tick (left arrow)">&lsaquo;</button>
+    <button id="next" title="Forward one tick (right arrow)">&rsaquo;</button>
+    <button id="prev-ev" title="Previous event">|&lsaquo;</button>
+    <button id="next-ev" title="Next event">&rsaquo;|</button>
 
     <div class="scrub">
       <div id="markers"></div>
@@ -63,24 +89,23 @@
     <div class="compass" title="The five cells the agent can sense">
       <div class="c-n">N</div>
       <div class="c-w">W</div>
-      <div class="c-c">●</div>
+      <div class="c-c">&#9679;</div>
       <div class="c-e">E</div>
       <div class="c-s">S</div>
     </div>
 
     <div class="readout" id="counters">eats 0   dist 0</div>
 
-    <div class="legend">
-      <span><i class="swatch" style="background:var(--blue)"></i>food</span>
-      <span><i class="swatch" style="background:var(--blue-mid);opacity:.45"></i>regrowing</span>
-      <span><i class="swatch" style="background:var(--gold)"></i>agent</span>
-      <span><i class="swatch" style="background:var(--gold-light)"></i>sensed</span>
+    <div class="modes">
+      <button id="detail-btn" title="Show pruned and saturated connections (d)">detail</button>
+      <button id="mod-btn" title="Cycle modulation view (m)">modulation: active</button>
     </div>
   </div>
 
   <div class="hint">
-    <kbd>space</kbd> play/pause &nbsp; <kbd>←</kbd><kbd>→</kbd> step
-    (<kbd>shift</kbd> ×10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp; <kbd>m</kbd> modulation view
+    <kbd>space</kbd> play/pause &nbsp; <kbd>&larr;</kbd><kbd>&rarr;</kbd> step
+    (<kbd>shift</kbd> x10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp;
+    <kbd>m</kbd> modulation view &nbsp; <kbd>d</kbd> detail
   </div>
 
 </div>

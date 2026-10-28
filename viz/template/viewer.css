@@ -61,9 +61,32 @@ h1 {
 
 h1 .accent { color: var(--gold); }
 
+/* Provenance chips. Everything needed to reproduce this exact run is in the
+   header, so the page is self-describing once it leaves the machine. */
 .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meta .chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 3px 8px;
   font-family: Consolas, "Cascadia Mono", monospace;
   font-size: 11px;
+  color: var(--text);
+}
+
+.meta .chip em {
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--dim);
 }
 
@@ -84,13 +107,24 @@ h1 .accent { color: var(--gold); }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   position: relative;
   background: var(--panel);
   border: 1px solid var(--edge);
   border-radius: 6px;
-  padding: 24px 10px 10px;
+  padding: 22px 10px 7px;
+  gap: 6px;
+}
+
+/* The canvas takes whatever height the key and its note leave over. Measuring
+   this box is what sizes the canvas, so the panel can grow a caption without
+   anything in the drawing code needing to know about it. */
+.canvas-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .panel h2 {
@@ -307,21 +341,85 @@ select {
 .c-e { grid-area: 2 / 3; }
 .c-s { grid-area: 3 / 2; }
 
-.legend {
+/* ---------- panel keys ---------- */
+
+/* Each panel carries the key to its own marks. The brain view alone encodes
+   nine things; without this the reader has to be told what a diamond means. */
+.key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   font-size: 11px;
   color: var(--dim);
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  width: 100%;
+  justify-content: center;
 }
 
-.legend span { display: flex; align-items: center; gap: 5px; }
+.key span { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 
-.swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
+/* Marks only drawn in detail view stay listed, dimmed, so it is clear there
+   is more to see rather than that nothing is missing. */
+.key span.detail-only { opacity: 0.32; }
+#app.detail .key span.detail-only { opacity: 1; }
+
+.key-note {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--dim);
+  opacity: 0.7;
+  text-align: center;
+  max-width: 46em;
+  align-self: center;
+}
+
+/* Legend glyphs, each matching the shape the canvas actually draws. */
+.sw {
   display: inline-block;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+}
+
+.sw.box { border-radius: 2px; }
+.sw.box.hollow { background: none; border: 1.5px solid; }
+.sw.dot { width: 9px; height: 9px; border-radius: 50%; }
+.sw.ring { border-radius: 50%; background: none; border: 1.5px solid; }
+.sw.ring.dash { border-style: dashed; }
+.sw.pip { width: 5px; height: 5px; border-radius: 50%; background: var(--gold-light); }
+
+.sw.line { width: 15px; height: 3px; border-radius: 2px; }
+.sw.line.dash {
+  background: repeating-linear-gradient(90deg,
+    var(--dim) 0 4px, transparent 4px 7px);
+}
+.sw.line.dotted {
+  height: 2px;
+  background: repeating-linear-gradient(90deg,
+    var(--dim) 0 2px, transparent 2px 5px);
+}
+
+.sw.dia {
+  width: 8px;
+  height: 8px;
+  background: var(--dim);
+  transform: rotate(45deg);
+}
+
+/* ---------- view-mode buttons ---------- */
+
+.modes { display: flex; gap: 6px; }
+
+.modes button {
+  font-size: 11px;
+  padding: 4px 8px;
+  color: var(--dim);
+  min-width: 0;
+}
+
+.modes button.on {
+  background: var(--blue-mid);
+  color: var(--text);
 }
 
 .hint {

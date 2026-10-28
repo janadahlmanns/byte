@@ -14,6 +14,7 @@ it opens straight from disk with no server and no network access.
 """
 
 import argparse
+import html
 import json
 import re
 import sys
@@ -128,6 +129,19 @@ def _embed_json(payload: dict) -> str:
 
 
 TEMPLATE_NOTE = re.compile(r"<!--\s*Template, not a page\..*?-->\s*", re.DOTALL)
+
+
+def meta_chips(pairs) -> str:
+    """Render the run's provenance as labelled chips for the page header.
+
+    Labelled rather than a single separated string: a reader opening the page
+    cold should not have to guess which of five bare numbers is the seed.
+    """
+    return "".join(
+        f'<span class="chip"><em>{html.escape(str(label))}</em>'
+        f'{html.escape(str(value))}</span>'
+        for label, value in pairs
+    )
 
 
 def build_page(payload: dict, title: str, meta: str) -> str:
@@ -326,11 +340,17 @@ def main(argv=None):
         "decision_seed": source.decision_seed,
     }
 
-    final_tick = recorder.frames[-1]["t"]
+    last = recorder.frames[-1]
+    final_tick = last["t"]
     title = f"Byte replay · {Path(hdf5_path).stem} · g{source.genome_id} r{source.run_id}"
-    meta = (f"{Path(hdf5_path).name} &nbsp;·&nbsp; genome {source.genome_id} &nbsp;·&nbsp; "
-            f"run {source.run_id} &nbsp;·&nbsp; {final_tick} ticks &nbsp;·&nbsp; "
-            f"seed {source.world_seed}")
+    meta = meta_chips([
+        ("file", Path(hdf5_path).name),
+        ("genome", source.genome_id),
+        ("run", source.run_id),
+        ("ticks", f"{final_tick} {'survived' if last['alive'] else 'died'}"),
+        ("meals", last["eats"]),
+        ("seed", source.world_seed),
+    ])
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(build_page(payload, title, meta), encoding="utf-8")
