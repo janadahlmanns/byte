@@ -73,13 +73,19 @@
   // Events (for scrub markers)
   // ---------------------------------------------------------------
 
-  // Beyond this many meals they stop being individually interesting.
+  // Beyond this many of one kind they stop being individually interesting.
   const EAT_MARKER_LIMIT = 40;
 
   const eatTicks = [];
+  const moveTicks = [];
   const notable = [];
   FRAMES.forEach(function (f, i) {
     if (f.ate !== null && f.ate !== undefined) eatTicks.push(i);
+    // An evolved agent that has learnt to camp stands still for almost the
+    // whole run, so the handful of ticks it does move are worth finding.
+    if (i > 0 && (f.x !== FRAMES[i - 1].x || f.y !== FRAMES[i - 1].y)) {
+      moveTicks.push(i);
+    }
     // A whole-grid reseed at a phase boundary changes far more cells than
     // ordinary eating or regrowth ever does.
     if (f.food_added.length + f.food_removed.length > 30) {
@@ -96,11 +102,18 @@
   // bar into a solid band and leaves the jump buttons stepping through meals
   // instead of reaching the phase switch or the death. Keep meal markers only
   // while they are sparse enough to read; phase and death always show.
-  const events = eatTicks.length <= EAT_MARKER_LIMIT
-    ? notable.concat(eatTicks.map(i => ({ i: i, kind: "ate" })))
-    : notable;
+  const events = notable.slice();
+  if (eatTicks.length <= EAT_MARKER_LIMIT) {
+    for (const i of eatTicks) events.push({ i: i, kind: "ate" });
+  }
+  if (moveTicks.length <= EAT_MARKER_LIMIT) {
+    for (const i of moveTicks) events.push({ i: i, kind: "move" });
+  }
 
-  const EVENT_COLOR = { ate: C.food, phase: C.warn, death: C.dead, learn: C.exc };
+  const EVENT_COLOR = {
+    ate: C.food, phase: C.warn, death: C.dead, learn: C.exc,
+    move: C.text, think: C.agent, fallback: C.warn,
+  };
 
   function drawMarkers() {
     const el = document.getElementById("markers");
@@ -334,6 +347,8 @@
   let bBuiltTo = -1;      // beat the weights currently represent
   let bModByEdge = null;  // edge index -> modulators acting on it
   let bLearned = null;    // decision index -> set of edges that changed then
+  let bThink = null;      // decisions whose activation moved mid-tick
+  let bFallback = null;   // decisions with no candidate: the action was random
   // "active": only modulators that are firing, which is the only time they do
   // anything. "all": the full wiring, signal edges pushed back. "off": bare
   // network, nothing drawn on top of it.
@@ -420,6 +435,42 @@
     for (const d of bLearned.keys()) {
       const frame = d + 1;                  // decision d produces frame d+1
       if (frame < FRAMES.length) events.push({ i: frame, kind: "learn" });
+    }
+
+    // A decision whose activation pattern never moves is one the network did
+    // not have to resolve: it was already at its fixed point when the tick
+    // opened, and all fourteen beats re-asserted it. On a converged elite that
+    // is almost every tick. Recorded explicitly so the viewer can say so,
+    // rather than leaving a motionless panel to look like a stalled render.
+    bThink = new Set();
+    for (let d = 0; d < BRAIN.beats_per_tick.length; d++) {
+      const start = bOffsets[d], end = start + BRAIN.beats_per_tick[d];
+      for (let i = start + 1; i < end; i++) {
+        if (BRAIN.activations[i] !== BRAIN.activations[i - 1]) {
+          bThink.add(d);
+          break;
+        }
+      }
+    }
+
+    // No output neuron survived the propagation phase as a candidate, so no
+    // amount of stability checking can yield a decision and decide() falls
+    // through to a random action. Rare, and the clearest failure the brain has.
+    bFallback = new Set();
+    for (let d = 0; d < BRAIN.candidates_per_tick.length; d++) {
+      if (BRAIN.candidates_per_tick[d] === 0) bFallback.add(d);
+    }
+
+    // On a brain that never settles these cover most of the run, at which
+    // point they are the norm rather than an event and jumping between them
+    // means nothing. The run-shape lane still carries the density either way.
+    if (bThink.size <= EAT_MARKER_LIMIT) {
+      for (const d of bThink) {
+        if (d + 1 < FRAMES.length) events.push({ i: d + 1, kind: "think" });
+      }
+    }
+    for (const d of bFallback) {
+      if (d + 1 < FRAMES.length) events.push({ i: d + 1, kind: "fallback" });
     }
   }
 
@@ -577,7 +628,7 @@
     bctx.globalAlpha = 1;
 
     drawModulation(mid, shown, fired, r);
-    showBrainStats(S2.edges.length, nPruned, nFrozen);
+    showBrainStats(S2.edges.length, nPruned, nFrozen, d);
 
     // --- input sources ---
     bctx.font = "600 9px Consolas, monospace";
@@ -718,14 +769,121 @@
     bctx.closePath();
   }
 
+  // ---------------------------------------------------------------
+  // Run shape
+  // ---------------------------------------------------------------
+  // Four lanes of "did anything happen here" across the whole run. An evolved
+  // agent tends to settle within the first few dozen ticks and then repeat one
+  // action for thousands more, so the timeline on its own gives no hint that
+  // everything worth seeing is a sliver at the left edge.
+
+  const shapeCanvas = document.getElementById("shape");
+  const sctx = shapeCanvas.getContext("2d");
+  const SHAPE_LABEL_W = 46;
+  const LANE_H = 5, LANE_GAP = 2;
+
+  const LANES = [
+    { label: "moves", colour: C.text, ticks: new Set(moveTicks) },
+    { label: "thinks", colour: C.agent, ticks: decisionTicks(bThink) },
+    { label: "learns", colour: C.exc, ticks: decisionTicks(bLearned && bLearned.keys()) },
+    { label: "eats", colour: C.food, ticks: new Set(eatTicks) },
+  ];
+
+  const SHAPE_H = LANES.length * LANE_H + (LANES.length - 1) * LANE_GAP;
+  let shapeW = 0;
+
+  /* Decision d produces world frame d+1, so a set of decisions has to be
+     shifted before it can be drawn against the frame timeline. */
+  function decisionTicks(source) {
+    const out = new Set();
+    if (!source) return out;
+    for (const d of source) if (d + 1 < N) out.add(d + 1);
+    return out;
+  }
+
+  function fitShape() {
+    shapeW = Math.max(120, shapeCanvas.parentElement.clientWidth);
+    sizeCanvas(shapeCanvas, sctx, shapeW, SHAPE_H);
+  }
+
+  function drawShape(n) {
+    const x0 = SHAPE_LABEL_W;
+    const trackW = Math.max(1, shapeW - x0);
+    const span = Math.max(1, N - 1);
+
+    sctx.clearRect(0, 0, shapeW, SHAPE_H);
+    sctx.font = "8px Consolas, monospace";
+    sctx.textAlign = "right";
+    sctx.textBaseline = "middle";
+
+    LANES.forEach(function (lane, li) {
+      const y = li * (LANE_H + LANE_GAP);
+      sctx.fillStyle = C.dim;
+      sctx.fillText(lane.label, x0 - 6, y + LANE_H / 2);
+
+      // An empty stretch has to read as "nothing happened here", not as a hole
+      // in the drawing, so each lane carries a baseline for its full length.
+      sctx.fillStyle = C.edge;
+      sctx.fillRect(x0, y + LANE_H / 2 - 0.5, trackW, 1);
+
+      sctx.fillStyle = lane.colour;
+      for (const t of lane.ticks) {
+        sctx.fillRect(x0 + (t / span) * (trackW - 1.5), y, 1.5, LANE_H);
+      }
+    });
+
+    sctx.globalAlpha = 0.9;
+    sctx.fillStyle = C.warn;
+    sctx.fillRect(x0 + (n / span) * (trackW - 1), 0, 1, SHAPE_H);
+    sctx.globalAlpha = 1;
+  }
+
+  /* Eating carries on for as long as the agent is alive and parked on a
+     regrowing cell, so it says nothing about whether the run is still
+     developing. Moving, deciding and learning do. */
+  function describeShape() {
+    const el = document.getElementById("shape-note");
+    if (!el) return;
+
+    // Last tick on which the run was still developing. A long quiet stretch
+    // after it is the headline fact about an evolved elite; a short one just
+    // means the last event happened to land near the end, so it is only worth
+    // reporting once it covers a real part of the run.
+    let last = -1;
+    for (const lane of LANES.slice(0, 3)) {
+      for (const t of lane.ticks) if (t > last) last = t;
+    }
+    const quiet = last >= 0 ? (N - 1) - last : 0;
+
+    const parts = [];
+    // Against the decision count, not the frame count: frame 0 predates any
+    // decision, so there is always one more frame than there are decisions.
+    if (bThink) {
+      parts.push(bThink.size + " of " + BRAIN.beats_per_tick.length
+                 + " ticks resolving");
+    }
+    if (quiet > N * 0.1) parts.push("unchanged for the last " + quiet);
+    el.textContent = parts.join(" · ") || "";
+  }
+
   /* Edge census under the brain panel. Clean view does not draw the pruned and
      saturated marks, so the counts keep that fact on the page rather than
      letting it disappear with the marks. */
-  function showBrainStats(total, pruned, frozen) {
+  function showBrainStats(total, pruned, frozen, d) {
     const el = document.getElementById("brain-stats");
     if (!el) return;
+
+    // Said in words, because a panel that holds still for a thousand ticks
+    // otherwise reads as a broken render rather than as a converged network.
+    let state = "";
+    if (d >= 0 && bThink) {
+      if (bFallback.has(d)) state = " · no candidate, action chosen at random";
+      else if (bThink.has(d)) state = " · resolving";
+      else state = " · settled, every beat identical";
+    }
+
     el.textContent = total + " edges, " + pruned + " pruned, "
-                   + frozen + " saturated.";
+                   + frozen + " saturated" + state;
   }
 
   /* Keep the view-mode buttons and the key telling the same story as the
@@ -805,6 +963,7 @@
     buildTo(cur);
     draw(cur);
     drawBrain(cur);
+    drawShape(cur);
     updateStatus(cur);
     seek.value = cur;
   }
@@ -892,11 +1051,19 @@
     else if (e.key === "d" || e.key === "D") toggleDetail();
   });
 
-  window.addEventListener("resize", function () { fitCanvas(); draw(cur); drawBrain(cur); });
+  window.addEventListener("resize", function () {
+    fitCanvas();
+    fitShape();
+    draw(cur);
+    drawBrain(cur);
+    drawShape(cur);
+  });
 
   resetGrid();
   fitCanvas();
+  fitShape();
   drawMarkers();
+  describeShape();
   syncModes();
   show(0);
 })();

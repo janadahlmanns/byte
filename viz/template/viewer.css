@@ -146,6 +146,24 @@ h1 .accent { color: var(--gold); }
   #stage { flex-direction: column; }
 }
 
+/* ---------- run shape ---------- */
+
+#shape-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.shape-box { flex: 1 1 0; min-width: 0; }
+
+#shape { display: block; width: 100%; }
+
+#shape-note { flex: 0 0 auto; }
+
 /* ---------- transport ---------- */
 
 #transport {

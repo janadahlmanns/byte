@@ -54,6 +54,15 @@
 
   </div>
 
+  <!-- Where anything at all happens, across the whole run. Evolved runs tend
+       to converge early and then repeat one action for thousands of ticks;
+       without this the timeline gives no hint that the interesting part is a
+       sliver at the left. -->
+  <div id="shape-row">
+    <div class="shape-box"><canvas id="shape"></canvas></div>
+    <div class="readout" id="shape-note"></div>
+  </div>
+
   <div id="transport">
     <button id="play" class="primary" title="Play (space)">&#9658;</button>
     <button id="prev" title="Back one tick (left arrow)">&lsaquo;</button>
