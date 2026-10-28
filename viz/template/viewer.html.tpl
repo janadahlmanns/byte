@@ -28,8 +28,11 @@
         <span><i class="sw ring" style="border-color:var(--blue)"></i>eaten</span>
         <span><i class="sw dot" style="background:var(--gold)"></i>agent &amp; trail</span>
         <span><i class="sw box hollow" style="border-color:var(--gold-light)"></i>sensed</span>
+        <span class="cov-only"><i class="sw box" style="background:var(--gold-mid)"></i>visited</span>
       </div>
-      <p class="key-note">Energy is the arc around the agent.</p>
+      <p class="key-note">
+        Energy is the arc around the agent. <span id="cov-stats"></span>
+      </p>
     </section>
 
     <section class="panel">
@@ -115,6 +118,7 @@
     <div class="readout" id="shape-note"></div>
 
     <div class="modes">
+      <button id="cov-btn" title="Shade cells by how often the agent occupied them (c)">coverage</button>
       <button id="detail-btn" title="Show pruned and saturated connections (d)">detail</button>
       <button id="mod-btn" title="Cycle modulation view (m)">modulation: active</button>
     </div>
@@ -124,7 +128,8 @@
     <kbd>space</kbd> play/pause &nbsp; <kbd>&larr;</kbd><kbd>&rarr;</kbd> step
     (<kbd>shift</kbd> x10) &nbsp; <kbd>&uarr;</kbd><kbd>&darr;</kbd> step beats
     &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp;
-    <kbd>m</kbd> modulation view &nbsp; <kbd>d</kbd> detail
+    <kbd>c</kbd> coverage &nbsp; <kbd>m</kbd> modulation view &nbsp;
+    <kbd>d</kbd> detail
   </div>
 
 </div>

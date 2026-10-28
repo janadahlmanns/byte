@@ -33,6 +33,9 @@
     // in the same gold as every excitatory edge it is drawn on top of.
     learn: css.getPropertyValue("--text").trim(),
     text: css.getPropertyValue("--text").trim(),
+    covLow: css.getPropertyValue("--gold-dark").trim(),
+    covMid: css.getPropertyValue("--gold-mid").trim(),
+    covHigh: css.getPropertyValue("--gold-light").trim(),
     dim: css.getPropertyValue("--dim").trim(),
     panelEdge: css.getPropertyValue("--edge").trim(),
     neuronIdle: css.getPropertyValue("--panel").trim(),
@@ -46,11 +49,18 @@
   let food = new Uint8Array(W * H);      // 1 where food is present
   let pending = new Uint8Array(W * H);   // eaten, awaiting regrow
   let builtTo = -1;                      // which tick `food` currently represents
+  let visits = new Uint32Array(W * H);   // ticks the agent has spent on each cell
+  let visitMax = 1;                      // busiest cell so far, for the ramp
+  let visited = 0;                       // how many cells have been touched
 
   function resetGrid() {
     food.fill(0);
     pending.fill(0);
     for (const i of DATA.initial_food) food[i] = 1;
+    visits.fill(0);
+    visits[FRAMES[0].y * W + FRAMES[0].x] = 1;
+    visitMax = 1;
+    visited = 1;
     builtTo = 0;
   }
 
@@ -65,7 +75,12 @@
   function buildTo(n) {
     if (n === builtTo) return;
     if (n < builtTo) resetGrid();
-    for (let i = builtTo + 1; i <= n; i++) applyFrame(FRAMES[i]);
+    for (let i = builtTo + 1; i <= n; i++) {
+      applyFrame(FRAMES[i]);
+      const k = FRAMES[i].y * W + FRAMES[i].x;
+      if (visits[k] === 0) visited++;
+      if (++visits[k] > visitMax) visitMax = visits[k];
+    }
     builtTo = n;
   }
 
@@ -203,6 +218,23 @@
     }
     ctx.globalAlpha = 1;
 
+    /* Where the agent has actually been, up to this tick. Shaded on a log
+       scale: an evolved elite spends thousands of ticks on one cell and a
+       single tick on the handful it crossed to get there, and on a linear
+       ramp everything but the camp would be invisible. */
+    if (coverage) {
+      const span = Math.log(1 + visitMax);
+      for (let i = 0; i < visits.length; i++) {
+        const v = visits[i];
+        if (!v) continue;
+        const t = span > 0 ? Math.log(1 + v) / span : 1;
+        ctx.fillStyle = t < 0.5 ? C.covLow : (t < 0.85 ? C.covMid : C.covHigh);
+        ctx.globalAlpha = 0.3 + 0.6 * t;
+        ctx.fillRect((i % W) * cell, ((i / W) | 0) * cell, cell, cell);
+      }
+      ctx.globalAlpha = 1;
+    }
+
     // food
     ctx.fillStyle = C.food;
     const pad = cell * 0.18, side = cell - pad * 2;
@@ -213,8 +245,10 @@
     }
 
     // trail — drawn as discrete cells, not a polyline: the world is toroidal,
-    // so connecting points would streak a line across the map on every wrap
-    const from = Math.max(0, n - TRAIL_LEN);
+    // so connecting points would streak a line across the map on every wrap.
+    // Coverage already says where the agent has been, and over the same cells,
+    // so the two are never drawn together.
+    const from = coverage ? n : Math.max(0, n - TRAIL_LEN);
     for (let i = from; i < n; i++) {
       const age = (i - from) / Math.max(1, n - from);
       ctx.globalAlpha = 0.05 + 0.3 * age;
@@ -361,6 +395,9 @@
   // handful of connections that are actually carrying the decision. Detail
   // view puts the structural marks back for debugging.
   let detail = false;
+  // Off by default: the grid is what the agent is doing now, and a coverage
+  // wash over every cell it has ever stood on competes with that.
+  let coverage = false;
   let bCell = 0;          // px per unit, set by fitCanvas
 
   if (BRAIN) {
@@ -1078,6 +1115,16 @@
      canvas; both modes are also on the keyboard, so neither owns the state. */
   function syncModes() {
     document.getElementById("app").classList.toggle("detail", detail);
+    document.getElementById("app").classList.toggle("coverage", coverage);
+    const covBtn = document.getElementById("cov-btn");
+    if (covBtn) covBtn.classList.toggle("on", coverage);
+    const covStats = document.getElementById("cov-stats");
+    if (covStats) {
+      covStats.textContent = coverage
+        ? visited + " of " + (W * H) + " cells visited, busiest "
+          + visitMax + " ticks"
+        : "";
+    }
 
     const detailBtn = document.getElementById("detail-btn");
     if (detailBtn) detailBtn.classList.toggle("on", detail);
@@ -1158,6 +1205,7 @@
     describeBeat(cur);
     drawShape(cur);
     updateStatus(cur);
+    if (coverage) syncModes();
     seek.value = cur;
   }
 
@@ -1224,12 +1272,19 @@
     drawBrain(cur);
   }
 
+  function toggleCoverage() {
+    coverage = !coverage;
+    syncModes();
+    draw(cur);
+  }
+
   function toggleDetail() {
     detail = !detail;
     syncModes();
     drawBrain(cur);
   }
 
+  document.getElementById("cov-btn").addEventListener("click", toggleCoverage);
   document.getElementById("mod-btn").addEventListener("click", cycleModulation);
   document.getElementById("detail-btn").addEventListener("click", toggleDetail);
 
@@ -1245,6 +1300,7 @@
     else if (e.key === "End") { setPlaying(false); show(N - 1); }
     else if (e.key === "m" || e.key === "M") cycleModulation();
     else if (e.key === "d" || e.key === "D") toggleDetail();
+    else if (e.key === "c" || e.key === "C") toggleCoverage();
   });
 
   function relayout() {

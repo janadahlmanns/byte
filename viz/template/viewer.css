@@ -12,6 +12,10 @@
 
   --gold: #d4af37;
   --gold-light: #ddd55f;
+  /* The remaining two golds from the palette, used as a sequential ramp for
+     how often a cell was occupied. */
+  --gold-mid: #b38219;
+  --gold-dark: #705915;
   --blue: #aad5ee;
   --blue-mid: #336f99;
   --dead: #c4553f;
@@ -389,6 +393,9 @@ select {
    is more to see rather than that nothing is missing. */
 .key span.detail-only { opacity: 0.32; }
 #app.detail .key span.detail-only { opacity: 1; }
+
+.key span.cov-only { opacity: 0.32; }
+#app.coverage .key span.cov-only { opacity: 1; }
 
 .key-note {
   margin: 0;
