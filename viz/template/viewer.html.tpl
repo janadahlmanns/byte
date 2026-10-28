@@ -29,7 +29,7 @@
         <span><i class="sw dot" style="background:var(--gold)"></i>agent &amp; trail</span>
         <span><i class="sw box hollow" style="border-color:var(--gold-light)"></i>sensed</span>
       </div>
-      <p class="key-note">Energy is the arc around the agent, read as length rather than colour.</p>
+      <p class="key-note">Energy is the arc around the agent.</p>
     </section>
 
     <section class="panel">
@@ -47,20 +47,10 @@
         <span class="detail-only"><i class="sw pip"></i>saturated</span>
       </div>
       <p class="key-note">
-        Width and opacity carry |weight| x reliability; an edge brightens while its source
-        fires. <span id="brain-stats"></span>
+        Width and opacity carry |weight| x reliability. <span id="brain-stats"></span>
       </p>
     </section>
 
-  </div>
-
-  <!-- Where anything at all happens, across the whole run. Evolved runs tend
-       to converge early and then repeat one action for thousands of ticks;
-       without this the timeline gives no hint that the interesting part is a
-       sliver at the left. -->
-  <div id="shape-row">
-    <div class="shape-box"><canvas id="shape"></canvas></div>
-    <div class="readout" id="shape-note"></div>
   </div>
 
   <div id="transport">
@@ -70,9 +60,17 @@
     <button id="prev-ev" title="Previous event">|&lsaquo;</button>
     <button id="next-ev" title="Next event">&rsaquo;|</button>
 
-    <div class="scrub">
-      <div id="markers"></div>
-      <input id="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Timeline">
+    <!-- Where anything at all happens, across the whole run. Evolved runs tend
+         to converge early and then repeat one action for thousands of ticks;
+         without this the timeline gives no hint that the interesting part is a
+         sliver at the left. The lanes and the scrub share one x-axis, so a
+         dense patch sits directly above the stretch of run that produced it. -->
+    <div class="timeline">
+      <canvas id="shape"></canvas>
+      <div class="scrub">
+        <div id="markers"></div>
+        <input id="seek" type="range" min="0" max="1" value="0" step="1" aria-label="Timeline">
+      </div>
     </div>
 
     <div class="readout" id="tick">0 / 0</div>
@@ -104,6 +102,8 @@
     </div>
 
     <div class="readout" id="counters">eats 0   dist 0</div>
+
+    <div class="readout" id="shape-note"></div>
 
     <div class="modes">
       <button id="detail-btn" title="Show pruned and saturated connections (d)">detail</button>

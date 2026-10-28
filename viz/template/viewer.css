@@ -118,8 +118,11 @@ h1 .accent { color: var(--gold); }
 /* The canvas takes whatever height the key and its note leave over. Measuring
    this box is what sizes the canvas, so the panel can grow a caption without
    anything in the drawing code needing to know about it. */
+/* Basis 0, not auto: with `auto` the box takes its base size from its content,
+   which is a canvas whose height this box's own measurement sets. That is
+   circular, and collapses the canvas. */
 .canvas-box {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   width: 100%;
   display: flex;
@@ -145,24 +148,6 @@ h1 .accent { color: var(--gold); }
 @media (max-width: 860px) {
   #stage { flex-direction: column; }
 }
-
-/* ---------- run shape ---------- */
-
-#shape-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--panel);
-  border: 1px solid var(--edge);
-  border-radius: 6px;
-  padding: 7px 10px;
-}
-
-.shape-box { flex: 1 1 0; min-width: 0; }
-
-#shape { display: block; width: 100%; }
-
-#shape-note { flex: 0 0 auto; }
 
 /* ---------- transport ---------- */
 
@@ -194,12 +179,22 @@ button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
 button.primary { background: var(--gold); color: #12160f; font-weight: 600; }
 button.primary:hover { background: var(--gold-light); }
 
-/* Scrub bar: a range input sitting on top of an event-marker strip */
+/* Activity lanes stacked over the scrub. The lane canvas reserves a label
+   gutter on its left, and the scrub is inset by the same amount so that a
+   lane mark and the slider position for that tick line up exactly. */
+.timeline { flex: 1 1 0; min-width: 120px; }
+
+#shape { display: block; width: 100%; }
+
+/* Scrub bar: a range input sitting on top of an event-marker strip.
+   Set apart from the lanes above it by a gap and a thicker, lighter track:
+   flush against them it reads as a fifth lane rather than as the one thing
+   on the row you can drag. */
 .scrub {
   position: relative;
-  flex: 1;
-  min-width: 120px;
-  height: 26px;
+  margin-left: 46px;
+  margin-top: 7px;
+  height: 22px;
   display: flex;
   align-items: center;
 }
@@ -221,17 +216,17 @@ button.primary:hover { background: var(--gold-light); }
 }
 
 #seek::-webkit-slider-runnable-track {
-  height: 4px;
-  background: var(--edge);
-  border-radius: 2px;
+  height: 7px;
+  background: #2f4239;
+  border-radius: 4px;
 }
 
 #seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 13px;
-  height: 13px;
-  margin-top: -5px;
+  width: 15px;
+  height: 15px;
+  margin-top: -4px;
   border-radius: 50%;
   background: var(--gold);
   border: none;
@@ -239,14 +234,14 @@ button.primary:hover { background: var(--gold-light); }
 }
 
 #seek::-moz-range-track {
-  height: 4px;
-  background: var(--edge);
-  border-radius: 2px;
+  height: 7px;
+  background: #2f4239;
+  border-radius: 4px;
 }
 
 #seek::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: var(--gold);
   border: none;
@@ -387,8 +382,7 @@ select {
   color: var(--dim);
   opacity: 0.7;
   text-align: center;
-  max-width: 46em;
-  align-self: center;
+  align-self: stretch;
 }
 
 /* Legend glyphs, each matching the shape the canvas actually draws. */

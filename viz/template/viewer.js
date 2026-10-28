@@ -780,13 +780,21 @@
   const shapeCanvas = document.getElementById("shape");
   const sctx = shapeCanvas.getContext("2d");
   const SHAPE_LABEL_W = 46;
-  const LANE_H = 5, LANE_GAP = 2;
+  const LANE_H = 7, LANE_GAP = 4;
+  // Half the scrub thumb. The range input's travel is inset by this much at
+  // each end, so the lanes have to be inset to match or a mark and the slider
+  // position for the same tick would not line up.
+  const THUMB = 7.5;
 
+  /* Eating runs solid for the whole life of a camping agent, so its lane is a
+     filled bar end to end. Put last it sits directly above the scrub track and
+     the two read as one widget, which hides the fact that the scrub is a
+     control at all. The sparse lanes go nearest the scrub instead. */
   const LANES = [
-    { label: "moves", colour: C.text, ticks: new Set(moveTicks) },
-    { label: "thinks", colour: C.agent, ticks: decisionTicks(bThink) },
-    { label: "learns", colour: C.exc, ticks: decisionTicks(bLearned && bLearned.keys()) },
     { label: "eats", colour: C.food, ticks: new Set(eatTicks) },
+    { label: "learns", colour: C.exc, ticks: decisionTicks(bLearned && bLearned.keys()) },
+    { label: "thinks", colour: C.agent, ticks: decisionTicks(bThink) },
+    { label: "moves", colour: C.text, ticks: new Set(moveTicks) },
   ];
 
   const SHAPE_H = LANES.length * LANE_H + (LANES.length - 1) * LANE_GAP;
@@ -807,8 +815,8 @@
   }
 
   function drawShape(n) {
-    const x0 = SHAPE_LABEL_W;
-    const trackW = Math.max(1, shapeW - x0);
+    const x0 = SHAPE_LABEL_W + THUMB;
+    const trackW = Math.max(1, shapeW - x0 - THUMB);
     const span = Math.max(1, N - 1);
 
     sctx.clearRect(0, 0, shapeW, SHAPE_H);
@@ -819,7 +827,7 @@
     LANES.forEach(function (lane, li) {
       const y = li * (LANE_H + LANE_GAP);
       sctx.fillStyle = C.dim;
-      sctx.fillText(lane.label, x0 - 6, y + LANE_H / 2);
+      sctx.fillText(lane.label, SHAPE_LABEL_W - 6, y + LANE_H / 2);
 
       // An empty stretch has to read as "nothing happened here", not as a hole
       // in the drawing, so each lane carries a baseline for its full length.
@@ -828,13 +836,13 @@
 
       sctx.fillStyle = lane.colour;
       for (const t of lane.ticks) {
-        sctx.fillRect(x0 + (t / span) * (trackW - 1.5), y, 1.5, LANE_H);
+        sctx.fillRect(x0 + (t / span) * trackW - 0.75, y, 1.5, LANE_H);
       }
     });
 
     sctx.globalAlpha = 0.9;
     sctx.fillStyle = C.warn;
-    sctx.fillRect(x0 + (n / span) * (trackW - 1), 0, 1, SHAPE_H);
+    sctx.fillRect(x0 + (n / span) * trackW - 0.5, 0, 1, SHAPE_H);
     sctx.globalAlpha = 1;
   }
 
@@ -850,7 +858,7 @@
     // means the last event happened to land near the end, so it is only worth
     // reporting once it covers a real part of the run.
     let last = -1;
-    for (const lane of LANES.slice(0, 3)) {
+    for (const lane of LANES.slice(1)) {
       for (const t of lane.ticks) if (t > last) last = t;
     }
     const quiet = last >= 0 ? (N - 1) - last : 0;
@@ -859,10 +867,10 @@
     // Against the decision count, not the frame count: frame 0 predates any
     // decision, so there is always one more frame than there are decisions.
     if (bThink) {
-      parts.push(bThink.size + " of " + BRAIN.beats_per_tick.length
-                 + " ticks resolving");
+      parts.push("resolves " + bThink.size + "/"
+                 + BRAIN.beats_per_tick.length);
     }
-    if (quiet > N * 0.1) parts.push("unchanged for the last " + quiet);
+    if (quiet > N * 0.1) parts.push(quiet + " quiet");
     el.textContent = parts.join(" · ") || "";
   }
 
@@ -1051,17 +1059,43 @@
     else if (e.key === "d" || e.key === "D") toggleDetail();
   });
 
-  window.addEventListener("resize", function () {
+  function relayout() {
     fitCanvas();
     fitShape();
     draw(cur);
     drawBrain(cur);
     drawShape(cur);
+  }
+
+  /* A canvas is sized from the box it sits in, but the canvas is also part of
+     the layout that decides how big every other box is. One pass at startup
+     therefore measures a page that has not settled: the shape canvas is still
+     at its default 300x150, the transport is 117px too tall, and the world
+     canvas ends up a third of the height it should have. Rather than guess an
+     order that happens to converge, each box is observed and re-fitted
+     whenever it actually changes size. */
+  let boxSizes = new Map();
+  const observer = new ResizeObserver(function (entries) {
+    let changed = false;
+    for (const e of entries) {
+      const was = boxSizes.get(e.target);
+      const now = e.contentRect.width + "x" + e.contentRect.height;
+      // Re-fitting resizes the canvases, which can resize their boxes, which
+      // would notify us again. Stopping on an unchanged size breaks that loop.
+      if (was !== now) { boxSizes.set(e.target, now); changed = true; }
+    }
+    if (changed) relayout();
   });
+  document.querySelectorAll(".canvas-box").forEach(b => observer.observe(b));
+  observer.observe(shapeCanvas.parentElement);
+
+  // devicePixelRatio can change without any box changing, when the window
+  // moves to a monitor at a different scale.
+  window.addEventListener("resize", relayout);
 
   resetGrid();
-  fitCanvas();
   fitShape();
+  fitCanvas();
   drawMarkers();
   describeShape();
   syncModes();
