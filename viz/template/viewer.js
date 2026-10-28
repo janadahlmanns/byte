@@ -348,7 +348,9 @@
   let bModByEdge = null;  // edge index -> modulators acting on it
   let bLearned = null;    // decision index -> set of edges that changed then
   let bThink = null;      // decisions whose activation moved mid-tick
-  let bFallback = null;   // decisions with no candidate: the action was random
+  let bFallback = null;   // decisions the stability rule never fired on
+  let bCommit = null;     // decision index -> beat it committed on, or -1
+  let bOutputs = null;    // output neuron ids, in the order they are mapped
   // "active": only modulators that are firing, which is the only time they do
   // anything. "all": the full wiring, signal edges pushed back. "off": bare
   // network, nothing drawn on top of it.
@@ -453,12 +455,27 @@
       }
     }
 
-    // No output neuron survived the propagation phase as a candidate, so no
-    // amount of stability checking can yield a decision and decide() falls
-    // through to a random action. Rare, and the clearest failure the brain has.
+    // Which beat each decision was actually taken on, replayed from the
+    // recording. A decision the rule never fired on is one decide() gave up
+    // resolving: it ran the loop out and chose an action at random. That is
+    // not the same as having no candidate -- a candidate that never holds a
+    // majority ends the same way -- so it has to be resolved, not guessed at
+    // from the candidate mask or the length of the tick.
+    // Candidates come out of decide() as a bitmask over output neurons. Taking
+    // the ids from output_mapping alone would silently drop any candidate the
+    // mapping does not name, so the masks themselves are counted in too.
+    const outs = new Set(Object.keys(BRAIN.static.output_mapping).map(Number));
+    for (const mask of BRAIN.candidates_per_tick) {
+      for (let i = 0; i < BRAIN.static.neurons.length; i++) {
+        if ((mask >> i & 1) === 1) outs.add(i);
+      }
+    }
+    bOutputs = [...outs].sort((a, b) => a - b);
+    bCommit = new Array(BRAIN.beats_per_tick.length);
     bFallback = new Set();
-    for (let d = 0; d < BRAIN.candidates_per_tick.length; d++) {
-      if (BRAIN.candidates_per_tick[d] === 0) bFallback.add(d);
+    for (let d = 0; d < BRAIN.beats_per_tick.length; d++) {
+      bCommit[d] = resolveDecision(d).beat;
+      if (bCommit[d] < 0) bFallback.add(d);
     }
 
     // On a brain that never settles these cover most of the run, at which
@@ -476,6 +493,50 @@
 
   /* World frame t is produced by decision t-1; frame 0 predates any decision. */
   function decisionOf(t) { return t - 1; }
+
+  /* Replays decide()'s stability rule over the recorded beats of one decision.
+
+     Candidates are fixed at the end of propagation and recorded, so only the
+     stability test is rebuilt here: a candidate active in more than half of
+     the stability beats so far, checked from the third one on, commits the
+     action and ends the tick. `upTo` stops the replay part-way so the viewer
+     can show the tally as it stood on the beat being looked at.
+
+     Returns the committing beat as an index within the tick, or -1 when the
+     rule never fired and decide() fell through to a random action. */
+  function resolveDecision(d, upTo) {
+    const total = BRAIN.beats_per_tick[d];
+    const warm = BRAIN.warmup_per_tick[d];
+    const start = bOffsets[d];
+    const last = upTo === undefined ? total - 1 : Math.min(upTo, total - 1);
+
+    const cand = bOutputs.filter(
+      id => (BRAIN.candidates_per_tick[d] >> id & 1) === 1);
+    const counts = new Map(cand.map(id => [id, 0]));
+
+    let stability = 0, beat = -1, winners = [];
+    for (let k = warm; k <= last; k++) {
+      const a = BRAIN.activations[start + k];
+      stability++;
+      for (const id of cand) {
+        if ((a >> id & 1) === 1) counts.set(id, counts.get(id) + 1);
+      }
+      // Strictly more than half, so the earliest a decision can ever be taken
+      // is the third stability beat, and never on an even-numbered one.
+      if (beat < 0 && cand.length && stability >= 3) {
+        const w = cand.filter(id => counts.get(id) > stability / 2);
+        if (w.length) { beat = k; winners = w; }
+      }
+    }
+    return { cand, counts, stability, beat, winners };
+  }
+
+  /* An output neuron named with the action it would take, since "n9" alone
+     says nothing about what committing to it actually does. */
+  function actionOf(id) {
+    const name = BRAIN.static.output_mapping[id];
+    return "n" + id + (name ? " " + name.replace("move_", "") : "");
+  }
 
   // -1 means "follow the tick", showing the beat the action was committed on.
   // Stepping with the arrow keys pins an explicit beat within the tick instead.
@@ -821,9 +882,20 @@
       // on a stability beat and nowhere else, so the two are told apart.
       btctx.fillStyle = k < warm ? C.edge : C.dim;
       btctx.fillRect(x, 5, slot, BEAT_H - 10);
+      // A tick ends either because the rule fired or because the loop ran out.
+      // Only the second is worth a colour: it means no decision was reached
+      // and the action was random, which is otherwise indistinguishable from
+      // a tick that simply took a while.
+      if (k === total - 1 && bCommit && bCommit[d] < 0) {
+        btctx.fillStyle = C.dead;
+        btctx.fillRect(x, 5, slot, BEAT_H - 10);
+      }
+      // Marked above the slot rather than over it. The beat being looked at is
+      // by default the last one, which is also where the run-out mark goes, and
+      // filling the slot would hide that mark exactly when it matters.
       if (k === sel) {
         btctx.fillStyle = C.text;
-        btctx.fillRect(x, 1, slot, BEAT_H - 2);
+        btctx.fillRect(x, 0, slot, 3);
       }
     }
 
@@ -844,11 +916,34 @@
     if (!total) { el.textContent = ""; return; }
     const warm = BRAIN.warmup_per_tick[d];
     const sel = selectedBeat(d);
-    const phase = sel < warm
-      ? "propagation " + (sel + 1) + "/" + warm
-      : "stability " + (sel - warm + 1);
-    el.textContent = "beat " + (sel + 1) + "/" + total + " · " + phase
-                   + (curBeat < 0 ? " · committed" : "");
+    const parts = ["beat " + (sel + 1) + "/" + total];
+
+    if (sel < warm) {
+      parts.push("propagation " + (sel + 1) + "/" + warm);
+      parts.push("no decision possible yet");
+    } else {
+      const r = resolveDecision(d, sel);
+      parts.push("stability " + (sel - warm + 1));
+      if (!r.cand.length) {
+        parts.push("no candidates · action random");
+      } else if (r.beat === sel) {
+        parts.push("committed: " + r.winners.map(actionOf).join(", "));
+      } else {
+        const tally = r.cand.map(id => actionOf(id) + " " + r.counts.get(id))
+                            .join("  ") + "/" + r.stability;
+        if (r.stability < 3) {
+          // Saying "needs 2" here would read as a threshold already met on a
+          // beat that commits nothing: the rule is not tested at all until
+          // three stability beats have been seen.
+          parts.push(tally + " · not tested before 3");
+        } else {
+          // What each candidate still has to beat to carry the tick.
+          parts.push(tally + " (needs " + (Math.floor(r.stability / 2) + 1) + ")");
+        }
+        if (sel === total - 1) parts.push("no majority · action random");
+      }
+    }
+    el.textContent = parts.join(" · ");
   }
 
   function stepBeat(delta) {
@@ -970,7 +1065,7 @@
     // otherwise reads as a broken render rather than as a converged network.
     let state = "";
     if (d >= 0 && bThink) {
-      if (bFallback.has(d)) state = " · no candidate, action chosen at random";
+      if (bFallback.has(d)) state = " · never resolved, action chosen at random";
       else if (bThink.has(d)) state = " · resolving";
       else state = " · settled, every beat identical";
     }
