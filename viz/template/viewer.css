@@ -130,6 +130,21 @@ h1 .accent { color: var(--gold); }
   justify-content: center;
 }
 
+/* Wrapper rather than sizing the canvas against the panel: the canvas gets an
+   explicit pixel width when it is fitted, so it cannot also be the thing that
+   is measured. The wrapper has no padding of its own to subtract. */
+.beat-row { width: 100%; flex: 0 0 auto; }
+
+#beats { display: block; }
+
+.beat-note {
+  font-size: 10px;
+  color: var(--dim);
+  text-align: center;
+  margin-top: 3px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
 .panel h2 {
   position: absolute;
   top: 8px;

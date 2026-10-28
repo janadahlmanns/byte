@@ -35,6 +35,15 @@
     <section class="panel">
       <h2>Brain</h2>
       <div class="canvas-box"><canvas id="brain"></canvas></div>
+
+      <!-- The beats inside the current tick. decide() runs a propagation phase
+           and then a stability phase, and only a stability beat can commit an
+           action, so which phase a beat belongs to is drawn explicitly. -->
+      <div class="beat-row">
+        <canvas id="beats"></canvas>
+        <div class="beat-note" id="beat-note"></div>
+      </div>
+
       <div class="key" id="brain-key">
         <span><i class="sw line" style="background:var(--gold-light)"></i>excitatory</span>
         <span><i class="sw line" style="background:var(--blue)"></i>inhibitory</span>
@@ -113,7 +122,8 @@
 
   <div class="hint">
     <kbd>space</kbd> play/pause &nbsp; <kbd>&larr;</kbd><kbd>&rarr;</kbd> step
-    (<kbd>shift</kbd> x10) &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp;
+    (<kbd>shift</kbd> x10) &nbsp; <kbd>&uarr;</kbd><kbd>&darr;</kbd> step beats
+    &nbsp; <kbd>home</kbd>/<kbd>end</kbd> jump &nbsp;
     <kbd>m</kbd> modulation view &nbsp; <kbd>d</kbd> detail
   </div>
 

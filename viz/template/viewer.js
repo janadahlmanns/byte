@@ -477,10 +477,22 @@
   /* World frame t is produced by decision t-1; frame 0 predates any decision. */
   function decisionOf(t) { return t - 1; }
 
-  /* Last beat of a decision: the committed state the action was taken on. */
-  function lastBeatOf(d) {
-    if (!BRAIN || d < 0 || d >= BRAIN.beats_per_tick.length) return -1;
-    return bOffsets[d] + BRAIN.beats_per_tick[d] - 1;
+  // -1 means "follow the tick", showing the beat the action was committed on.
+  // Stepping with the arrow keys pins an explicit beat within the tick instead.
+  let curBeat = -1;
+
+  function beatCount(d) {
+    return (BRAIN && d >= 0 && d < BRAIN.beats_per_tick.length)
+      ? BRAIN.beats_per_tick[d] : 0;
+  }
+
+  /* Which beat of decision d is on screen, as an index into that tick.
+     Ticks vary in length, so a beat pinned on a long tick is clamped rather
+     than carried past the end of a short one. */
+  function selectedBeat(d) {
+    const n = beatCount(d);
+    if (!n) return -1;
+    return curBeat < 0 ? n - 1 : Math.min(curBeat, n - 1);
   }
 
   function resetWeights() {
@@ -516,7 +528,8 @@
 
     const d = decisionOf(FRAMES[n].t);
     const learned = (bLearned && bLearned.get(d)) || null;
-    const beat = lastBeatOf(d);
+    const k = selectedBeat(d);
+    const beat = k < 0 ? -1 : bOffsets[d] + k;
     if (beat >= 0) weightsTo(beat); else resetWeights();
     const act = beat >= 0 ? BRAIN.activations[beat] : 0;
     const cand = (d >= 0 && d < BRAIN.candidates_per_tick.length)
@@ -777,6 +790,78 @@
   // action for thousands more, so the timeline on its own gives no hint that
   // everything worth seeing is a sliver at the left edge.
 
+  /* ---- beats within one tick ----------------------------------------- */
+
+  const beatCanvas = document.getElementById("beats");
+  const btctx = beatCanvas.getContext("2d");
+  const BEAT_H = 18;
+  let beatW = 0;
+
+  function fitBeats() {
+    beatW = Math.max(60, beatCanvas.parentElement.clientWidth);
+    sizeCanvas(beatCanvas, btctx, beatW, BEAT_H);
+  }
+
+  function drawBeats(n) {
+    if (!BRAIN) return;
+    btctx.clearRect(0, 0, beatW, BEAT_H);
+
+    const d = decisionOf(FRAMES[n].t);
+    const total = beatCount(d);
+    if (!total) return;
+    const warm = BRAIN.warmup_per_tick[d];
+    const sel = selectedBeat(d);
+
+    const gap = total > 30 ? 1 : 2;
+    const slot = Math.max(2, (beatW - gap * (total - 1)) / total);
+
+    for (let k = 0; k < total; k++) {
+      const x = k * (slot + gap);
+      // Propagation beats only let the network settle. A decision can be taken
+      // on a stability beat and nowhere else, so the two are told apart.
+      btctx.fillStyle = k < warm ? C.edge : C.dim;
+      btctx.fillRect(x, 5, slot, BEAT_H - 10);
+      if (k === sel) {
+        btctx.fillStyle = C.text;
+        btctx.fillRect(x, 1, slot, BEAT_H - 2);
+      }
+    }
+
+    // Where propagation ends and the network starts being asked to commit.
+    // A shade difference alone leaves the reader counting slots to find it.
+    if (warm > 0 && warm < total) {
+      const bx = warm * (slot + gap) - gap / 2;
+      btctx.fillStyle = C.warn;
+      btctx.fillRect(bx - 0.5, 0, 1, BEAT_H);
+    }
+  }
+
+  function describeBeat(n) {
+    const el = document.getElementById("beat-note");
+    if (!el || !BRAIN) return;
+    const d = decisionOf(FRAMES[n].t);
+    const total = beatCount(d);
+    if (!total) { el.textContent = ""; return; }
+    const warm = BRAIN.warmup_per_tick[d];
+    const sel = selectedBeat(d);
+    const phase = sel < warm
+      ? "propagation " + (sel + 1) + "/" + warm
+      : "stability " + (sel - warm + 1);
+    el.textContent = "beat " + (sel + 1) + "/" + total + " · " + phase
+                   + (curBeat < 0 ? " · committed" : "");
+  }
+
+  function stepBeat(delta) {
+    const d = decisionOf(FRAMES[cur].t);
+    const total = beatCount(d);
+    if (!total) return;
+    const next = selectedBeat(d) + delta;
+    curBeat = Math.max(0, Math.min(total - 1, next));
+    drawBrain(cur);
+    drawBeats(cur);
+    describeBeat(cur);
+  }
+
   const shapeCanvas = document.getElementById("shape");
   const sctx = shapeCanvas.getContext("2d");
   const SHAPE_LABEL_W = 46;
@@ -968,9 +1053,14 @@
 
   function show(n) {
     cur = Math.max(0, Math.min(N - 1, n));
+    // Moving to another tick releases a pinned beat: beat 6 of the tick you
+    // just left says nothing about the one you arrived at.
+    curBeat = -1;
     buildTo(cur);
     draw(cur);
     drawBrain(cur);
+    drawBeats(cur);
+    describeBeat(cur);
     drawShape(cur);
     updateStatus(cur);
     seek.value = cur;
@@ -1053,6 +1143,9 @@
     if (e.key === " ") { e.preventDefault(); setPlaying(!playing); }
     else if (e.key === "ArrowLeft") { setPlaying(false); show(cur - (e.shiftKey ? 10 : 1)); }
     else if (e.key === "ArrowRight") { setPlaying(false); show(cur + (e.shiftKey ? 10 : 1)); }
+    // Stepping within a tick, so the page must not scroll underneath it.
+    else if (e.key === "ArrowUp") { e.preventDefault(); setPlaying(false); stepBeat(-1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setPlaying(false); stepBeat(1); }
     else if (e.key === "Home") { setPlaying(false); show(0); }
     else if (e.key === "End") { setPlaying(false); show(N - 1); }
     else if (e.key === "m" || e.key === "M") cycleModulation();
@@ -1062,8 +1155,10 @@
   function relayout() {
     fitCanvas();
     fitShape();
+    fitBeats();
     draw(cur);
     drawBrain(cur);
+    drawBeats(cur);
     drawShape(cur);
   }
 
@@ -1088,6 +1183,7 @@
   });
   document.querySelectorAll(".canvas-box").forEach(b => observer.observe(b));
   observer.observe(shapeCanvas.parentElement);
+  observer.observe(beatCanvas.parentElement);
 
   // devicePixelRatio can change without any box changing, when the window
   // moves to a monitor at a different scale.
@@ -1095,6 +1191,7 @@
 
   resetGrid();
   fitShape();
+  fitBeats();
   fitCanvas();
   drawMarkers();
   describeShape();
