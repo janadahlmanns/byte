@@ -87,6 +87,7 @@
     }
   });
 
+
   // A camping agent eats hundreds of times. Marking each one turns the scrub
   // bar into a solid band and leaves the jump buttons stepping through meals
   // instead of reaching the phase switch or the death. Keep meal markers only
@@ -95,7 +96,7 @@
     ? notable.concat(eatTicks.map(i => ({ i: i, kind: "ate" })))
     : notable;
 
-  const EVENT_COLOR = { ate: C.food, phase: C.warn, death: C.dead };
+  const EVENT_COLOR = { ate: C.food, phase: C.warn, death: C.dead, learn: C.exc };
 
   function drawMarkers() {
     const el = document.getElementById("markers");
@@ -325,6 +326,7 @@
   let bOffsets = null;    // first beat index of each decision
   let bBuiltTo = -1;      // beat the weights currently represent
   let bModByEdge = null;  // edge index -> modulators acting on it
+  let bLearned = null;    // decision index -> set of edges that changed then
   // "active": only modulators that are firing, which is the only time they do
   // anything. "all": the full wiring, signal edges pushed back. "off": bare
   // network, nothing drawn on top of it.
@@ -388,6 +390,25 @@
       bOffsets[i] = acc;
       acc += BRAIN.beats_per_tick[i];
     }
+
+    // Which edges learned during each decision. Weight changes arrive indexed
+    // by beat; this folds them up to the tick the timeline actually scrubs on.
+    bLearned = new Map();
+    let di = 0;
+    for (const [beat, edge] of BRAIN.weight_changes) {
+      while (di + 1 < bOffsets.length && bOffsets[di + 1] <= beat) di++;
+      if (!bLearned.has(di)) bLearned.set(di, new Set());
+      bLearned.get(di).add(edge);
+    }
+
+    // Ticks where at least one weight moved. Learning happens in short bursts,
+    // a few percent of ticks in a typical run, so these are worth navigating to.
+    // Appended here rather than in the events block above, which runs before
+    // the brain data exists.
+    for (const d of bLearned.keys()) {
+      const frame = d + 1;                  // decision d produces frame d+1
+      if (frame < FRAMES.length) events.push({ i: frame, kind: "learn" });
+    }
   }
 
   /* World frame t is produced by decision t-1; frame 0 predates any decision. */
@@ -431,6 +452,7 @@
     bctx.clearRect(0, 0, W2, H2);
 
     const d = decisionOf(FRAMES[n].t);
+    const learned = (bLearned && bLearned.get(d)) || null;
     const beat = lastBeatOf(d);
     if (beat >= 0) weightsTo(beat); else resetWeights();
     const act = beat >= 0 ? BRAIN.activations[beat] : 0;
@@ -461,9 +483,23 @@
       bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
       bctx.lineWidth = 0.5 + 3 * mag;
 
+      // A weight driven to zero is effectively pruned. Drawing nothing would
+      // make it look like a rendering fault, so it stays as a faint ghost: the
+      // connection still exists in the genome, it just carries no signal.
+      const pruned = Math.abs(w) < 0.01;
+      if (pruned) {
+        bctx.globalAlpha = 0.07;
+        bctx.strokeStyle = C.dim;
+        bctx.lineWidth = 0.8;
+        bctx.setLineDash([2, 3]);
+      }
+      // Saturated weights can never move again: the plasticity rule carries a
+      // |w|(1-|w|) factor that is zero at the bound.
+      const frozen = Math.abs(w) >= 0.999;
+
       if (e.src === e.tgt) {
         mid[i] = { x: a.x, y: a.y - r * 2.35 };      // top of the loop
-        if (Math.abs(w) >= 0.01) {
+        if (true) {
           bctx.beginPath();
           bctx.arc(a.x, a.y - r * 1.5, r * 0.85, 0, 6.2832);
           bctx.stroke();
@@ -481,15 +517,36 @@
         // marker sits on the stroke that is actually drawn.
         mid[i] = { x: 0.25 * sx + 0.5 * cx + 0.25 * ex,
                    y: 0.25 * sy + 0.5 * cy + 0.25 * ey };
-        if (Math.abs(w) >= 0.01) {
+        if (true) {
           bctx.beginPath();
           bctx.moveTo(sx, sy);
           bctx.quadraticCurveTo(cx, cy, ex, ey);
           bctx.stroke();
-          arrowHead(ex, ey, ex - cx, ey - cy, 3 + 3 * mag);
+          if (!pruned) arrowHead(ex, ey, ex - cx, ey - cy, 3 + 3 * mag);
         }
       }
+      bctx.setLineDash([]);
+
+      // Frozen at the bound: a small cap on the target end.
+      if (frozen && mid[i]) {
+        bctx.globalAlpha = 0.5;
+        bctx.fillStyle = w >= 0 ? C.exc : C.inh;
+        bctx.beginPath();
+        bctx.arc(mid[i].x, mid[i].y, Math.max(1.5, r * 0.11), 0, 6.2832);
+        bctx.fill();
+      }
+
+      // Learned on this very tick: a bright halo over the stroke.
+      if (learned && learned.has(i) && mid[i]) {
+        bctx.globalAlpha = 0.9;
+        bctx.strokeStyle = C.sensor;
+        bctx.lineWidth = 1.5;
+        bctx.beginPath();
+        bctx.arc(mid[i].x, mid[i].y, Math.max(4, r * 0.4), 0, 6.2832);
+        bctx.stroke();
+      }
     }
+    bctx.setLineDash([]);
     bctx.globalAlpha = 1;
 
     drawModulation(mid, fired, r);
@@ -661,8 +718,11 @@
     document.getElementById("energy-text").textContent =
       "ENERGY " + f.energy + "/" + S.energy_capacity;
     const meal = (f.ate !== null && f.ate !== undefined) ? "  ATE" : "";
+    const dIdx = decisionOf(f.t);
+    const nLearned = (bLearned && bLearned.get(dIdx)) ? bLearned.get(dIdx).size : 0;
     document.getElementById("counters").textContent =
-      "eats " + f.eats + "   dist " + f.distance + "   pos " + f.y + "," + f.x + meal;
+      "eats " + f.eats + "   dist " + f.distance + "   pos " + f.y + "," + f.x + meal
+      + (nLearned ? "   " + nLearned + " weights moved" : "");
 
     const state = document.getElementById("alive-state");
     state.textContent = f.alive ? "ALIVE" : "DEAD";
