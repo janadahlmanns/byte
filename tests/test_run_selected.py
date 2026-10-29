@@ -409,7 +409,8 @@ def test_default_preset():
     rows = RS.preset_infos(p, RS.all_infos(devs), devs)
     check(f"every entry resolves and can run on a CUDA machine ({len(rows)} configs)",
           all(r.selectable for r in rows))
-    check("the lookup reproducibility run comes first", p.configs[0] == "ea_from_lookup_tensor_cuda")
+    check("the lookup reproducibility run is in the preset, with a reference to compare against",
+          "ea_from_lookup_tensor_cuda" in p.configs and "ea_from_lookup_tensor_cuda" in p.references)
     for name, ref in p.references.items():
         check(f"reference for {name} exists: {ref.relative_to(RS.ROOT)} "
               f"(add the university PC's result file; see plan Step 17)", ref.is_file())
