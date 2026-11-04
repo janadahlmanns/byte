@@ -274,6 +274,9 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
               f"width: {width_reason})")
         print(generation_stats_line(device, wall, int(lifespans.sum()), width, P * R,
                                     BASE_BYTES + genome_batch_bytes(batch) + P * R * slot_bytes))
+        # Inside the time above (plan Step 25): compiling plus one 512-slot iteration;
+        # printed also without compile (0.00 s), so a missing line means an old log.
+        print(f"{MARKER} compile: warm-up {res.warmup_s:.2f} s, {res.new_graphs} new graph(s)")
 
         if flags.per_run:
             t1 = time.perf_counter()

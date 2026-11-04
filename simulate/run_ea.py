@@ -1,6 +1,7 @@
 # Batch simulation of Byte with randomized wiring variants
 # Usage: python -m simulate.run_batch --config configs/experiments/neurons_random_wiring.yaml
 
+import os
 import sys
 import time
 import argparse
@@ -377,14 +378,17 @@ def initialize_hdf5_file(experiment_folder, simulation_name, cfg, num_generation
     Returns:
         Path to the created HDF5 file
     """
-    # Create HDF5 file path with timestamp
+    # Create HDF5 file path with timestamp; inside a Slurm job also the job id, so
+    # parallel array tasks starting in the same second get their own files (plan Step 24b)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    hdf5_filename = f"{ts}_{simulation_name}.h5"
+    job = os.environ.get("SLURM_JOB_ID")
+    hdf5_filename = f"{ts}_{simulation_name}" + (f"_j{job}" if job else "") + ".h5"
     hdf5_path = Path(experiment_folder) / hdf5_filename
     Path(experiment_folder).mkdir(parents=True, exist_ok=True)
     
-    # Create file and save configuration
-    with h5py.File(hdf5_path, 'w') as f:
+    # Create file and save configuration. 'x': an existing file (another run started in
+    # the same second with the same name) raises instead of being overwritten.
+    with h5py.File(hdf5_path, 'x') as f:
         # Save full config as attributes
         save_config_recursive(f, cfg)
         

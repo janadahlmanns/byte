@@ -55,6 +55,7 @@ opposite of evotorch_example/maze_task.py, which never resets between runs.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -564,6 +565,21 @@ def configure_device(device) -> None:
         torch.set_float32_matmul_precision("highest")
 
 
+def synchronize(device) -> None:
+    """Wait until the device has finished its queued work (timing only)."""
+    device = torch.device(device)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
+def _unique_graphs() -> int:
+    """Graphs dynamo has compiled in this process so far (plan Step 25)."""
+    import torch._dynamo.utils as du
+    return int(du.counters["stats"]["unique_graphs"])
+
+
 def release_device_cache(device) -> None:
     """Return PyTorch's cached-but-unused device memory to the system.
 
@@ -717,6 +733,11 @@ class GenerationResult:
     slot_capacity: int = 0
     final_width: int = 0
     compactions: int = 0
+    # Reporting only (plan Step 25): the compile warm-up's wall time (compiling plus one
+    # iteration at COMPILE_WARMUP_WIDTH slots; 0.0 without compile) and the graphs
+    # dynamo added during it. Every new graph appears there, none in the loop (18a).
+    warmup_s: float = 0.0
+    new_graphs: int = 0
 
     @property
     def utilisation(self) -> float:
@@ -870,14 +891,21 @@ def eval_generation_batch(
     """
     if not 0.0 <= float(compact_below) <= 1.0:
         raise ValueError(f"compact_below must be in [0, 1], got {compact_below}")
+    warmup_s, new_graphs = 0.0, 0
     if compile and _compile_warmup and not _warmup_run:
         # Same code path, its own fresh state (setup_generation) and no tracker; the
         # keyed randomness has no global state, so nothing here reaches the real run.
+        # Timed for reporting (Step 25); the sync only waits, it computes nothing.
+        graphs0 = _unique_graphs()
+        t0 = time.perf_counter()
         eval_generation_batch(
             batch, spec, cfg, seeds, width=min(COMPILE_WARMUP_WIDTH, batch.n_pop * cfg.n_runs),
             mode=mode, max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds,
             contraction=contraction, compile=True, sync_every=sync_every,
             compact_below=compact_below, tracker=None, _warmup_run=True)
+        synchronize(batch.Wabs0.device)
+        warmup_s = time.perf_counter() - t0
+        new_graphs = _unique_graphs() - graphs0
     state, ctx, source = setup_generation(
         batch, cfg, seeds, width=width, mode=mode,
         max_brain_ticks=max_brain_ticks, philox_rounds=philox_rounds, compile=compile,
@@ -1030,4 +1058,5 @@ def eval_generation_batch(
         )
     return GenerationResult(iterations=executed, slot_iterations=int(busy.item()),
                             n_slots=int(width), slot_capacity=capacity, final_width=B,
-                            compactions=compactions, **res)
+                            compactions=compactions, warmup_s=warmup_s,
+                            new_graphs=new_graphs, **res)

@@ -18,6 +18,9 @@ Usage
     python -m simulate.run_selected                     # selection screen (needs a terminal)
     python -m simulate.run_selected --list              # print the table and exit
     python -m simulate.run_selected --configs a,b       # run these, no screen
+    python -m simulate.run_selected --preset P --count  # how many entries P has
+    python -m simulate.run_selected --preset P --task i # only entry i (0-based): one
+                                                        # Slurm array task (plan Step 24)
 
 Sweeps (plan Step 15): a file in configs/sweeps/ names a base config, settings for
 every point (`set`) and the values to vary (`vary`); each point is a row of its own.
@@ -68,6 +71,7 @@ HDF5_LINE = re.compile(r"\[HDF5 Init\] File created: (.+)$")
 EA_TIMING_LINE = re.compile(
     r"\[EA timing\] gen (\d+): genomes ([\d.]+) s, evaluate ([\d.]+) s, run-ticks (\d+), "
     r"[\d.]+ us/run-tick, select\+save ([\d.]+) s")
+WARMUP_LINE = re.compile(r"\[tensor-evaluator\] compile: warm-up ([\d.]+) s, (\d+) new graph")
 TENSOR_CFG_LINE = re.compile(r"\[tensor-evaluator\] backend=tensor .*?device=(\S+)")
 THREADS_PART = re.compile(r" threads=(\d+)")
 WORKERS_LINE = re.compile(r"\[INFO\] Parallel execution on (\d+) cores")
@@ -698,6 +702,7 @@ class Result:
     log: str = ""
     # plan Step 22: the backend-independent timing, and the machine's load
     ea_times: List[dict] = field(default_factory=list)     # from the [EA timing] line
+    warmups: List[tuple] = field(default_factory=list)     # (seconds, new graphs) per gen (Step 25)
     backend: str = ""                  # "scalar" | "tensor <device>"
     cpu_workers: str = ""              # scalar: worker processes; tensor cpu: torch threads
     idle: dict = field(default_factory=dict)               # machine_load.idle_check()
@@ -749,6 +754,9 @@ def parse_backend_line(line, parsed):
         parsed["ea"].append({"generation": int(m.group(1)), "genomes_s": float(m.group(2)),
                              "evaluate_s": float(m.group(3)), "run_ticks": int(m.group(4)),
                              "select_save_s": float(m.group(5))})
+    m = WARMUP_LINE.search(line)
+    if m:
+        parsed.setdefault("warmup", []).append((float(m.group(1)), int(m.group(2))))
     m = TENSOR_CFG_LINE.search(line)
     if m:
         parsed["backend"] = f"tensor {m.group(1)}"
@@ -762,17 +770,36 @@ def parse_backend_line(line, parsed):
         parsed["cpu_workers"] = "1 process (serial)"
 
 
-def ea_summary(ea):
+def warmup_of(backend, warmups, generation):
+    """(warm-up s, new graphs) of a generation (plan Step 25): (0.0, 0) for the scalar
+    backend (no compile), None for a tensor log without the line (an old report)."""
+    if backend == "scalar":
+        return 0.0, 0
+    return warmups[generation] if generation < len(warmups) else None
+
+
+def ea_summary(ea, backend="scalar", warmups=()):
     """Medians over generations 1+ of the [EA timing] parts, and us per run-tick of the
-    evaluation over generations 1+ (total time / total run-ticks)."""
+    evaluation over generations 1+ (total time / total run-ticks); the same for the
+    simulation alone (evaluation minus the compile warm-up, Step 25) where known."""
     later = [g for g in ea if g["generation"] >= 1]
     if not later:
-        return {"genomes": "", "evaluate": "", "select_save": "", "us": ""}
+        return {"genomes": "", "evaluate": "", "select_save": "", "us": "", "simulate": "",
+                "sim_us": "", "warmup_total": ""}
     med = lambda k: f"{float(np.median([g[k] for g in later])):.3f}"
     ticks = sum(g["run_ticks"] for g in later)
-    return {"genomes": med("genomes_s"), "evaluate": med("evaluate_s"),
-            "select_save": med("select_save_s"),
-            "us": f"{1e6 * sum(g['evaluate_s'] for g in later) / ticks:.2f}" if ticks else ""}
+    out = {"genomes": med("genomes_s"), "evaluate": med("evaluate_s"),
+           "select_save": med("select_save_s"),
+           "us": f"{1e6 * sum(g['evaluate_s'] for g in later) / ticks:.2f}" if ticks else ""}
+    w = [warmup_of(backend, list(warmups), g["generation"]) for g in later]
+    if any(x is None for x in w):
+        out.update(simulate="", sim_us="", warmup_total="")
+    else:
+        sim = [g["evaluate_s"] - x[0] for g, x in zip(later, w)]
+        out.update(simulate=f"{float(np.median(sim)):.3f}",
+                   sim_us=f"{1e6 * sum(sim) / ticks:.2f}" if ticks else "",
+                   warmup_total=f"{sum(x[0] for x in w):.3f}")
+    return out
 
 
 def us_per_run_tick_gens_1plus(r):
@@ -909,7 +936,7 @@ def run_one(cmd, log_path, echo=True):
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     t0 = time.perf_counter()
     parsed = {"gens": [], "stats": [], "hdf5": "", "done": False, "ea": [],
-              "backend": "scalar", "cpu_workers": ""}
+              "backend": "scalar", "cpu_workers": "", "warmup": []}
     with open(log_path, "w", encoding="utf-8") as log:
         log.write("$ " + " ".join(cmd) + "\n")
         p = subprocess.Popen(cmd, cwd=ROOT, env=env, text=True, encoding="utf-8",
@@ -964,6 +991,9 @@ SUMMARY_FIELDS = ["order", "config", "status", "exit_code", "wall_s", "gen0_s",
                   "backend", "cpu_workers", "ea_gens_timed", "genomes_gens_1plus_median_s",
                   "evaluate_gens_1plus_median_s", "select_save_gens_1plus_median_s",
                   "ea_us_per_run_tick_gens_1plus",
+                  # plan Step 25: the simulation without the compile warm-up
+                  "simulate_gens_1plus_median_s", "sim_us_per_run_tick_gens_1plus",
+                  "warmup_gens_1plus_total_s",
                   # plan Step 22e: was the machine free?
                   "idle_check", "idle_cpu_busy_pct", "idle_cpus_judged", "idle_cpu_top", "idle_gpu_util_max_pct",
                   "idle_gpu_mem_used_max_mib", "idle_gpu_processes", "gpu_util_mean_max_pct",
@@ -972,10 +1002,11 @@ SUMMARY_FIELDS = ["order", "config", "status", "exit_code", "wall_s", "gen0_s",
 
 
 def _step22_cols(r):
-    s = ea_summary(r.ea_times)
+    s = ea_summary(r.ea_times, r.backend or "scalar", r.warmups)
     i = r.idle or {}
     return [r.backend, r.cpu_workers, len(r.ea_times), s["genomes"], s["evaluate"],
-            s["select_save"], s["us"], i.get("verdict", ""), i.get("cpu_busy_pct", ""),
+            s["select_save"], s["us"], s["simulate"], s["sim_us"], s["warmup_total"],
+            i.get("verdict", ""), i.get("cpu_busy_pct", ""),
             i.get("cpus_judged", ""), i.get("cpu_top", ""), i.get("gpu_util_max_pct", ""), i.get("gpu_mem_used_max_mib", ""),
             i.get("gpu_processes", ""), r.gpu_util, r.foreign_cores, r.foreign_top,
             r.foreign_gpu, r.disturbance]
@@ -1014,7 +1045,8 @@ def write_reports(report_dir, results):
         w.writerow(["order", "config", "generation", "seconds", "iterations",
                     "ms_per_iteration", "run_ticks", "us_per_run_tick",
                     "genomes_s", "evaluate_s", "select_save_s", "ea_run_ticks",
-                    "ea_us_per_run_tick"])
+                    "ea_us_per_run_tick", "warmup_s", "new_graphs", "simulate_s",
+                    "sim_us_per_run_tick"])
         for r in results:
             # The first eight columns come from the tensor evaluator's own line (empty
             # for the scalar backend); the last five from run_ea's, for every backend.
@@ -1031,6 +1063,13 @@ def write_reports(report_dir, results):
                            f"{g['select_save_s']:.3f}", g["run_ticks"],
                            f"{1e6 * g['evaluate_s'] / g['run_ticks']:.2f}" if g["run_ticks"] else ""]
                           if g else [""] * 5)
+                wu = warmup_of(r.backend or "scalar", r.warmups, i) if g else None
+                if wu is None:
+                    eacols += [""] * 4
+                else:
+                    sim = g["evaluate_s"] - wu[0]
+                    eacols += [f"{wu[0]:.3f}", wu[1], f"{sim:.3f}",
+                               f"{1e6 * sim / g['run_ticks']:.2f}" if g["run_ticks"] else ""]
                 w.writerow([r.order, r.config, i] + (tensor or [""] * 5) + eacols)
     (report_dir / "gpu_snapshots.json").write_text(json.dumps(
         [{"order": r.order, "config": r.config, "before": r.gpu_before, "after": r.gpu_after,
@@ -1063,7 +1102,7 @@ def run_queue(infos, report_root, probe, echo=True, references=None, run_info=No
     sysinfo["run"] = run_info or {"selection": "not recorded"}
     hw = probe["gpus"][0]["name"] if probe["gpus"] else sysinfo["cpu_model"]
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    report_dir = Path(report_root) / f"{ts}_{_slug(str(hw))}"
+    report_dir = Path(report_root) / f"{ts}_{_slug(str(hw))}{slurm_suffix()}"
     report_dir.mkdir(parents=True, exist_ok=False)
     (report_dir / "system.json").write_text(json.dumps(sysinfo, indent=2))
 
@@ -1107,6 +1146,7 @@ def run_queue(infos, report_root, probe, echo=True, references=None, run_info=No
         r.gpu_throttle = sampler.column("throttle")
         r.gen_times, r.gen_stats, r.hdf5 = parsed["gens"], parsed["stats"], parsed["hdf5"]
         r.ea_times, r.backend, r.cpu_workers = parsed["ea"], parsed["backend"], parsed["cpu_workers"]
+        r.warmups = parsed["warmup"]
         r.gpu_after = gpu_snapshot()
         r.exit_code = rc
         if rc is None:
@@ -1309,16 +1349,62 @@ def select_interactively(infos, preset=None, devices=("cpu",)):
 # Entry point
 # ============================================================
 
+def preset_task(preset, task):
+    """The index of entry `task` of `preset` (plan Step 24a); SystemExit if out of range.
+    Inside a Slurm array, warns if the array leaves entries of the preset out (re-running
+    a subset is legitimate, so that is not an error)."""
+    n = len(preset.configs)
+    if not 0 <= task < n:
+        raise SystemExit(f"[run_selected] ERROR: --task {task}, but preset {preset.name} has {n} "
+                         f"entries (0-{n - 1}): submit with --array=0-{n - 1}")
+    lo, hi = os.environ.get("SLURM_ARRAY_TASK_MIN"), os.environ.get("SLURM_ARRAY_TASK_MAX")
+    if lo is not None and hi is not None and os.environ.get("SLURM_ARRAY_TASK_ID") is not None:
+        left_out = [i for i in range(n) if not int(lo) <= i <= int(hi)]
+        if left_out:
+            print(f"[run_selected] WARNING: this array covers tasks {lo}-{hi}; entries "
+                  f"{left_out} of preset {preset.name} ({n} entries) are not in it: "
+                  + "; ".join(preset.configs[i] for i in left_out[:5])
+                  + (" ..." if len(left_out) > 5 else ""), flush=True)
+    return task
+
+
+def slurm_suffix():
+    """`_job<array id>_<task>` in a Slurm array task, `_job<id>` in a plain job, '' outside
+    (plan Step 24b): parallel tasks starting in the same second get their own folders."""
+    env = os.environ
+    if env.get("SLURM_ARRAY_JOB_ID") and env.get("SLURM_ARRAY_TASK_ID"):
+        return f"_job{env['SLURM_ARRAY_JOB_ID']}_{env['SLURM_ARRAY_TASK_ID']}"
+    if env.get("SLURM_JOB_ID"):
+        return f"_job{env['SLURM_JOB_ID']}"
+    return ""
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--configs", help="comma-separated config names or YAML paths; "
                                       "runs them in this order without the screen")
     ap.add_argument("--preset", help=f"run a preset from {PRESET_DIR} without the screen")
+    ap.add_argument("--task", type=int, default=None,
+                    help="with --preset: run only entry TASK (0-based), e.g. "
+                         "$SLURM_ARRAY_TASK_ID in a job array (plan Step 24)")
+    ap.add_argument("--count", action="store_true",
+                    help="with --preset: print the number of entries and exit")
     ap.add_argument("--list", action="store_true", help="print the config table and exit")
     ap.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR),
                     help=f"where the report folder is made (default: {DEFAULT_REPORT_DIR})")
     a = ap.parse_args(argv)
+    if (a.task is not None or a.count) and not a.preset:
+        raise SystemExit("[run_selected] ERROR: --task and --count need --preset")
+    if a.task is not None and a.count:
+        raise SystemExit("[run_selected] ERROR: give --task or --count, not both")
+    if a.count:
+        presets = load_presets()
+        if a.preset not in presets:
+            raise SystemExit(f"[run_selected] ERROR: no preset {a.preset!r} in {PRESET_DIR} "
+                             f"(presets: {sorted(presets)})")
+        print(len(presets[a.preset].configs))
+        return 0
 
     probe = torch_probe()
     devices = available_devices(probe)
@@ -1343,6 +1429,8 @@ def main(argv=None):
                              f"(presets: {sorted(presets)})")
         preset_used = presets[a.preset]
         chosen = preset_infos(preset_used, infos, devices)
+        if a.task is not None:
+            chosen = [chosen[preset_task(preset_used, a.task)]]
     elif a.configs:
         chosen = [resolve(e.strip(), infos, devices) for e in a.configs.split(",") if e.strip()]
     if a.preset or a.configs:
@@ -1360,7 +1448,9 @@ def main(argv=None):
         preset_used = default
 
     names = [c.name for c in chosen]
-    if preset_used is not None:
+    if a.task is not None:
+        selection = f"preset {preset_used.name}, task {a.task} of {len(preset_used.configs)}"
+    elif preset_used is not None:
         same = names == preset_used.configs
         selection = (f"preset {preset_used.name} (unchanged)" if same
                      else f"preset {preset_used.name} (modified)")
@@ -1368,6 +1458,8 @@ def main(argv=None):
         selection = "--configs" if a.configs else "manual"
     run_info = {"selection": selection, "selected": names,
                 "preset_configs": preset_used.configs if preset_used else None}
+    if a.task is not None:
+        run_info.update(task=a.task, of=len(preset_used.configs))
     references = dict(preset_used.references) if preset_used else {}
     if default is not None:
         for k, v in default.references.items():

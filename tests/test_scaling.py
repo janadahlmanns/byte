@@ -228,12 +228,12 @@ def test_parsing(tmp):
           p["backend"] == "tensor cpu" and p["cpu_workers"] == "8 torch threads")
     s = RS.ea_summary(p["ea"])
     check(f"gens 1+ medians and us/run-tick = 6 s / 4000 ticks ({s})",
-          s == {"genomes": "0.600", "evaluate": "3.000", "select_save": "0.040", "us": "1500.00"})
+          {k: s[k] for k in ("genomes", "evaluate", "select_save", "us")}
+          == {"genomes": "0.600", "evaluate": "3.000", "select_save": "0.040", "us": "1500.00"})
     q = {"ea": [], "backend": "scalar", "cpu_workers": ""}
     RS.parse_backend_line("[INFO] Parallel execution on 18 cores (20 total).", q)
     check(f"scalar workers ({q['cpu_workers']})", q["cpu_workers"] == "18 processes")
-    check("an old log: nothing", RS.ea_summary([]) == {"genomes": "", "evaluate": "",
-                                                        "select_save": "", "us": ""})
+    check("an old log: nothing", all(v == "" for v in RS.ea_summary([]).values()))
     rdir = Path(tmp) / "rep3"
     rdir.mkdir()
     r = RS.Result(order=1, config="scalar_cfg", path="x", status="ok", ea_times=p["ea"],
@@ -253,6 +253,38 @@ def test_parsing(tmp):
     check("summary.csv: the Step 22 columns", rows[0]["evaluate_gens_1plus_median_s"] == "3.000"
           and rows[0]["ea_us_per_run_tick_gens_1plus"] == "1500.00" and rows[0]["ea_gens_timed"] == "3"
           and rows[1]["ea_gens_timed"] == "0")
+    check("scalar: no compile, simulation = evaluation (Step 25)",
+          rows[0]["simulate_gens_1plus_median_s"] == "3.000" and rows[0]["warmup_gens_1plus_total_s"] == "0.000"
+          and all(x["warmup_s"] == "0.000" and x["simulate_s"] == x["evaluate_s"]
+                  for x in g if x["config"] == "scalar_cfg"))
+
+    # Step 25: the warm-up line of a tensor run.
+    w = {"ea": [], "backend": "scalar", "cpu_workers": ""}
+    for line in lines[:1] + [lines[1], "[tensor-evaluator] compile: warm-up 8.50 s, 9 new graph(s)",
+                             lines[2], "[tensor-evaluator] compile: warm-up 1.50 s, 1 new graph(s)",
+                             lines[3], "[tensor-evaluator] compile: warm-up 0.10 s, 0 new graph(s)"]:
+        RS.parse_backend_line(line, w)
+    check(f"WARMUP_LINE read per generation ({w['warmup']})",
+          w["warmup"] == [(8.5, 9), (1.5, 1), (0.1, 0)])
+    s = RS.ea_summary(w["ea"], w["backend"], w["warmup"])
+    check(f"simulation = evaluation - warm-up: median of 0.5 and 3.9 s, us over 4.4 s / 4000 ticks ({s})",
+          s["simulate"] == "2.200" and s["sim_us"] == "1100.00" and s["warmup_total"] == "1.600")
+    rt = RS.Result(order=1, config="tensor_cfg", path="x", status="ok", ea_times=w["ea"],
+                   backend="tensor cpu", warmups=w["warmup"])
+    rt_old = RS.Result(order=2, config="tensor_old", path="y", status="ok", ea_times=w["ea"],
+                       backend="tensor cpu")
+    rdir2 = Path(tmp) / "rep3b"
+    rdir2.mkdir()
+    RS.write_reports(rdir2, [rt, rt_old])
+    with open(rdir2 / "generations.csv", newline="") as f:
+        g2 = list(csv.DictReader(f))
+    new = [x for x in g2 if x["config"] == "tensor_cfg"]
+    check(f"generations.csv: warm-up, new graphs, simulation per generation "
+          f"({[(x['warmup_s'], x['new_graphs'], x['simulate_s']) for x in new]})",
+          [(x["warmup_s"], x["new_graphs"], x["simulate_s"]) for x in new]
+          == [("8.500", "9", "0.500"), ("1.500", "1", "0.500"), ("0.100", "0", "3.900")])
+    check("a tensor log without the line (old): the Step 25 columns empty, not 0",
+          all(x["warmup_s"] == "" and x["simulate_s"] == "" for x in g2 if x["config"] == "tensor_old"))
 
 
 # ============================================================
@@ -359,8 +391,12 @@ LAWS = {  # backend -> (a, k) of evaluate seconds = a * x^k, per dimension the s
 
 
 def synth_report(root, name, points, machine="uni", busy=(), drop_timing=(), backend_lie=(),
-                 tamper=None, gpu="NVIDIA GeForce RTX 3070"):
-    """A run_selected-like report folder with exact power-law timings."""
+                 tamper=None, gpu="NVIDIA GeForce RTX 3070", old_format=()):
+    """A run_selected-like report folder with exact power-law simulation timings. Tensor
+    points compile 3 s in generations 1 and 2 (new list layouts, plan Step 25; two of
+    three, as in the uni PC's CUDA sweep, so the median is affected): their
+    evaluation time is simulation + warm-up. `old_format`: backends written as before
+    Step 25 (no warm-up columns)."""
     rdir = Path(root) / name
     (rdir / "configs").mkdir(parents=True)
     gpus = [{"name": gpu}]
@@ -389,11 +425,18 @@ def synth_report(root, name, points, machine="uni", busy=(), drop_timing=(), bac
         for g in range(4):
             jitter = 1 + 0.01 * (g - 2) if g else 5      # gen 0 slow (compile), never used
             row = {"order": i, "config": row_name, "generation": g, "evaluate_s": "",
-                   "ea_us_per_run_tick": "", "genomes_s": "", "select_save_s": ""}
+                   "ea_us_per_run_tick": "", "genomes_s": "", "select_save_s": "",
+                   "ea_run_ticks": "", "warmup_s": "", "new_graphs": "", "simulate_s": ""}
             if row_name not in drop_timing:
                 ticks = 10_000
-                row.update(evaluate_s=f"{ev * jitter:.9f}", genomes_s="0.1", select_save_s="0.05",
-                           ea_us_per_run_tick=f"{1e6 * ev * jitter / ticks:.9f}")
+                sim = ev * jitter
+                warm = 0.0 if be == "scalar" else (3.0 if g in (1, 2) else 0.01)
+                row.update(evaluate_s=f"{sim + warm:.9f}", genomes_s="0.1", select_save_s="0.05",
+                           ea_us_per_run_tick=f"{1e6 * (sim + warm) / ticks:.9f}",
+                           ea_run_ticks=str(ticks))
+                if be not in old_format:
+                    row.update(warmup_s=f"{warm:.9f}", new_graphs="1" if g in (1, 2) and be != "scalar" else "0",
+                               simulate_s=f"{sim:.9f}")
             gens.append(row)
     for fname, rows in (("summary.csv", summary), ("generations.csv", gens)):
         with open(rdir / fname, "w", newline="") as f:
@@ -483,6 +526,34 @@ def test_plot(tmp):
     rc, text, err = run_plot([str(part), "--out", str(root / "o8")])
     check("CUDA points missing: listed per dimension, the rest plotted",
           rc == 0 and text.count("MISSING") == 3 and "tensor CUDA" in text)
+    # Step 25: compile time is subtracted; old reports need --include-compile <backend>.
+    with open(out / "points.csv", newline="") as f:
+        prow = {(r["dimension"], r["backend"], r["x"]): r for r in csv.DictReader(f)}
+    some = prow[("runs", "cuda", "100")]
+    check(f"points.csv: simulation without the 3 s compile, the evaluation with it, the warm-up "
+          f"({some['evaluate_s_median']}, {some['evaluate_with_compile_s_median']}, {some['warmup_s_total']})",
+          abs(float(some["evaluate_s_median"]) - 0.5 * 100 ** 0.3) < 0.02
+          and float(some["warmup_s_total"]) > 6 and some["new_graphs_total"] == "2"
+          and some["compile_included"] == "False")
+    old = synth_report(root, "old_format", flat, old_format=("cpu", "cuda"))
+    rc, text, err = run_plot([str(old), "--out", str(root / "o10")])
+    check(f"a report from before Step 25: tensor points refused ({str(err)[:80]})",
+          isinstance(err, PS.ScalingError) and "--include-compile" in str(err))
+    rc, text, err = run_plot([str(old), "--out", str(root / "o11"), "--include-compile", "cpu"])
+    check(f"--include-compile cpu alone: the CUDA points still refused ({str(err)[:60]})",
+          isinstance(err, PS.ScalingError) and "--include-compile cuda" in str(err))
+    rc, text, err = run_plot([str(old), "--out", str(root / "o12"), "--include-compile", "cpu",
+                              "--include-compile", "cuda"])
+    with open(root / "o12" / "points.csv", newline="") as f:
+        orow = list(csv.DictReader(f))
+    check("both named: plotted, tensor points marked 'compile included', scalar not",
+          rc == 0 and all(r["compile_included"] == ("False" if r["backend"] == "scalar" else "True")
+                          for r in orow))
+    with open(root / "o12" / "fits.csv", newline="") as f:
+        okk = {(r["dimension"], r["backend"]): float(r["exponent_k"]) for r in csv.DictReader(f)
+               if r["metric"] == "evaluate"}
+    check(f"... and with the compile included the CUDA exponents are off ({okk[('runs', 'cuda')]:.2f} "
+          f"vs {LAWS['cuda'][1]})", abs(okk[("runs", "cuda")] - LAWS["cuda"][1]) > 0.05)
     rc, text, err = run_plot([str(good), str(good), "--out", str(root / "o9")])
     with open(root / "o9" / "points.csv", newline="") as f:
         rep = list(csv.DictReader(f))

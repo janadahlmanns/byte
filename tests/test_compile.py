@@ -316,6 +316,57 @@ def test_warmup(dev):
           G.COMPILE_WARMUP_WIDTH < P * R)
 
 
+def test_warmup_report(dev):
+    print(f"\n[9] [{dev}] The warm-up's time and new graphs are reported (plan Step 25)")
+    import time
+    import numpy as np
+    import yaml
+    from mvb.genome.generate_genome_lookup_hard import generate_lookup_hard_genome
+    from mvb.genome.generate_genome_mutate_simple import generate_genome_mutate_simple
+    G.configure_device(dev)
+    torch._dynamo.reset()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cfg = yaml.safe_load(open(os.path.join(root, "configs/experiments/ea_from_lookup_tensor_cuda.yaml")))
+    R, P = 12, 60
+    cfg["experiment"]["n_runs"] = R
+    rng = np.random.default_rng(1)
+    pop = [generate_lookup_hard_genome(cfg, rng_seed=i) for i in range(P)]
+    sim, spec = G.sim_config_from_yaml(cfg), build_output_spec(cfg["brain"])
+    kw = dict(mode="live", philox_rounds=10, contraction="sequential")
+    rows = []                                   # (L, warmup_s, new_graphs, counter delta, wall)
+    for gen in range(6):
+        b = encode_genomes(pop, cfg["brain"], device=dev, dtype=torch.float32, dense_modulation=False)
+        seeds = G.draw_seeds(*G.make_simulation_rngs(gen + 1), P, R)
+        g0, t0 = graphs(), time.perf_counter()
+        res = G.eval_generation_batch(b, spec, sim, seeds, width=P * R, compile=True, **kw)
+        rows.append((len(b.mod_k), res.warmup_s, res.new_graphs, graphs() - g0, time.perf_counter() - t0))
+        if gen == 0:
+            again = G.eval_generation_batch(b, spec, sim, seeds, width=P * R, compile=True, **kw)
+            eager = G.eval_generation_batch(b, spec, sim, seeds, width=P * R, compile=False, **kw)
+        order = np.argsort(-res.lifespans.float().mean(1).cpu().numpy())
+        elites = [pop[i] for i in order[:6]]
+        pop = elites + [generate_genome_mutate_simple(elites[i % 6], 0.4, 0.2, rng)
+                        for i in range(P - 6)]
+    Ls = [r[0] for r in rows]
+    print(f"      L {Ls}; new graphs {[r[2] for r in rows]}; warm-up s "
+          f"{[round(r[1], 2) for r in rows]}; generation s {[round(r[4], 2) for r in rows]}")
+    check(f"[{dev}] generation 0: warm-up time > 0 and new graphs >= 1 ({rows[0][1]:.2f} s, {rows[0][2]})",
+          rows[0][1] > 0 and rows[0][2] >= 1)
+    check(f"[{dev}] new_graphs equals dynamo's counter over the whole call (none in the loop): "
+          f"{[(r[2], r[3]) for r in rows]}", all(r[2] == r[3] for r in rows))
+    new_L = [i for i in range(1, len(Ls)) if Ls[i] not in Ls[:i]]
+    check(f"[{dev}] new graphs exactly in the generations with a new L ({new_L})",
+          len(set(Ls)) > 1 and all((r[2] > 0) == (i in new_L) for i, r in enumerate(rows) if i > 0))
+    check(f"[{dev}] the same layout again: 0 new graphs, the warm-up still ran "
+          f"({again.new_graphs}, {again.warmup_s:.3f} s)", again.new_graphs == 0 and again.warmup_s > 0)
+    check(f"[{dev}] without compile: warm-up 0.0 s, 0 new graphs ({eager.warmup_s}, {eager.new_graphs})",
+          eager.warmup_s == 0.0 and eager.new_graphs == 0)
+    check(f"[{dev}] the warm-up is part of the generation's time, never more",
+          all(0 < r[1] < r[4] for r in rows))
+    check(f"[{dev}] a compiling warm-up costs more than one without new graphs "
+          f"({rows[0][1]:.2f} s vs {again.warmup_s:.2f} s)", rows[0][1] > again.warmup_s)
+
+
 def test_cache_folder():
     print("\n[8] The production compile-cache folder (subprocesses, cpu)")
     import glob
@@ -384,6 +435,7 @@ def main():
         test_routing(dev)
         test_long_run(dev)
         test_warmup(dev)
+        test_warmup_report(dev)
     test_cache_folder()
     failed = [nm for nm, ok in _RESULTS if not ok]
     print("\n" + "=" * 70)

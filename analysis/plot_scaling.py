@@ -6,7 +6,8 @@ Reads report folders of simulate/run_selected.py that ran the nine sweeps
 configs/sweeps/scaling_<neurons|population|runs>_<scalar|cpu|cuda>.yaml, and draws, per
 dimension (scaling_<dim>.png/.pdf), three log-log panels with one line per backend:
 
-  (a) evaluation time per generation (s);
+  (a) simulation time per generation (s): the evaluation minus the compile warm-up
+      (plan Step 25; random genomes compile new graphs in later generations too);
   (b) us per worm-tick -- (a) divided by the worm-ticks simulated, which removes the
       differing run lengths (scalar and tensor results are statistically equivalent,
       not identical);
@@ -24,6 +25,8 @@ All numbers come from run_ea's backend-independent [EA timing] line. Loud, never
   - configs must be equal except the varied key, the evaluator block, simulation_name
     and the output folder -- across all points, all backends and all dimensions;
   - a config that ran ok but has no [EA timing] line raises;
+  - a tensor point without warm-up data (before Step 25) raises, unless its backend is
+    named in --include-compile: then it is plotted with the compile included, marked;
   - failed runs, runs on a busy machine (summary.csv `disturbance`, Step 22e) and tensor
     runs without the Step 18 compile fix are left out and listed (--include-disturbed
     plots busy runs, dashed);
@@ -66,7 +69,7 @@ BACKENDS = {  # file tag -> (legend name, what run_selected's `backend` column m
 # Keys that may differ between points; everything else must be identical.
 FREE_KEYS = ["experiment.simulation_name", "experiment.output_folder", "experiment.evaluator"]
 METRICS = {  # key -> (panel title, y label)
-    "evaluate": ("Evaluation time per generation", "seconds per generation (log)"),
+    "evaluate": ("Simulation time per generation (compile excluded)", "seconds per generation (log)"),
     "us": ("Time per worm-tick", "µs per worm-tick (log)"),
     "ea": ("EA part per generation", "genomes + selection + HDF5, s (log)"),
 }
@@ -105,7 +108,7 @@ def machine_of(system):
     return f"{system.get('cpu_model', '?')} ({cores} cores), {gpu}", system.get("hostname", "?")
 
 
-def load_report(report, include_disturbed=False):
+def load_report(report, include_disturbed=False, include_compile=()):
     """-> ((hardware, hostname), points, excluded): one point per usable scaling config."""
     report = Path(report)
     system = json.loads((report / "system.json").read_text())
@@ -147,11 +150,30 @@ def load_report(report, include_disturbed=False):
         if not cfg_path.is_file():
             raise ScalingError(f"{name} in {report.name}: expanded config {cfg_path} missing")
         cfg = yaml.safe_load(cfg_path.read_text())
+        # Step 25: the simulation without the compile warm-up. Scalar has no compile;
+        # a tensor point from an older report has no warm-up data: only with
+        # --include-compile <backend>, then its evaluation time (compile included).
+        if be == "scalar":
+            sim, compile_included = [float(r["evaluate_s"]) for r in g], False
+        elif all(r.get("simulate_s") for r in g):
+            sim, compile_included = [float(r["simulate_s"]) for r in g], False
+        elif be in include_compile:
+            sim, compile_included = [float(r["evaluate_s"]) for r in g], True
+        else:
+            raise ScalingError(
+                f"{name} in {report.name}: no compile warm-up data (a report from before plan "
+                f"Step 25), so its time includes compiling. Re-run it, or pass "
+                f"--include-compile {be} to plot it with the compile included")
+        ticks = [int(r["ea_run_ticks"]) for r in g]
         points.append({
             "dim": dim, "backend": be, "config": name, "report": report.name,
             "x": int(_get(cfg, DIMS[dim][0])), "cfg": cfg, "disturbed": bool(disturbed),
-            "evaluate": [float(r["evaluate_s"]) for r in g],
-            "us": [float(r["ea_us_per_run_tick"]) for r in g],
+            "evaluate": sim,
+            "us": [1e6 * t / k for t, k in zip(sim, ticks)],
+            "with_compile": [float(r["evaluate_s"]) for r in g],
+            "warmup_s": sum(float(r["warmup_s"]) for r in g if r.get("warmup_s")),
+            "new_graphs": sum(int(r["new_graphs"]) for r in g if r.get("new_graphs")),
+            "compile_included": compile_included,
             "ea": [float(r["genomes_s"]) + float(r["select_save_s"]) for r in g],
             "cpu_workers": row.get("cpu_workers", ""),
             "vram_peak_mib": row.get("vram_peak_mib", "")})
@@ -216,12 +238,17 @@ def series_of(points):
     for p in points:
         e = pooled.setdefault((p["dim"], p["backend"], p["x"]), {
             "dim": p["dim"], "backend": p["backend"], "x": p["x"], "reports": [],
-            "evaluate": [], "us": [], "ea": [], "disturbed": False,
+            "evaluate": [], "us": [], "ea": [], "disturbed": False, "compile_included": False,
+            "with_compile": [], "warmup_s": 0.0, "new_graphs": 0,
             "cpu_workers": p["cpu_workers"], "vram_peak_mib": p["vram_peak_mib"]})
         for k in METRICS:
             e[k] += p[k]
         e["reports"].append(p["report"])
         e["disturbed"] |= p["disturbed"]
+        e["compile_included"] |= p["compile_included"]
+        e["with_compile"] += p["with_compile"]
+        e["warmup_s"] += p["warmup_s"]
+        e["new_graphs"] += p["new_graphs"]
     out = {}
     for e in pooled.values():
         for k in METRICS:
@@ -256,9 +283,10 @@ def _panel(ax, series, fits, dim, metric, legend=True):
         xs = [e["x"] for e in v]
         q = [e[metric + "_q"] for e in v]
         dis = any(e["disturbed"] for e in v)
+        comp = any(e["compile_included"] for e in v)
         fit = fits.get((dim, be, metric))
         ys += [y for t in q for y in t]
-        lab = BACKENDS[be][0] + (f"  (∝ {DIMS[dim][2]}^{round(fit[0], 2) + 0.0:.2f})" if fit else "") + ("  [busy machine]" if dis else "")
+        lab = BACKENDS[be][0] + (f"  (∝ {DIMS[dim][2]}^{round(fit[0], 2) + 0.0:.2f})" if fit else "") + ("  [busy machine]" if dis else "") + ("  [compile included]" if comp else "")
         ax.errorbar(xs, [m for _a, m, _b in q], yerr=[[m - a for a, m, _b in q], [b - m for _a, m, b in q]],
                     color=SERIES[i], marker=MARKERS[i], markersize=5.5, linewidth=1.5, capsize=3,
                     elinewidth=1, linestyle="--" if dis else "-", label=lab)
@@ -284,7 +312,7 @@ def _panel(ax, series, fits, dim, metric, legend=True):
         ax.legend(fontsize=7, frameon=False, labelcolor=INK, loc="best")
 
 
-NOTE = ("Median over generations 1+ (generation 0 holds the compile), bars: interquartile range; "
+NOTE = ("Median over generations 1+, compile warm-ups subtracted (plan Step 25), bars: interquartile range; "
         "thin lines: power-law fits. Base: P = 100, R = 100, n = 11 apart from the varied key. "
         "Data: points.csv, fits.csv.")
 
@@ -334,13 +362,17 @@ def write_csvs(series, fits, machine, out):
         w.writerow(["machine", "dimension", "backend", "x", "reports", "generations", "disturbed",
                     "evaluate_s_median", "evaluate_s_q1", "evaluate_s_q3",
                     "us_per_tick_median", "us_q1", "us_q3",
-                    "ea_part_s_median", "ea_q1", "ea_q3", "cpu_workers", "vram_peak_mib"])
+                    "ea_part_s_median", "ea_q1", "ea_q3", "cpu_workers", "vram_peak_mib",
+                    "compile_included", "evaluate_with_compile_s_median", "warmup_s_total",
+                    "new_graphs_total"])
         for (dim, be), v in series.items():
             for e in v:
                 w.writerow([machine, dim, be, e["x"], " ".join(e["reports"]), len(e["evaluate"]),
                             e["disturbed"]]
                            + [f"{e[k + '_q'][i]:.4f}" for k in METRICS for i in (1, 0, 2)]
-                           + [e["cpu_workers"], e["vram_peak_mib"]])
+                           + [e["cpu_workers"], e["vram_peak_mib"], e["compile_included"],
+                              f"{float(np.median(e['with_compile'])):.4f}", f"{e['warmup_s']:.3f}",
+                              e["new_graphs"]])
     with open(out / "fits.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["machine", "dimension", "backend", "metric", "exponent_k", "prefactor",
@@ -358,12 +390,15 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="output folder for the figures and CSVs")
     ap.add_argument("--include-disturbed", action="store_true",
                     help="plot runs on a busy machine too (dashed, marked)")
+    ap.add_argument("--include-compile", action="append", default=[], choices=["cpu", "cuda"],
+                    help="plot this tensor backend's points from reports before plan Step 25 "
+                         "(no warm-up data) with the compile included (marked); repeatable")
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     machines, hosts, points = {}, set(), []
     for r in a.reports:
-        (machine, host), pts, excl = load_report(r, a.include_disturbed)
+        (machine, host), pts, excl = load_report(r, a.include_disturbed, a.include_compile)
         machines.setdefault(machine, []).append(Path(r).name)
         hosts.add(host)
         print(f"{Path(r).name}: {len(pts)} scaling configs used")
