@@ -1,0 +1,36 @@
+# ============================================================
+# Apptainer image for NHR@FAU (TinyGPU), the Dockerfile's environment without the code
+# ============================================================
+# The same base image (by digest), Python, torch and requirements as ../Dockerfile, so
+# results match the Docker testers' and the university PC's. The code is NOT copied
+# in: jobs run the clone in $WORK, so a code change needs no rebuild (only a change to
+# requirements.txt or this file does).
+#
+# Build on the woody frontend (TinyX cannot build images), from the clone's root:
+#   export APPTAINER_CACHEDIR=$(mktemp -d -p $WORK)
+#   apptainer build $WORK/byte.sif hpc/byte.def
+#   rm -rf "$APPTAINER_CACHEDIR"
+# ("Could not write info to setgroups": use /apps/sif/apptainer-wrapper.sh build ...)
+# ============================================================
+Bootstrap: docker
+From: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
+%files
+    requirements.txt /opt/requirements.txt
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev build-essential ca-certificates git
+    rm -rf /var/lib/apt/lists/*
+    python3.12 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/cu130
+    grep -v -E '^(PySide6|pynput)==' /opt/requirements.txt > /opt/requirements-hpc.txt
+    /opt/venv/bin/pip install --no-cache-dir -r /opt/requirements-hpc.txt
+    /opt/venv/bin/python -c "import torch; assert torch.__version__ == '2.13.0+cu130', torch.__version__"
+
+%environment
+    export VIRTUAL_ENV=/opt/venv
+    export PATH=/opt/venv/bin:$PATH
+    export MPLBACKEND=Agg PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUTF8=1
