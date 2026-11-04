@@ -8,7 +8,8 @@
 # comes later. analysis/plot_scaling.py draws these points on the same line as
 # scaling_population_cuda, hollow where runs were queued.
 #
-# 25,600 x 100 = 2.56 M runs per generation: ~20 min per point on an RTX 3070.
+# 25,600 x 100 = 2.56 M runs per generation: ~6 min per point on an RTX 3070 (measured);
+# 51,200 (added for the A100, whose memory holds ~5x the runs at once): ~12 min there.
 # Preset: scaling_cuda_capacity (both files, ~1-1.5 h on the 3070).
 # ============================================================
 base: ea_from_random_tensor_cuda
@@ -19,4 +20,4 @@ set:
   brain.n_neurons: 11
   experiment.n_runs: 100
 vary:
-  experiment.population_size: [3200, 6400, 12800, 25600]
+  experiment.population_size: [3200, 6400, 12800, 25600, 51200]   # 51200: added for the A100 (2026-11-04)

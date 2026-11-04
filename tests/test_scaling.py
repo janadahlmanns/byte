@@ -128,8 +128,8 @@ def test_sweeps():
               for n in names))
     # Step 26: the capacity files continue the CUDA population/runs sweeps.
     cap = {d: RS.expand_sweep(SWEEPS / f"scaling_{d}_cuda_capacity.yaml") for d in ("population", "runs")}
-    check("capacity sweeps: P and R = 3200, 6400, 12800, 25600",
-          all([_get(c, DIMS[d]) for _n, c in v] == [3200, 6400, 12800, 25600] for d, v in cap.items()))
+    check("capacity sweeps: P and R = 3200, 6400, 12800, 25600, 51200",
+          all([_get(c, DIMS[d]) for _n, c in v] == [3200, 6400, 12800, 25600, 51200] for d, v in cap.items()))
     odd = [n for v in cap.values() for n, c in v if stripped(c) != ref
            or c["experiment"]["evaluator"] != cuda_block]
     fixed_bad = [n for d, v in cap.items() for n, c in v
@@ -139,16 +139,20 @@ def test_sweeps():
     cap_names = [n for v in cap.values() for n, _c in v]
     infos.update({n: RS.describe_cfg(c, n, "x", {"cpu", "cuda"}) for v in cap.values() for n, c in v})
     check("... names and simulation names unique, also against the base sweeps",
-          len(set(cap_names + names)) == 57
-          and len({c["experiment"]["simulation_name"] for v in cap.values() for _n, c in v} | set(sims)) == 57)
+          len(set(cap_names + names)) == 59
+          and len({c["experiment"]["simulation_name"] for v in cap.values() for _n, c in v} | set(sims)) == 59)
     for preset, want_n in (("scaling_cuda", 19), ("scaling_cpu", 30), ("scaling_all", 49)):
         p = RS.load_preset(ROOT / "configs" / "presets" / f"{preset}.yaml")
         missing = [c for c in p.configs if c not in infos]
         check(f"preset {preset}: {len(p.configs)} configs, all of them sweep points ({missing[:2]})",
               len(p.configs) == want_n and not missing and len(set(p.configs)) == want_n)
     p = RS.load_preset(ROOT / "configs" / "presets" / "scaling_cuda_capacity.yaml")
-    check(f"preset scaling_cuda_capacity: the 8 capacity points ({len(p.configs)})",
+    check(f"preset scaling_cuda_capacity: the 10 capacity points ({len(p.configs)})",
           p.configs == cap_names)
+    full = RS.load_preset(ROOT / "configs" / "presets" / "scaling_cuda_full.yaml")
+    base_cuda = RS.load_preset(ROOT / "configs" / "presets" / "scaling_cuda.yaml").configs
+    check(f"preset scaling_cuda_full: scaling_cuda then the capacity points ({len(full.configs)})",
+          full.configs == base_cuda + cap_names and len(full.configs) == 29)
 
 
 # ============================================================
@@ -556,8 +560,8 @@ def test_plot(tmp):
     with open(root / "o13" / "fits.csv", newline="") as f:
         cfit = [r for r in csv.DictReader(f) if r["backend"] == "cuda" and r["dimension"] == "population"
                 and r["metric"] == "evaluate"][0]
-    check(f"capacity points join the base line: 11 points, x up to 25600 ({len(crow)}, {cfit['x_max']})",
-          rc == 0 and len(crow) == 11 and cfit["x_max"] == "25600" and cfit["points"] == "11"
+    check(f"capacity points join the base line: 12 points, x up to 51200 ({len(crow)}, {cfit['x_max']})",
+          rc == 0 and len(crow) == 12 and cfit["x_max"] == "51200" and cfit["points"] == "12"
           and abs(float(cfit["exponent_k"]) - LAWS["cuda"][1]) < 2e-3)
     check(f"queued points marked, with the width cap ({[(r['x'], r['runs_queued'], r['width_min']) for r in crow][-4:]})",
           all(r["runs_queued"] == ("True" if int(r["x"]) > 1600 else "False") for r in crow)
@@ -567,7 +571,7 @@ def test_plot(tmp):
     rc, text, err = run_plot([str(good), str(part), "--out", str(root / "o14")])
     check(f"a partial capacity run: its missing points listed, a series without any capacity "
           f"point not ({[l.strip() for l in text.splitlines() if 'MISSING' in l]})",
-          rc == 0 and "MISSING population / tensor CUDA: x = [25600]" in text
+          rc == 0 and "MISSING population / tensor CUDA: x = [25600, 51200]" in text
           and "MISSING runs" not in text)
 
     # Step 25: compile time is subtracted; old reports need --include-compile <backend>.

@@ -328,6 +328,9 @@ def _panel(ax, series, fits, dim, metric, legend=True):
         ax.set_ylim(mid / 2, mid * 2)
     plain = FuncFormatter(lambda v, _: f"{v:g}")
     if xs_all:
+        # More than 8 values (Step 26, up to 25,600): every other one, always the last.
+        if len(xs_all) > 8:
+            xs_all = sorted(set(xs_all[::2]) | {xs_all[-1]})
         ax.xaxis.set_major_locator(FixedLocator(xs_all))
         ax.xaxis.set_major_formatter(plain)
         ax.xaxis.set_minor_locator(NullLocator())

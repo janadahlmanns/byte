@@ -1,0 +1,36 @@
+# Scaling sweeps on CUDA in one queue (plan_evotorch.md, Steps 22 and 26): scaling_cuda
+# (neurons, population and runs up to 1600) followed by scaling_cuda_capacity (P and R
+# 3200-51200). One job on a cluster instead of two (user, 2026-11-04). Run with nothing
+# else on the machine. Plot the one report it writes:
+#   python -m analysis.plot_scaling <report> --out <folder>
+description: "All CUDA scaling points: scaling_cuda + scaling_cuda_capacity (29 points)"
+configs:
+  - "scaling_neurons_cuda [n_neurons=11]"
+  - "scaling_neurons_cuda [n_neurons=20]"
+  - "scaling_neurons_cuda [n_neurons=30]"
+  - "scaling_neurons_cuda [n_neurons=40]"
+  - "scaling_neurons_cuda [n_neurons=50]"
+  - "scaling_population_cuda [population_size=25]"
+  - "scaling_population_cuda [population_size=50]"
+  - "scaling_population_cuda [population_size=100]"
+  - "scaling_population_cuda [population_size=200]"
+  - "scaling_population_cuda [population_size=400]"
+  - "scaling_population_cuda [population_size=800]"
+  - "scaling_population_cuda [population_size=1600]"
+  - "scaling_runs_cuda [n_runs=25]"
+  - "scaling_runs_cuda [n_runs=50]"
+  - "scaling_runs_cuda [n_runs=100]"
+  - "scaling_runs_cuda [n_runs=200]"
+  - "scaling_runs_cuda [n_runs=400]"
+  - "scaling_runs_cuda [n_runs=800]"
+  - "scaling_runs_cuda [n_runs=1600]"
+  - "scaling_population_cuda_capacity [population_size=3200]"
+  - "scaling_population_cuda_capacity [population_size=6400]"
+  - "scaling_population_cuda_capacity [population_size=12800]"
+  - "scaling_population_cuda_capacity [population_size=25600]"
+  - "scaling_population_cuda_capacity [population_size=51200]"
+  - "scaling_runs_cuda_capacity [n_runs=3200]"
+  - "scaling_runs_cuda_capacity [n_runs=6400]"
+  - "scaling_runs_cuda_capacity [n_runs=12800]"
+  - "scaling_runs_cuda_capacity [n_runs=25600]"
+  - "scaling_runs_cuda_capacity [n_runs=51200]"
