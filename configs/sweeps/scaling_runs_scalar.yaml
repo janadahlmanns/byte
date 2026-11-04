@@ -1,0 +1,24 @@
+# ============================================================
+# SCALING SWEEP: runs, scalar CPU (mvb/, worker processes) (plan_evotorch.md, Step 22)
+# ============================================================
+# One of nine files scaling_<neurons|population|runs>_<scalar|cpu|cuda>.yaml. All nine
+# share the base, the generations and P = 100, R = 100, n = 11 except the varied key;
+# only the backend differs between the three files of one dimension, so their lines in
+# the figure are directly comparable. tests/test_scaling.py checks that.
+#
+# 4 generations: gen 0 holds the compile (tensor), gens 1-3 are timed.
+# Run all nine on one machine with nothing else running (run_selected checks before
+# each config and watches during it). Presets: scaling_cpu, scaling_cuda, scaling_all.
+#
+# Plot with: python -m analysis.plot_scaling <report folder(s)> --out <folder>
+# ============================================================
+base: ea_from_random_tensor_cuda
+set:
+  experiment.output_folder: "data/scaling/"
+  experiment.simulation_name: "scaling_runs_scalar"
+  experiment.evolutionary_algorithm.num_generations: 4
+  brain.n_neurons: 11
+  experiment.population_size: 100
+  experiment.evaluator: {backend: scalar}
+vary:
+  experiment.n_runs: [25, 50, 100, 200, 400]
