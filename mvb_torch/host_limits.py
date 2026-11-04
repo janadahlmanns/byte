@@ -16,6 +16,10 @@ applies too, so the smallest limit on the path and its parents counts. Inside a
 container the path may not exist under <root>; then its parents up to <root> are tried.
 
 Deliberately torch-free: simulate/run_selected.py loads this file directly.
+
+Check the limit of a job by hand (as a script, not with -m: the package's __init__
+imports this module through generation.py, so -m would load it twice and warn):
+    python mvb_torch/host_limits.py
 """
 
 import os

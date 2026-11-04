@@ -130,6 +130,13 @@ def test_workers(tmp):
 
 # ============================================================
 
+def _atomic_write(path, text):
+    """Write then rename: a reader never sees a half-written fake /proc file."""
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def write_proc(root, cores, procs):
     """A fake /proc: cores = [(busy, idle)] per core; procs = {pid: (ppid, name, jiffies,
     Cpus_allowed_list or None)}."""
@@ -138,17 +145,17 @@ def write_proc(root, cores, procs):
     tb, ti = sum(b for b, _i in cores), sum(i for _b, i in cores)
     lines = [f"cpu  {tb} 0 0 {ti} 0 0 0 0 0 0"] + [f"cpu{c} {b} 0 0 {i} 0 0 0 0 0 0"
                                                      for c, (b, i) in enumerate(cores)]
-    (root / "stat").write_text("\n".join(lines) + "\nintr 1\n")
+    _atomic_write(root / "stat", "\n".join(lines) + "\nintr 1\n")
     for pid, (ppid, name, j, allowed) in procs.items():
         d = root / str(pid)
         d.mkdir(exist_ok=True)
-        (d / "stat").write_text(f"{pid} ({name}) S {ppid} " + " ".join(["0"] * 9)
+        _atomic_write(d / "stat", f"{pid} ({name}) S {ppid} " + " ".join(["0"] * 9)
                                 + f" {j} 0 " + " ".join(["0"] * 30) + "\n")
         st = d / "status"
         if allowed is None:
             st.unlink(missing_ok=True)
         else:
-            st.write_text(f"Name:\t{name}\nCpus_allowed_list:\t{allowed}\n")
+            _atomic_write(st, f"Name:\t{name}\nCpus_allowed_list:\t{allowed}\n")
 
 
 def test_machine_load(tmp):
@@ -214,6 +221,21 @@ def test_machine_load(tmp):
             time.sleep(0.02)
     check(f"unrestricted (cpus=None): the other job counts, as in Step 22 ({s2.foreign_top()!r})",
           "lmp" in s2.foreign_top())
+    class Broken(ML.LoadSampler):
+        def _sample(self):
+            raise ValueError("substring not found")
+    with Broken(interval=0.05, proc=proc, cpus={2, 3}) as b:
+        time.sleep(0.1)
+    check(f"a failing sampler is reported, never a clean run ({b.disturbance()}; {b.foreign_cores()})",
+          (b.disturbance() or "").startswith("unknown: the load sampler failed")
+          and b.foreign_cores().startswith(ML.UNAVAILABLE) and not b._thread.is_alive())
+    write_proc(proc, [(0, 1000)] * 4, {me: (1, "python", 0, "0-3"), 7100: (1, "torn", 0, "0-3")})
+    (proc / "7100" / "stat").write_text("")                 # a torn read: empty
+    (proc / "7101").mkdir(exist_ok=True)
+    (proc / "7101" / "stat").write_text("7101 (half")       # cut inside the name
+    ps = ML.processes(proc)
+    check(f"unparsable /proc entries are skipped, the rest read ({sorted(ps)})",
+          me in ps and 7100 not in ps and 7101 not in ps)
     check(f"the default `cpus` is this process's affinity ({ML.resolve_cpus(ML.JOB_CPUS)})",
           ML.resolve_cpus(ML.JOB_CPUS) == ML.allowed_cpus())
 
@@ -289,8 +311,10 @@ def test_system():
     env = {"SLURM_JOB_ID": "1863021", "SLURM_JOB_PARTITION": "rtx3080", "SLURM_JOB_NODELIST": "tg080",
            "SLURM_CPUS_ON_NODE": "16", "SLURM_MEM_PER_GPU": "47104", "CUDA_VISIBLE_DEVICES": "0",
            "SLURM_CLUSTER_NAME": "tinygpu"}
-    saved = {k: os.environ.get(k) for k in env}
+    saved = {k: os.environ.get(k) for k in set(env) | set(RS.SLURM_VARS)}
     try:
+        for k in RS.SLURM_VARS:                       # also when this test runs in a real job
+            os.environ.pop(k, None)
         os.environ.update(env)
         info = RS.slurm_info()
     finally:
@@ -300,7 +324,12 @@ def test_system():
             else:
                 os.environ[k] = v
     check(f"inside a Slurm job: the allocation ({info})", info == env)
-    check("outside: 'not a Slurm job'", "SLURM_JOB_ID" in os.environ or RS.slurm_info() == "not a Slurm job")
+    saved_id = os.environ.pop("SLURM_JOB_ID", None)
+    try:
+        check("outside a Slurm job: 'not a Slurm job'", RS.slurm_info() == "not a Slurm job")
+    finally:
+        if saved_id is not None:
+            os.environ["SLURM_JOB_ID"] = saved_id
     ca = RS.cpus_allowed()
     check(f"cpus_allowed: count and list, or explicit unavailable ({ca})",
           (isinstance(ca, dict) and ca["count"] == len(ML.allowed_cpus())

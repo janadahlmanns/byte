@@ -257,19 +257,26 @@ def test_parsing(tmp):
 
 # ============================================================
 
+def _atomic_write(path, text):
+    """Write then rename: a reader never sees a half-written fake /proc file."""
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def fake_proc(root, cpu, procs):
     """Write a /proc look-alike: `cpu` = (busy, idle) jiffies, procs = {pid: (ppid, name, jiffies)}."""
     root = Path(root)
     root.mkdir(exist_ok=True)
     busy, idle = cpu
-    (root / "stat").write_text(f"cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 1 2 3 4\n")
+    _atomic_write(root / "stat", f"cpu  {busy} 0 0 {idle} 0 0 0 0 0 0\ncpu0 1 2 3 4\n")
     for d in root.iterdir():
         if d.name.isdigit() and int(d.name) not in procs:
             shutil.rmtree(d)
     for pid, (ppid, name, j) in procs.items():
         (root / str(pid)).mkdir(exist_ok=True)
         rest = ["S", str(ppid)] + ["0"] * 9 + [str(j), "0"] + ["0"] * 30
-        (root / str(pid) / "stat").write_text(f"{pid} ({name}) " + " ".join(rest) + "\n")
+        _atomic_write(root / str(pid) / "stat", f"{pid} ({name}) " + " ".join(rest) + "\n")
 
 
 def test_machine_load(tmp):

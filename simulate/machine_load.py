@@ -120,12 +120,12 @@ def processes(proc=PROC):
             continue
         try:
             raw = (d / "stat").read_text()
-        except OSError:
-            continue                                      # ended meanwhile
-        # The name is in parentheses and may contain spaces: split after the last ')'.
-        name = raw[raw.index("(") + 1:raw.rindex(")")]
-        rest = raw[raw.rindex(")") + 2:].split()
-        ppid, utime, stime = int(rest[1]), int(rest[11]), int(rest[12])
+            # The name is in parentheses and may contain spaces: split after the last ')'.
+            name = raw[raw.index("(") + 1:raw.rindex(")")]
+            rest = raw[raw.rindex(")") + 2:].split()
+            ppid, utime, stime = int(rest[1]), int(rest[11]), int(rest[12])
+        except (OSError, ValueError, IndexError):
+            continue                                      # ended meanwhile, or unreadable
         allowed = None
         try:
             for line in (d / "status").read_text().splitlines():
@@ -272,6 +272,7 @@ class LoadSampler:
         self.gpu_visible = None               # nvidia-smi answered at least once
         self.cpu_visible = (proc / "stat").is_file()
         self.elapsed = 0.0
+        self.error = None                     # the sampler thread failed: nothing is known
         self._last = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -306,12 +307,15 @@ class LoadSampler:
 
     def _run(self):
         t0 = time.perf_counter()
-        while True:
+        try:
+            while True:
+                self._sample()
+                self.elapsed = time.perf_counter() - t0
+                if self._stop.wait(self.interval):
+                    break
             self._sample()
-            self.elapsed = time.perf_counter() - t0
-            if self._stop.wait(self.interval):
-                break
-        self._sample()
+        except Exception as e:  # noqa: BLE001 -- reported, never mistaken for a clean run
+            self.error = f"{type(e).__name__}: {e}"
         self.elapsed = time.perf_counter() - t0
 
     def __enter__(self):
@@ -325,17 +329,23 @@ class LoadSampler:
 
     def foreign_cores(self):
         """Mean foreign CPU use over the run, in cores, as text; or 'unavailable: ...'."""
+        if self.error:
+            return UNAVAILABLE + f"load sampler failed ({self.error})"
         if not self.cpu_visible:
             return UNAVAILABLE + "no /proc (not Linux)"
         return f"{self.foreign_cpu_s / max(self.elapsed, 1e-9):.2f}"
 
     def foreign_top(self, k=3):
+        if self.error:
+            return UNAVAILABLE + f"load sampler failed ({self.error})"
         if not self.cpu_visible:
             return UNAVAILABLE + "no /proc (not Linux)"
         top = sorted(self.by_name.items(), key=lambda kv: -kv[1])[:k]
         return "; ".join(f"{n} {s:.0f} cpu-s" for n, s in top if s >= 1.0)
 
     def foreign_gpu_text(self):
+        if self.error:
+            return UNAVAILABLE + f"load sampler failed ({self.error})"
         if not self.gpu_visible:
             return UNAVAILABLE + "nvidia-smi not available"
         if not self.cpu_visible:
@@ -343,7 +353,9 @@ class LoadSampler:
         return "; ".join(f"{p} {v}" for p, v in sorted(self.foreign_gpu.items()))
 
     def disturbance(self):
-        """None, or why this run's timing is not clean."""
+        """None, or why this run's timing is not clean (or not known to be clean)."""
+        if self.error:
+            return f"unknown: the load sampler failed ({self.error})"
         reasons = []
         if self.cpu_visible and self.foreign_cpu_s / max(self.elapsed, 1e-9) > FOREIGN_CORES_MAX:
             reasons.append(f"other processes used {self.foreign_cores()} cores on average "
