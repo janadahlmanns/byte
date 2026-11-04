@@ -78,6 +78,15 @@ def get_connection_weight(brain_module, src_neuron_id: int, tgt_neuron_id: int) 
     return 0.0
 
 
+def allowed_cpu_count():
+    """CPUs this process may run on: fewer than os.cpu_count() when something restricts
+    it (a Slurm job, taskset, docker --cpuset-cpus), otherwise the same. macOS and
+    Windows have no sched_getaffinity: os.cpu_count() there."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count()
+
+
 def get_num_workers(viz_enabled, viz_brain_enabled):
     """Determine number of worker processes and handle viz/serial execution.
     
@@ -101,13 +110,14 @@ def get_num_workers(viz_enabled, viz_brain_enabled):
     
     # Determine parallel worker count
     try:
-        available_cores = os.cpu_count()
+        available_cores = allowed_cpu_count()
         if available_cores is None or available_cores <= 2:
             print("[INFO] Insufficient CPU cores. Running serially.")
             return None
         
         num_workers = max(1, available_cores - 2)
-        print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} total).")
+        print(f"[INFO] Parallel execution on {num_workers} cores ({available_cores} allowed, "
+              f"{os.cpu_count()} on this machine).")
         return num_workers
     except Exception:
         print("[INFO] Insufficient CPU cores. Running serially.")

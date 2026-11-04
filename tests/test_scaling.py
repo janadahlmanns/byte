@@ -283,7 +283,7 @@ def test_machine_load(tmp):
                                   7000: (1, "other user's job", 0)})
     ps = ML.processes(proc)
     check(f"process names with spaces and ')' parsed ({ps.get(5002)})",
-          ps[5002] == (5001, 0.0, "inductor (compile) )x") and ps[me][1] == 50 / tick)
+          ps[5002][:3] == (5001, 0.0, "inductor (compile) )x") and ps[me][1] == 50 / tick)
     check(f"own tree: this process and its descendants ({sorted(ML.own_tree(ps))})",
           ML.own_tree(ps) == {me, 5001, 5002})
     check("cpu totals: busy, total", ML.cpu_totals(proc) == (100, 1000))
@@ -294,9 +294,9 @@ def test_machine_load(tmp):
         seq = iter(cpu_seq)
         ML.gpu_load = lambda: [(util, mem)]
         ML.gpu_processes = lambda: gp
-        ML.cpu_totals = lambda proc=None: next(seq)
+        ML.cpu_totals = lambda proc=None, cpus=None: next(seq)
         try:
-            return ML.idle_check(seconds=0.05, interval=0.01, proc=proc)
+            return ML.idle_check(seconds=0.05, interval=0.01, proc=proc, cpus=None)
         finally:
             ML.gpu_load, ML.gpu_processes, ML.cpu_totals = saved
 
@@ -317,7 +317,7 @@ def test_machine_load(tmp):
     gp_saved = ML.gpu_processes
     ML.gpu_processes = lambda: [(5001, "python worker", "900 MiB"), (7000, "other", "300 MiB")]
     try:
-        with ML.LoadSampler(interval=0.1, proc=proc) as s:
+        with ML.LoadSampler(interval=0.1, proc=proc, cpus=None) as s:
             t0 = time.perf_counter()
             while time.perf_counter() - t0 < 1.0:
                 dt = time.perf_counter() - t0
@@ -335,11 +335,11 @@ def test_machine_load(tmp):
           "7000" in s.foreign_gpu_text() and "5001" not in s.foreign_gpu_text())
     check(f"disturbance names both ({s.disturbance()})",
           "cores" in (s.disturbance() or "") and "GPU" in (s.disturbance() or ""))
-    with ML.LoadSampler(interval=0.05, proc=proc) as quiet:
+    with ML.LoadSampler(interval=0.05, proc=proc, cpus=None) as quiet:
         time.sleep(0.3)
     check(f"nothing foreign: no disturbance ({quiet.foreign_cores()}, {quiet.disturbance()})",
           quiet.disturbance() is None)
-    with ML.LoadSampler(interval=0.05, proc=Path(tmp) / "no_proc") as mac:
+    with ML.LoadSampler(interval=0.05, proc=Path(tmp) / "no_proc", cpus=None) as mac:
         time.sleep(0.1)
     check(f"no /proc: explicit unavailable ({mac.foreign_cores()})",
           mac.foreign_cores().startswith(ML.UNAVAILABLE) and mac.disturbance() is None)
@@ -352,11 +352,11 @@ LAWS = {  # backend -> (a, k) of evaluate seconds = a * x^k, per dimension the s
 
 
 def synth_report(root, name, points, machine="uni", busy=(), drop_timing=(), backend_lie=(),
-                 tamper=None):
+                 tamper=None, gpu="NVIDIA GeForce RTX 3070"):
     """A run_selected-like report folder with exact power-law timings."""
     rdir = Path(root) / name
     (rdir / "configs").mkdir(parents=True)
-    gpus = [{"name": "NVIDIA GeForce RTX 3070"}]
+    gpus = [{"name": gpu}]
     (rdir / "system.json").write_text(json.dumps({"hostname": machine, "cpu_model": "i7",
                                                   "gpus": gpus}))
     summary, gens = [], []
@@ -436,10 +436,15 @@ def test_plot(tmp):
     check("nothing reported missing", "MISSING" not in text)
 
     # Loud checks.
-    other = synth_report(root, "other_machine", flat[:3], machine="laptop")
+    other = synth_report(root, "other_gpu", flat[:3], gpu="NVIDIA GeForce RTX 3080")
     rc, text, err = run_plot([str(good), str(other), "--out", str(root / "o2")])
-    check(f"two machines: refused ({str(err)[:60]})", isinstance(err, PS.ScalingError)
-          and "more than one machine" in str(err))
+    check(f"another GPU: refused ({str(err)[:60]})", isinstance(err, PS.ScalingError)
+          and "more than one kind of machine" in str(err))
+    twin = synth_report(root, "twin_node", flat, machine="tg081")
+    rc, text, err = run_plot([str(good), str(twin), "--out", str(root / "o2b")])
+    title_ok = (root / "o2b" / "points.csv").is_file() and "tg081" in (root / "o2b" / "points.csv").read_text()
+    check(f"the same hardware under another hostname: merged, both hosts named ({err})",
+          rc == 0 and title_ok)
     name = flat[7][0]
     bad = synth_report(root, "tampered", flat, tamper=(name, lambda c: c["worm"].update(speed=2)))
     rc, text, err = run_plot([str(bad), "--out", str(root / "o3")])

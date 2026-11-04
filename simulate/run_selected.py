@@ -531,13 +531,66 @@ def ram_gib():
     return v if v.startswith(UNAVAILABLE) else round(int(v.split()[0]) / 2**20, 1)
 
 
+def _host_limits_module():
+    """mvb_torch/host_limits.py, loaded from its file (no torch in this process)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_byte_host_limits", ROOT / "mvb_torch" / "host_limits.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def memory_limit():
-    """A container's memory limit (cgroup v2), which can be below the machine's RAM."""
-    p = Path("/sys/fs/cgroup/memory.max")
-    if not p.exists():
-        return UNAVAILABLE + "no cgroup v2 memory.max"
-    v = p.read_text().strip()
-    return "none" if v == "max" else round(int(v) / 2**30, 1)
+    """The memory cgroup limit of a container or Slurm job (v1 or v2, plan Step 23d), in
+    GiB; the same function the tensor-CPU width rule uses."""
+    hl = _host_limits_module()
+    if not hl.PROC_SELF_CGROUP.exists():
+        return UNAVAILABLE + "no /proc/self/cgroup (not Linux)"
+    lim = hl.cgroup_memory_limit()
+    return "none" if lim is None else round(lim / 2**30, 1)
+
+
+SLURM_VARS = ["SLURM_CLUSTER_NAME", "SLURM_JOB_ID", "SLURM_JOB_PARTITION", "SLURM_JOB_NODELIST",
+              "SLURM_CPUS_ON_NODE", "SLURM_JOB_CPUS_PER_NODE", "SLURM_CPUS_PER_TASK",
+              "SLURM_MEM_PER_GPU", "SLURM_MEM_PER_CPU", "SLURM_MEM_PER_NODE", "SLURM_JOB_GPUS",
+              "SLURM_GPUS_ON_NODE", "CUDA_VISIBLE_DEVICES"]
+
+
+def slurm_info():
+    """The job's allocation when run inside a Slurm job (plan Step 23e)."""
+    if "SLURM_JOB_ID" not in os.environ:
+        return "not a Slurm job"
+    return {k: os.environ[k] for k in SLURM_VARS if k in os.environ}
+
+
+def cpus_allowed():
+    cpus = ML.allowed_cpus()
+    if cpus is None:
+        return UNAVAILABLE + "no sched_getaffinity on this OS (all cores)"
+    return {"count": len(cpus), "list": _cpu_ranges(cpus)}
+
+
+def _cpu_ranges(cpus):
+    """{0, 1, 2, 3, 8} -> '0-3,8'"""
+    out, run = [], []
+    for c in sorted(cpus):
+        if run and c == run[-1] + 1:
+            run.append(c)
+        else:
+            if run:
+                out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else str(run[0]))
+            run = [c]
+    if run:
+        out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else str(run[0]))
+    return ",".join(out)
+
+
+def container():
+    if os.environ.get("APPTAINER_CONTAINER") or os.environ.get("SINGULARITY_CONTAINER"):
+        return "apptainer: " + (os.environ.get("APPTAINER_CONTAINER")
+                                or os.environ.get("SINGULARITY_CONTAINER"))
+    return "docker" if Path("/.dockerenv").exists() else "none"
 
 
 def code_version():
@@ -578,6 +631,9 @@ def system_info(probe):
         "os": platform.platform(),
         "cpu_model": cpu_model(),
         "cpu_count": os.cpu_count(),
+        "cpus_allowed": cpus_allowed(),
+        "container": container(),
+        "slurm": slurm_info(),
         "ram_gib": ram_gib(),
         "memory_limit_gib": memory_limit(),
         "python": probe["python"],
@@ -909,7 +965,7 @@ SUMMARY_FIELDS = ["order", "config", "status", "exit_code", "wall_s", "gen0_s",
                   "evaluate_gens_1plus_median_s", "select_save_gens_1plus_median_s",
                   "ea_us_per_run_tick_gens_1plus",
                   # plan Step 22e: was the machine free?
-                  "idle_check", "idle_cpu_busy_pct", "idle_cpu_top", "idle_gpu_util_max_pct",
+                  "idle_check", "idle_cpu_busy_pct", "idle_cpus_judged", "idle_cpu_top", "idle_gpu_util_max_pct",
                   "idle_gpu_mem_used_max_mib", "idle_gpu_processes", "gpu_util_mean_max_pct",
                   "foreign_cpu_cores_mean", "foreign_cpu_top", "foreign_gpu_processes",
                   "disturbance"]
@@ -920,7 +976,7 @@ def _step22_cols(r):
     i = r.idle or {}
     return [r.backend, r.cpu_workers, len(r.ea_times), s["genomes"], s["evaluate"],
             s["select_save"], s["us"], i.get("verdict", ""), i.get("cpu_busy_pct", ""),
-            i.get("cpu_top", ""), i.get("gpu_util_max_pct", ""), i.get("gpu_mem_used_max_mib", ""),
+            i.get("cpus_judged", ""), i.get("cpu_top", ""), i.get("gpu_util_max_pct", ""), i.get("gpu_mem_used_max_mib", ""),
             i.get("gpu_processes", ""), r.gpu_util, r.foreign_cores, r.foreign_top,
             r.foreign_gpu, r.disturbance]
 
@@ -987,7 +1043,8 @@ def _slug(s):
 
 def idle_text(idle):
     """One line for the terminal; the parts this machine cannot measure are left out."""
-    parts = [(f"CPU {idle['cpu_busy_pct']}% busy", idle["cpu_busy_pct"]),
+    parts = [(f"CPU {idle['cpu_busy_pct']}% busy (over {idle.get('cpus_judged', 'all')} cores)",
+              idle["cpu_busy_pct"]),
              (f"GPU load up to {idle['gpu_util_max_pct']}%", idle["gpu_util_max_pct"]),
              (f"GPU memory {idle['gpu_mem_used_max_mib']} MiB", idle["gpu_mem_used_max_mib"]),
              (f"GPU processes: {idle['gpu_processes'] or 'none'}", idle["gpu_processes"])]

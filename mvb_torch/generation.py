@@ -67,6 +67,7 @@ from . import philox
 from .brain import BrainTensorState
 from .decision import OutputSpec, decide_batch
 from .genome_codec import GenomeBatch
+from .host_limits import cgroup_memory_limit
 from .world import (AVAIL_INF, ClockWorldState, active_key_mask, avail_from_seed,
                     sense_batch)
 from .worm import NO_ACTION, WormState, act_batch, metabolise
@@ -512,14 +513,18 @@ def physical_ram() -> int:
 
 
 def device_memory(device) -> int:
-    """Total memory the device offers, in bytes (not the currently free amount)."""
+    """Total memory the device offers, in bytes (not the currently free amount).
+
+    CPU: the physical RAM, or the process's cgroup memory limit if that is smaller (a
+    Slurm job on a shared node, a container with --memory; plan Step 23d)."""
     device = torch.device(device)
     if device.type == "mps":
         return int(torch.mps.recommended_max_memory())
     if device.type == "cuda":
         return int(torch.cuda.get_device_properties(device).total_memory)
     if device.type == "cpu":
-        return physical_ram()
+        limit = cgroup_memory_limit()
+        return physical_ram() if limit is None else min(physical_ram(), limit)
     raise ValueError(f"no memory query for device type {device.type!r}")
 
 

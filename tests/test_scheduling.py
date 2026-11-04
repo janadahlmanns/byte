@@ -253,8 +253,10 @@ def test_width():
     check(f"dedicated GPU memory (CUDA) gets the larger share: {w_cuda} slots from 8 GB "
           f"vs {w_cap} on shared memory (0.8 vs 0.5)",
           w_cuda == (int(0.8 * 8 * GB) - G.BASE_BYTES) // slot and w_cuda > w_cap)
+    from mvb_torch.host_limits import cgroup_memory_limit
     from tests.devices import physical_ram
-    expected_total = {"cpu": physical_ram()}
+    lim = cgroup_memory_limit()              # a Slurm job or container limit (Step 23d)
+    expected_total = {"cpu": physical_ram() if lim is None else min(physical_ram(), lim)}
     if torch.backends.mps.is_available():
         expected_total["mps"] = int(torch.mps.recommended_max_memory())
     if torch.cuda.is_available():

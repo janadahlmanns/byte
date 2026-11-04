@@ -18,7 +18,9 @@ holds the compile), the fitted power law t ~ x^k in the legend. scaling_all.png/
 the 3 x 3 grid of all of it; points.csv and fits.csv hold every number.
 
 All numbers come from run_ea's backend-independent [EA timing] line. Loud, never silent:
-  - reports from different machines raise (one machine is the point of the comparison);
+  - reports from different hardware raise (one machine is the point of the comparison).
+    Hardware = CPU model, the cores the run was allowed, GPU model: two identical
+    cluster nodes (TinyGPU tg080, tg081) are the same machine (plan Step 23e);
   - configs must be equal except the varied key, the evaluator block, simulation_name
     and the output folder -- across all points, all backends and all dimensions;
   - a config that ran ok but has no [EA timing] line raises;
@@ -94,13 +96,17 @@ def _drop(cfg, dotted):
 # ============================================================
 
 def machine_of(system):
+    """(hardware key, hostname). Reports before Step 23 have no cpus_allowed: the
+    machine's CPU count stands in (they ran unrestricted)."""
     gpus = system.get("gpus")
     gpu = gpus[0]["name"] if isinstance(gpus, list) and gpus else "no GPU"
-    return f"{system.get('hostname', '?')}: {system.get('cpu_model', '?')}, {gpu}"
+    allowed = system.get("cpus_allowed")
+    cores = allowed["count"] if isinstance(allowed, dict) else system.get("cpu_count", "?")
+    return f"{system.get('cpu_model', '?')} ({cores} cores), {gpu}", system.get("hostname", "?")
 
 
 def load_report(report, include_disturbed=False):
-    """-> (machine, points, excluded): one point per usable scaling config."""
+    """-> ((hardware, hostname), points, excluded): one point per usable scaling config."""
     report = Path(report)
     system = json.loads((report / "system.json").read_text())
     with open(report / "summary.csv", newline="") as f:
@@ -355,22 +361,23 @@ def main(argv=None):
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    machines, points = {}, []
+    machines, hosts, points = {}, set(), []
     for r in a.reports:
-        machine, pts, excl = load_report(r, a.include_disturbed)
+        (machine, host), pts, excl = load_report(r, a.include_disturbed)
         machines.setdefault(machine, []).append(Path(r).name)
+        hosts.add(host)
         print(f"{Path(r).name}: {len(pts)} scaling configs used")
         for name, why in excl:
             print(f"  EXCLUDED {name}: {why}")
         points += pts
     if len(machines) > 1:
-        raise ScalingError("reports from more than one machine; the comparison is only "
+        raise ScalingError("reports from more than one kind of machine; the comparison is only "
                            "meaningful on one. Plot each machine on its own:\n  "
                            + "\n  ".join(f"{m}: {', '.join(rs)}" for m, rs in machines.items()))
     if not points:
         raise SystemExit("nothing to plot: no usable scaling config in these reports")
     check_consistent(points)
-    machine = next(iter(machines))
+    machine = f"{next(iter(machines))} — {', '.join(sorted(hosts))}"
     series = series_of(points)
     for key, xs in expected_points().items():
         have = {e["x"] for e in series.get(key, [])}
