@@ -2,6 +2,7 @@
 # Usage: python -m simulate.run_batch --config configs/experiments/neurons_random_wiring.yaml
 
 import sys
+import time
 import argparse
 import importlib
 from pathlib import Path
@@ -410,6 +411,20 @@ def initialize_hdf5_file(experiment_folder, simulation_name, cfg, num_generation
     return str(hdf5_path)
 
 
+def ea_timing_line(generation, genomes_s, evaluate_s, lifespans, select_save_s):
+    """One line per generation, the same for every backend (plan Step 22a); read by
+    simulate/run_selected.py.
+
+    genomes: creating this generation's genomes (gen 0: the initial population, then the
+    mutation); evaluate: the evaluate_generation call; run-ticks: the sum of all P x R
+    lifespans (worm-ticks simulated, as the tensor adapter counts them); select+save:
+    elite selection and the HDF5 writes."""
+    run_ticks = int(sum(int(np.asarray(v["lifespan_vector"]).sum()) for v in lifespans.values()))
+    return (f"[EA timing] gen {generation}: genomes {genomes_s:.3f} s, evaluate {evaluate_s:.3f} s, "
+            f"run-ticks {run_ticks}, {1e6 * evaluate_s / max(run_ticks, 1):.2f} us/run-tick, "
+            f"select+save {select_save_s:.3f} s")
+
+
 def print_results(hdf5_path, num_generations, elite_size):
     """Print evolutionary algorithm completion summary."""
     print("\n" + "="*80)
@@ -679,25 +694,30 @@ def main():
     # From gen 1 onward the elite is re-evaluated together with the offspring.
 
     stats = []  # Collect generation statistics as tuples for direct array creation
+    t_genomes = time.perf_counter()
     genomes = []
     for variant_id in range(POPULATION_SIZE):
         genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
         genomes.append(genome)
+    genomes_s = time.perf_counter() - t_genomes
     
     # ============================================================
     # 5. EVALUATE INITIAL POPULATION (GENERATION 0)
     # ============================================================
 
+    t_eval = time.perf_counter()
     lifespans, run_seeds_gen0 = evaluate_generation(genomes, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
                                     randomness_cfg=RANDOMNESS_CFG)
+    evaluate_s = time.perf_counter() - t_eval
 
 
     # ============================================================
     # 6. SELECTION ON INITIAL POPULATION (GENERATION 0)
     # ============================================================
     
+    t_select = time.perf_counter()
     elite_idx, gen_stats = pick_elite_deterministic(lifespans, ELITE_SELECTION_METRIC, ELITE_SIZE)
     
     # Append directly: (generation_idx,) + stats_tuple
@@ -714,6 +734,7 @@ def main():
     elite_seeds_decision = [lifespans[i]['seeds_decision_all_runs'] for i in elite_idx]
     save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_seeds_noise, elite_seeds_decision)
     write_generation_stats_to_hdf5(hdf5_path, 0, gen_stats, run_seeds_gen0)
+    print(ea_timing_line(0, genomes_s, evaluate_s, lifespans, time.perf_counter() - t_select))
 
     # ============================================================
     # 8. LOOP OVER GENERATIONS
@@ -724,6 +745,7 @@ def main():
         # ============================================================
         # 9. GENERATE OFFSPRING VIA MUTATION (POPULATION_SIZE - ELITE_SIZE offspring)
         # ============================================================
+        t_genomes = time.perf_counter()
         genomes_new = []
         for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
             for offspring_num in range(num_offspring):
@@ -736,16 +758,20 @@ def main():
         # the fitness comparison is on equal footing every generation.
         # ============================================================
         genomes_combined = elite_genomes + genomes_new  # ELITE_SIZE + n_offspring = POPULATION_SIZE
+        genomes_s = time.perf_counter() - t_genomes
 
+        t_eval = time.perf_counter()
         lifespans_combined, run_seeds_gen = evaluate_generation(genomes_combined, cfg, EXPERIMENT_FOLDER, SIMULATION_NAME, ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
                                     ENABLE_HEAT_MAP_TRACKING, VIZ_ENABLED, VIZ_BRAIN_ENABLED, VIZ_FPS, VIZ_BRAIN_FPS, POPULATION_SIZE,
                                     rng_noise, rng_decision, rng_world, brain_module_name, MAX_TICKS, N_RUNS, grid_width, grid_height, start_pos, worm_speed, worm_energy_capacity, worm_metabolic_rate, worm_movement_cost, sensor_cfg, initial_feeding_cfg, brain_cfg, switch_phases=switch_phases,
                                     randomness_cfg=RANDOMNESS_CFG)
+        evaluate_s = time.perf_counter() - t_eval
 
         # ============================================================
         # 11. PICK ELITE FROM COMBINED SET (all evaluated on same run_seeds)
         # ============================================================
 
+        t_select = time.perf_counter()
         elite_idx, gen_stats = pick_elite_deterministic(lifespans_combined, ELITE_SELECTION_METRIC, ELITE_SIZE)
         
         # Append directly: (generation_idx,) + stats_tuple
@@ -765,6 +791,8 @@ def main():
         # ============================================================
         save_elite_to_hdf5(hdf5_path, elite_genomes, elite_lifespan_vectors, elite_seeds_noise, elite_seeds_decision)
         write_generation_stats_to_hdf5(hdf5_path, generation, gen_stats, run_seeds_gen)
+        print(ea_timing_line(generation, genomes_s, evaluate_s, lifespans_combined,
+                             time.perf_counter() - t_select))
         
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gen {generation + 1}/{NUM_GENERATIONS}] Saved. Max: {gen_stats[3]:.2f}, Median: {gen_stats[1]:.2f}, Mean: {gen_stats[0]:.2f}, Std: {gen_stats[4]:.2f}")
 

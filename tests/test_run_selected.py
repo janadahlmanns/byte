@@ -165,9 +165,20 @@ def test_queue(tmp):
           and rows[1]["gens_timed"] == "0" and float(rows[1]["wall_s"]) > 0)
     with open(rdir / "generations.csv", newline="") as f:
         g = list(csv.DictReader(f))
-    check("generations.csv has the tensor config's 2 generations",
-          [(r["config"], r["generation"]) for r in g] == [(str(paths[0]), "0"),
-                                                         (str(paths[0]), "1")])
+    check("generations.csv: 2 generations of each config, the tensor columns only for "
+          "the tensor config, the [EA timing] columns for both (Step 22)",
+          [(r["config"], r["generation"]) for r in g]
+          == [(str(paths[0]), "0"), (str(paths[0]), "1"), (str(paths[1]), "0"), (str(paths[1]), "1")]
+          and all(r["seconds"] for r in g[:2]) and not any(r["seconds"] for r in g[2:])
+          and all(r["evaluate_s"] and int(r["ea_run_ticks"]) > 0 for r in g))
+    check(f"backend and CPU parallelism recorded ({[(r['backend'], r['cpu_workers']) for r in rows]})",
+          rows[0]["backend"] == "tensor cpu" and rows[0]["cpu_workers"].endswith("torch threads")
+          and rows[1]["backend"] == "scalar" and rows[1]["cpu_workers"])
+    check(f"the tensor run's [EA timing] run-ticks equal the adapter's "
+          f"({[(r['run_ticks'], r['ea_run_ticks']) for r in g[:2]]})",
+          all(r["run_ticks"] == r["ea_run_ticks"] for r in g[:2]))
+    check(f"an idle check before each config ({[r['idle_check'][:40] for r in rows]})",
+          all(r["idle_check"] for r in rows))
     check("one log per config, with the run's output",
           all("EVOLUTIONARY ALGORITHM COMPLETED" in (rdir / r["log"]).read_text()
               for r in rows))

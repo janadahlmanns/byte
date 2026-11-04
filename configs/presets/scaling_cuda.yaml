@@ -1,0 +1,25 @@
+# Scaling sweeps (plan_evotorch.md, Step 22): the tensor CUDA points.
+# Run on one machine with nothing else running; run_selected checks the machine
+# before every config and watches it during the run (summary.csv: idle_check,
+# disturbance). Plot: python -m analysis.plot_scaling <report folder> --out <folder>
+description: "Scaling sweeps on CUDA: neurons, population, runs (19 points)"
+configs:
+  - "scaling_neurons_cuda [n_neurons=11]"
+  - "scaling_neurons_cuda [n_neurons=20]"
+  - "scaling_neurons_cuda [n_neurons=30]"
+  - "scaling_neurons_cuda [n_neurons=40]"
+  - "scaling_neurons_cuda [n_neurons=50]"
+  - "scaling_population_cuda [population_size=25]"
+  - "scaling_population_cuda [population_size=50]"
+  - "scaling_population_cuda [population_size=100]"
+  - "scaling_population_cuda [population_size=200]"
+  - "scaling_population_cuda [population_size=400]"
+  - "scaling_population_cuda [population_size=800]"
+  - "scaling_population_cuda [population_size=1600]"
+  - "scaling_runs_cuda [n_runs=25]"
+  - "scaling_runs_cuda [n_runs=50]"
+  - "scaling_runs_cuda [n_runs=100]"
+  - "scaling_runs_cuda [n_runs=200]"
+  - "scaling_runs_cuda [n_runs=400]"
+  - "scaling_runs_cuda [n_runs=800]"
+  - "scaling_runs_cuda [n_runs=1600]"

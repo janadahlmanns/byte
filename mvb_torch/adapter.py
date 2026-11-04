@@ -156,6 +156,7 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
           f"dtype={str(dtype).split('.')[-1]} width=auto "
           f"contraction={contraction} rng={rng} compile={'on' if compile_ else 'off'}"
           + (f" tf32=off gpu={torch.cuda.get_device_name(device)}" if device.type == "cuda" else "")
+          + (f" threads={torch.get_num_threads()}" if device.type == "cpu" else "")
           + (f" compile_cache={cache_dir}" if cache_dir else ""))
 
     def evaluate(genomes, cfg_, EXPERIMENT_FOLDER, SIMULATION_NAME,

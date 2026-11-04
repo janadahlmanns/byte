@@ -46,6 +46,8 @@ from typing import List, Optional
 import numpy as np
 import yaml
 
+from simulate import machine_load as ML
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "configs" / "experiments"
 EXTRA_CONFIG_DIR = Path("/my_configs")          # mounted by the tester (README, option 2)
@@ -62,6 +64,14 @@ STATS_LINE = re.compile(
     r"\[tensor-evaluator\] stats: run-ticks (\d+), [\d.]+ us/run-tick; memory: (.*); "
     r"width (\d+) of (\d+), all runs need ~(\d+) MiB \(est\.\)")
 HDF5_LINE = re.compile(r"\[HDF5 Init\] File created: (.+)$")
+# Printed by run_ea for every backend, once per generation (plan Step 22a).
+EA_TIMING_LINE = re.compile(
+    r"\[EA timing\] gen (\d+): genomes ([\d.]+) s, evaluate ([\d.]+) s, run-ticks (\d+), "
+    r"[\d.]+ us/run-tick, select\+save ([\d.]+) s")
+TENSOR_CFG_LINE = re.compile(r"\[tensor-evaluator\] backend=tensor .*?device=(\S+)")
+THREADS_PART = re.compile(r" threads=(\d+)")
+WORKERS_LINE = re.compile(r"\[INFO\] Parallel execution on (\d+) cores")
+SERIAL_LINE = re.compile(r"\[INFO\] .*Running serially")
 DONE_LINE = "Results saved to:"
 
 UNAVAILABLE = "unavailable: "
@@ -630,6 +640,16 @@ class Result:
     matches_reference: str = ""
     hdf5_copy: str = ""
     log: str = ""
+    # plan Step 22: the backend-independent timing, and the machine's load
+    ea_times: List[dict] = field(default_factory=list)     # from the [EA timing] line
+    backend: str = ""                  # "scalar" | "tensor <device>"
+    cpu_workers: str = ""              # scalar: worker processes; tensor cpu: torch threads
+    idle: dict = field(default_factory=dict)               # machine_load.idle_check()
+    gpu_util: str = ""                 # GPU load during the run, mean/max %
+    foreign_cores: str = ""            # CPU used by other processes during the run
+    foreign_top: str = ""
+    foreign_gpu: str = ""
+    disturbance: str = ""              # "" = clean, else why the timing is not
 
 
 def parse_stats(m):
@@ -666,6 +686,39 @@ def memory_summary(stats):
                 max(s["all_runs_need_mib"] for s in stats) if queued else ""}
 
 
+def parse_backend_line(line, parsed):
+    """The [EA timing] line, the backend and its CPU parallelism (plan Step 22)."""
+    m = EA_TIMING_LINE.search(line)
+    if m:
+        parsed["ea"].append({"generation": int(m.group(1)), "genomes_s": float(m.group(2)),
+                             "evaluate_s": float(m.group(3)), "run_ticks": int(m.group(4)),
+                             "select_save_s": float(m.group(5))})
+    m = TENSOR_CFG_LINE.search(line)
+    if m:
+        parsed["backend"] = f"tensor {m.group(1)}"
+        t = THREADS_PART.search(line)
+        if t:
+            parsed["cpu_workers"] = f"{t.group(1)} torch threads"
+    m = WORKERS_LINE.search(line)
+    if m:
+        parsed["cpu_workers"] = f"{m.group(1)} processes"
+    elif SERIAL_LINE.search(line):
+        parsed["cpu_workers"] = "1 process (serial)"
+
+
+def ea_summary(ea):
+    """Medians over generations 1+ of the [EA timing] parts, and us per run-tick of the
+    evaluation over generations 1+ (total time / total run-ticks)."""
+    later = [g for g in ea if g["generation"] >= 1]
+    if not later:
+        return {"genomes": "", "evaluate": "", "select_save": "", "us": ""}
+    med = lambda k: f"{float(np.median([g[k] for g in later])):.3f}"
+    ticks = sum(g["run_ticks"] for g in later)
+    return {"genomes": med("genomes_s"), "evaluate": med("evaluate_s"),
+            "select_save": med("select_save_s"),
+            "us": f"{1e6 * sum(g['evaluate_s'] for g in later) / ticks:.2f}" if ticks else ""}
+
+
 def us_per_run_tick_gens_1plus(r):
     """Total time / total run-ticks over generations 1+ (gen 0 includes compiling)."""
     t = [g[0] for g in r.gen_times[1:]]
@@ -682,7 +735,8 @@ THROTTLE_BITS = {0x1: "gpu_idle", 0x2: "applications_clocks_setting", 0x4: "sw_p
                  0x100: "display_clock_setting"}
 # Optional fields, sampled when this nvidia-smi knows them (names changed across driver
 # versions: clocks_event_reasons replaced clocks_throttle_reasons).
-OPTIONAL_FIELDS = {"sm_clock_mhz": ["clocks.sm"], "temp_c": ["temperature.gpu"],
+OPTIONAL_FIELDS = {"util_pct": ["utilization.gpu"],
+                   "sm_clock_mhz": ["clocks.sm"], "temp_c": ["temperature.gpu"],
                    "power_w": ["power.draw"],
                    "throttle": ["clocks_event_reasons.active", "clocks_throttle_reasons.active"]}
 
@@ -740,6 +794,8 @@ class GpuSampler:
                 else:
                     st["min"] = min(st.get("min", v), v)
                     st["max"] = max(st.get("max", v), v)
+                    st["sum"] = st.get("sum", 0.0) + v
+                    st["count"] = st.get("count", 0) + 1
         return True
 
     def _run(self):
@@ -781,6 +837,8 @@ class GpuSampler:
                 out.append("n/a")
             elif key == "sm_clock_mhz":
                 out.append(f"{st['min']:.0f}-{st['max']:.0f}")
+            elif key == "util_pct":
+                out.append(f"{st['sum'] / st['count']:.0f}/{st['max']:.0f}")
             else:
                 out.append(f"{st['max']:.0f}")
         return "|".join(out) or UNAVAILABLE + "no sample with this field"
@@ -794,7 +852,8 @@ def run_one(cmd, log_path, echo=True):
     reported its results saved."""
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     t0 = time.perf_counter()
-    parsed = {"gens": [], "stats": [], "hdf5": "", "done": False}
+    parsed = {"gens": [], "stats": [], "hdf5": "", "done": False, "ea": [],
+              "backend": "scalar", "cpu_workers": ""}
     with open(log_path, "w", encoding="utf-8") as log:
         log.write("$ " + " ".join(cmd) + "\n")
         p = subprocess.Popen(cmd, cwd=ROOT, env=env, text=True, encoding="utf-8",
@@ -819,6 +878,7 @@ def run_one(cmd, log_path, echo=True):
                 m = HDF5_LINE.search(line.rstrip())
                 if m:
                     parsed["hdf5"] = m.group(1).strip()
+                parse_backend_line(line, parsed)
                 if DONE_LINE in line:
                     parsed["done"] = True
             rc = p.wait()
@@ -843,7 +903,26 @@ SUMMARY_FIELDS = ["order", "config", "status", "exit_code", "wall_s", "gen0_s",
                   "vram_needed_all_runs_est_mib", "matches_reference", "hdf5",
                   "hdf5_copy", "compile_cache_at_start",
                   "gpu_util_before_pct", "gpu_mem_used_before_mib", "gpu_util_after_pct",
-                  "gpu_mem_used_after_mib", "config_path", "log"]
+                  "gpu_mem_used_after_mib", "config_path", "log",
+                  # plan Step 22 (every backend, from run_ea's [EA timing] line)
+                  "backend", "cpu_workers", "ea_gens_timed", "genomes_gens_1plus_median_s",
+                  "evaluate_gens_1plus_median_s", "select_save_gens_1plus_median_s",
+                  "ea_us_per_run_tick_gens_1plus",
+                  # plan Step 22e: was the machine free?
+                  "idle_check", "idle_cpu_busy_pct", "idle_cpu_top", "idle_gpu_util_max_pct",
+                  "idle_gpu_mem_used_max_mib", "idle_gpu_processes", "gpu_util_mean_max_pct",
+                  "foreign_cpu_cores_mean", "foreign_cpu_top", "foreign_gpu_processes",
+                  "disturbance"]
+
+
+def _step22_cols(r):
+    s = ea_summary(r.ea_times)
+    i = r.idle or {}
+    return [r.backend, r.cpu_workers, len(r.ea_times), s["genomes"], s["evaluate"],
+            s["select_save"], s["us"], i.get("verdict", ""), i.get("cpu_busy_pct", ""),
+            i.get("cpu_top", ""), i.get("gpu_util_max_pct", ""), i.get("gpu_mem_used_max_mib", ""),
+            i.get("gpu_processes", ""), r.gpu_util, r.foreign_cores, r.foreign_top,
+            r.foreign_gpu, r.disturbance]
 
 
 def _gpu_cols(snap):
@@ -872,17 +951,31 @@ def write_reports(report_dir, results):
                         mem["vram_measure"], mem["vram_peak_mib"], r.gpu_mem_used_peak,
                         r.gpu_sm_clock, r.gpu_temp_max, r.gpu_power_max, r.gpu_throttle,
                         mem["runs_queued"], mem["vram_needed_all_runs_est_mib"],
-                        r.matches_reference, r.hdf5, r.hdf5_copy, r.compile_cache_at_start, ub, mb, ua, ma, r.path, r.log])
+                        r.matches_reference, r.hdf5, r.hdf5_copy, r.compile_cache_at_start, ub, mb, ua, ma, r.path, r.log]
+                       + _step22_cols(r))
     with open(report_dir / "generations.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["order", "config", "generation", "seconds", "iterations",
-                    "ms_per_iteration", "run_ticks", "us_per_run_tick"])
+                    "ms_per_iteration", "run_ticks", "us_per_run_tick",
+                    "genomes_s", "evaluate_s", "select_save_s", "ea_run_ticks",
+                    "ea_us_per_run_tick"])
         for r in results:
-            for i, (sec, it, ms) in enumerate(r.gen_times):
+            # The first eight columns come from the tensor evaluator's own line (empty
+            # for the scalar backend); the last five from run_ea's, for every backend.
+            ea = {g["generation"]: g for g in r.ea_times}
+            for i in range(max(len(r.gen_times), len(ea))):
                 st = r.gen_stats[i] if i < len(r.gen_stats) else None
-                w.writerow([r.order, r.config, i, f"{sec:.2f}", it, ms,
-                            st["run_ticks"] if st else "",
-                            f"{1e6 * sec / st['run_ticks']:.2f}" if st and st["run_ticks"] else ""])
+                tensor = []
+                if i < len(r.gen_times):
+                    sec, it, ms = r.gen_times[i]
+                    tensor = [f"{sec:.2f}", it, ms, st["run_ticks"] if st else "",
+                              f"{1e6 * sec / st['run_ticks']:.2f}" if st and st["run_ticks"] else ""]
+                g = ea.get(i)
+                eacols = ([f"{g['genomes_s']:.3f}", f"{g['evaluate_s']:.3f}",
+                           f"{g['select_save_s']:.3f}", g["run_ticks"],
+                           f"{1e6 * g['evaluate_s'] / g['run_ticks']:.2f}" if g["run_ticks"] else ""]
+                          if g else [""] * 5)
+                w.writerow([r.order, r.config, i] + (tensor or [""] * 5) + eacols)
     (report_dir / "gpu_snapshots.json").write_text(json.dumps(
         [{"order": r.order, "config": r.config, "before": r.gpu_before, "after": r.gpu_after,
           "mem_used_peak_mib": r.gpu_mem_used_peak} for r in results], indent=2))
@@ -892,7 +985,18 @@ def _slug(s):
     return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")[:40] or "machine"
 
 
-def run_queue(infos, report_root, probe, echo=True, references=None, run_info=None):
+def idle_text(idle):
+    """One line for the terminal; the parts this machine cannot measure are left out."""
+    parts = [(f"CPU {idle['cpu_busy_pct']}% busy", idle["cpu_busy_pct"]),
+             (f"GPU load up to {idle['gpu_util_max_pct']}%", idle["gpu_util_max_pct"]),
+             (f"GPU memory {idle['gpu_mem_used_max_mib']} MiB", idle["gpu_mem_used_max_mib"]),
+             (f"GPU processes: {idle['gpu_processes'] or 'none'}", idle["gpu_processes"])]
+    shown = [t for t, v in parts if not str(v).startswith(ML.UNAVAILABLE)]
+    return idle["verdict"] + (f" ({', '.join(shown)})" if shown else "")
+
+
+def run_queue(infos, report_root, probe, echo=True, references=None, run_info=None,
+              idle_seconds=5.0):
     """Run `infos` in order; returns (results, report folder).
 
     `references`: config name -> reference HDF5, compared after the config ran ok.
@@ -923,16 +1027,29 @@ def run_queue(infos, report_root, probe, echo=True, references=None, run_info=No
               flush=True)
         r.log = f"{r.order:02d}_{_slug(r.config)}.log"
         r.compile_cache_at_start = compile_cache_state()
+        r.idle = ML.idle_check(seconds=idle_seconds)
+        print(f"[run_selected] machine before the run: {idle_text(r.idle)}", flush=True)
+        if r.idle["verdict"].startswith("busy"):
+            print(f"\n{'!' * 78}\nWARNING: the machine is not idle -- {r.idle['verdict']}\n"
+                  f"This config's times will be marked; Ctrl-C stops the queue.\n{'!' * 78}\n",
+                  flush=True)
         r.gpu_before = gpu_snapshot()
         cmd = [sys.executable, "-m", "simulate.run_ea", "--config", r.path]
-        with GpuSampler() as sampler:
+        with GpuSampler() as sampler, ML.LoadSampler() as load:
             rc, r.wall_s, parsed = run_one(cmd, report_dir / r.log, echo)
+        r.foreign_cores, r.foreign_top = load.foreign_cores(), load.foreign_top()
+        r.foreign_gpu = load.foreign_gpu_text()
+        r.gpu_util = sampler.column("util_pct")
+        r.disturbance = "; ".join(x for x in (
+            ("before: " + r.idle["verdict"][len("busy: "):]) if r.idle["verdict"].startswith("busy") else "",
+            ("during: " + load.disturbance()) if load.disturbance() else "") if x)
         r.gpu_mem_used_peak = sampler.peak
         r.gpu_sm_clock = sampler.column("sm_clock_mhz")
         r.gpu_temp_max = sampler.column("temp_c")
         r.gpu_power_max = sampler.column("power_w")
         r.gpu_throttle = sampler.column("throttle")
         r.gen_times, r.gen_stats, r.hdf5 = parsed["gens"], parsed["stats"], parsed["hdf5"]
+        r.ea_times, r.backend, r.cpu_workers = parsed["ea"], parsed["backend"], parsed["cpu_workers"]
         r.gpu_after = gpu_snapshot()
         r.exit_code = rc
         if rc is None:
@@ -975,13 +1092,18 @@ def print_summary(results, report_dir):
               f"{(f'{r.wall_s:.0f} s' if r.wall_s is not None else '-'):>8s} "
               f"{(f'{t[0]:.1f} s' if t else '-'):>8s} "
               f"{(f'{sum(t[1:]) / len(t[1:]):.1f} s' if len(t) > 1 else '-'):>8s} "
-              f"{us_per_run_tick_gens_1plus(r) or '-':>8s} "
+              f"{us_per_run_tick_gens_1plus(r) or ea_summary(r.ea_times)['us'] or '-':>8s} "
               f"{str(mem['vram_peak_mib']) or '-':>9s} "
               f"{(f'~{need}' if need != '' else 'fit' if mem['runs_queued'] == 'no' else '-'):>9s}")
     print("\n'gen 0' includes compiling; 'gens 1+' is the mean of the later generations;"
           "\n'us/tick' is microseconds per worm-tick over generations 1+; 'VRAM MiB' is the"
           "\npeak torch held; 'all runs' is 'fit' if every run fit at once, otherwise the"
           "\nestimated MiB that would need (the runs were queued).")
+    for r in results:
+        if r.disturbance:
+            print(f"\nWARNING: {r.config} did not run on a free machine ({r.disturbance}); "
+                  f"its times are marked in summary.csv (column disturbance) and the scaling "
+                  f"plots leave it out.")
     for r in results:
         # The power cap is normal under full load (boost runs up to it); thermal and
         # hardware slowdowns are what makes a card slower than it should be.
