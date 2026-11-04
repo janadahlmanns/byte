@@ -77,6 +77,9 @@ from pathlib import Path
 import numpy as np
 import h5py
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from simulate.run_selected import legacy_attr_ok  # noqa: E402
+
 # Mirrors the chosen config's experiment.output_folder. The produced file is
 # "{timestamp}_{simulation_name}.h5".
 OUTPUT_DIR = Path("data/temp")
@@ -139,7 +142,8 @@ def _existing_outputs(sim_name: str) -> set:
     """Set of output H5 files for sim_name currently in OUTPUT_DIR."""
     if not OUTPUT_DIR.exists():
         return set()
-    return set(OUTPUT_DIR.glob(f"*_{sim_name}.h5"))
+    # Inside a Slurm job the name ends in _j<job id> (plan Step 24b).
+    return set(OUTPUT_DIR.glob(f"*_{sim_name}.h5")) | set(OUTPUT_DIR.glob(f"*_{sim_name}_j*.h5"))
 
 
 def run_simulation(timeout: int, runner: str, config: str, sim_name: str) -> Path:
@@ -490,6 +494,8 @@ def compare(produced_path: Path, reference_path: Path, use_tol, rtol, atol) -> b
             for key in sorted(set(ra) - set(pa)):
                 mismatches.append(f"attr MISSING in produced: {path}@{key}")
             for key in sorted(set(pa) - set(ra)):
+                if path == "/" and legacy_attr_ok(key, pa[key]):
+                    continue        # a key newer than the reference, at its old behaviour (Step 27)
                 mismatches.append(f"attr EXTRA in produced:   {path}@{key}")
             for key in sorted(set(pa) & set(ra)):
                 ok, msg = _values_equal(pa[key], ra[key], use_tol, rtol, atol)

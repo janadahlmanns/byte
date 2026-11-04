@@ -71,7 +71,8 @@ def _outputs(sim_name: str) -> set:
     """Set of output files for sim_name currently in OUTPUT_DIR (.h5 and .png)."""
     if not OUTPUT_DIR.exists():
         return set()
-    return set(OUTPUT_DIR.glob(f"*_{sim_name}.*"))
+    # Inside a Slurm job the name ends in _j<job id> (plan Step 24b).
+    return set(OUTPUT_DIR.glob(f"*_{sim_name}.*")) | set(OUTPUT_DIR.glob(f"*_{sim_name}_j*.*"))
 
 
 def time_one_run(timeout: int, keep_output: bool,

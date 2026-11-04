@@ -58,6 +58,18 @@ SWEEP_DIR = ROOT / "configs" / "sweeps"
 PRESET_DIR = ROOT / "configs" / "presets"
 DEFAULT_PRESET = "tester_default"           # pre-ticked on the screen (plan Step 17)
 REFERENCE_IGNORED_ATTRS = {"experiment_output_folder"}
+# Config keys added after reference files were made (attribute -> the value that means
+# "the behaviour before the key existed"). A reference without the attribute matches a
+# result with exactly that value, and nothing else (plan Step 27).
+LEGACY_ATTR_DEFAULTS = {"experiment_evolutionary_algorithm_mutation_rng": "shared"}
+
+
+def legacy_attr_ok(key, value):
+    """True if an attribute only the newer file has is the pre-key behaviour."""
+    if key not in LEGACY_ATTR_DEFAULTS:
+        return False
+    v = value.decode() if isinstance(value, bytes) else value
+    return str(v) == LEGACY_ATTR_DEFAULTS[key]
 DEFAULT_REPORT_DIR = ROOT / "data" / "runtime_reports"
 
 # Lines of the run_ea output this runner reads. The timing line is printed by the
@@ -423,8 +435,10 @@ def compare_to_reference(path, ref):
                               f"pointer instead of the file? Run `git lfs pull` and rebuild")
     with h5py.File(path, "r") as a, h5py.File(ref, "r") as b:
         keys = (set(a.attrs) | set(b.attrs)) - REFERENCE_IGNORED_ATTRS
-        diff = sorted(k for k in keys if k not in a.attrs or k not in b.attrs
-                      or not _same_value(a.attrs[k], b.attrs[k]))
+        diff = sorted(k for k in keys
+                      if not (k in a.attrs and k not in b.attrs and legacy_attr_ok(k, a.attrs[k]))
+                      and (k not in a.attrs or k not in b.attrs
+                           or not _same_value(a.attrs[k], b.attrs[k])))
         if diff:
             return f"not comparable: config differs from the reference ({', '.join(diff[:4])})"
         da, db = _walk_datasets(a), _walk_datasets(b)

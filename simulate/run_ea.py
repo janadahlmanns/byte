@@ -1,6 +1,7 @@
 # Batch simulation of Byte with randomized wiring variants
 # Usage: python -m simulate.run_batch --config configs/experiments/neurons_random_wiring.yaml
 
+import atexit
 import os
 import sys
 import time
@@ -15,6 +16,8 @@ import matplotlib.pyplot as plt
 from mvb.simulation_API import eval_generation
 from mvb.genome import generate_genome_mutate_simple
 from .pause_manager import init_pause_manager, cleanup_pause_manager
+from .parallel_genomes import MIN_PARALLEL, GenomePool, per_child_seeds
+from mvb.simulation_helper_functions import allowed_cpu_count
 
 
 def parse_arguments():
@@ -162,6 +165,9 @@ def load_mutation_method(mutation_method: str):
     except ImportError:
         raise ImportError(f"Could not import genome module from mvb.")
 
+MUTATION_RNG_MODES = ("shared", "per_child")
+
+
 def check_ea_input_parameters(experiment_cfg):
     """
     Validate that all required evolutionary algorithm parameters are present.
@@ -182,10 +188,17 @@ def check_ea_input_parameters(experiment_cfg):
         raise KeyError("[ERROR] EA parameter not complete. REQUIRED: 'evolutionary_algorithm' section not found in config. Please add it with all required parameters: num_generations, elite_size, elite_selection_metric, mutation_rate, mutation_method, mutation_seed.")
     
     # REQUIRED: All EA parameters must be explicitly specified - NO DEFAULTS
-    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_strength"]
+    required_params = ["num_generations", "elite_size", "elite_selection_metric", "mutation_rate", "mutation_method", "mutation_strength", "mutation_rng"]
     for param in required_params:
         if param not in ea_cfg:
-            raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}")
+            raise KeyError(f"[ERROR] EA parameter not complete. REQUIRED: {param} missing in 'evolutionary_algorithm' section. Please specify all of: {', '.join(required_params)}"
+                           + (". mutation_rng: 'shared' (one random stream for all children, "
+                              "serial; reproduces runs made before this key existed) or "
+                              "'per_child' (one seed per child, mutated on all cores; plan "
+                              "Step 27)" if param == "mutation_rng" else ""))
+    if ea_cfg["mutation_rng"] not in MUTATION_RNG_MODES:
+        raise ValueError(f"[ERROR] evolutionary_algorithm.mutation_rng must be one of "
+                         f"{MUTATION_RNG_MODES}, got {ea_cfg['mutation_rng']!r}")
 
 def calculate_lifespan_statistics(lifespans_array):
     """
@@ -605,11 +618,12 @@ def main():
         MUTATION_RATE = ea_cfg["mutation_rate"]
         MUTATION_STRENGTH = ea_cfg["mutation_strength"]
         MUTATION_METHOD = ea_cfg["mutation_method"]
+        MUTATION_RNG = ea_cfg["mutation_rng"]
         mutation_function = load_mutation_method(MUTATION_METHOD)
         
         print(f"[EA Config] Population: {POPULATION_SIZE}, Generations: {NUM_GENERATIONS}, Elite: {ELITE_SIZE}")
         print(f"[EA Config] Selection metric: {ELITE_SELECTION_METRIC}, Mutation rate: {MUTATION_RATE}, Mutation strength: {MUTATION_STRENGTH}")
-        print(f"[EA Config] Mutation method: {MUTATION_METHOD}")
+        print(f"[EA Config] Mutation method: {MUTATION_METHOD}, mutation RNG: {MUTATION_RNG}")
         
         # Each generation produces POPULATION_SIZE - ELITE_SIZE offspring.
         # The elite is re-evaluated alongside the offspring so all individuals
@@ -698,11 +712,17 @@ def main():
     # From gen 1 onward the elite is re-evaluated together with the offspring.
 
     stats = []  # Collect generation statistics as tuples for direct array creation
+    # Genome creation and (per_child) mutation on all allowed cores (plan Step 27). Gen 0
+    # already has one seed per genome: the same genomes as the serial loop.
+    genome_pool = GenomePool(allowed_cpu_count())
+    atexit.register(genome_pool.close)
+    print(f"[EA Config] Genome workers: {genome_pool.workers} (serial below "
+          f"{MIN_PARALLEL} genomes"
+          + ("; mutation stays serial with mutation_rng: shared" if EA_ENABLED and MUTATION_RNG == "shared" else "")
+          + ")")
     t_genomes = time.perf_counter()
-    genomes = []
-    for variant_id in range(POPULATION_SIZE):
-        genome = genome_generator(cfg, rng_seed=WIRING_RANDOMIZATION_SEED + variant_id)
-        genomes.append(genome)
+    genomes = genome_pool.generate(genome_generator, cfg,
+                                   [WIRING_RANDOMIZATION_SEED + v for v in range(POPULATION_SIZE)])
     genomes_s = time.perf_counter() - t_genomes
     
     # ============================================================
@@ -750,11 +770,21 @@ def main():
         # 9. GENERATE OFFSPRING VIA MUTATION (POPULATION_SIZE - ELITE_SIZE offspring)
         # ============================================================
         t_genomes = time.perf_counter()
-        genomes_new = []
-        for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
-            for offspring_num in range(num_offspring):
-                mutated_genome = mutation_function(elite_genome, MUTATION_RATE, MUTATION_STRENGTH, rng_mutation)
-                genomes_new.append(mutated_genome)
+        if MUTATION_RNG == "shared":
+            # One stream for all children, in order: serial (and identical to runs made
+            # before mutation_rng existed).
+            genomes_new = []
+            for elite_genome, num_offspring in zip(elite_genomes, offspring_counts):
+                for offspring_num in range(num_offspring):
+                    mutated_genome = mutation_function(elite_genome, MUTATION_RATE, MUTATION_STRENGTH, rng_mutation)
+                    genomes_new.append(mutated_genome)
+        else:
+            # per_child (plan Step 27): all seeds drawn here, in child order; each child
+            # depends only on its parent and its seed, so any number of workers gives
+            # the same children.
+            parent_index, child_seeds = per_child_seeds(rng_mutation, offspring_counts)
+            genomes_new = genome_pool.mutate(mutation_function, elite_genomes, parent_index,
+                                             child_seeds, MUTATION_RATE, MUTATION_STRENGTH)
 
         # ============================================================
         # 10. COMBINE ELITE + OFFSPRING, THEN EVALUATE TOGETHER

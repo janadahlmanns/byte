@@ -39,6 +39,8 @@ experiment:
     mutation_rate: 0.1  # Fraction of connections to mutate per individual; n_mutations = n_neurons^2 * mutation_rate
     mutation_strength: 0.2    # Gaussian std for all mutations (weights, reliability, eta, tonic activations)
     mutation_method: simple  # Options: 'simple'
+    mutation_rng: shared   # 'shared': one random stream for all children, serial (reproduces earlier runs);
+                           # 'per_child': one seed per child, mutated on all cores (plan Step 27)
 
   # Visualization
   viz_enabled: false

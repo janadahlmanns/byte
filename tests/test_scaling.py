@@ -444,7 +444,8 @@ def synth_report(root, name, points, machine="uni", busy=(), drop_timing=(), bac
         summary.append({"order": i, "config": row_name, "status": "ok", "log": log,
                         "config_path": str(cp), "backend": backend, "cpu_workers": "8",
                         "vram_peak_mib": "", "disturbance": "before: GPU load 90%" if row_name in busy else "",
-                        "runs_queued": "yes" if be == "cuda" and x > 1600 else "no"})
+                        "runs_queued": "yes" if be == "cuda" and x > 1600 else "no",
+                        "wall_s": f"{10 + 4 * a * x ** k:.2f}"})
         for g in range(4):
             jitter = 1 + 0.01 * (g - 2) if g else 5      # gen 0 slow (compile), never used
             row = {"order": i, "config": row_name, "generation": g, "evaluate_s": "",
@@ -611,12 +612,44 @@ def test_plot(tmp):
 
 # ============================================================
 
+def test_compare(tmp):
+    print("\n[6] analysis/plot_compare_gpus.py on two synthetic machines")
+    import analysis.plot_compare_gpus as PC
+    pts = [p for v in all_points().values() for p in v if "_cuda " in p[0]]
+    root = Path(tmp) / "compare"
+    a = synth_report(root, "m3070", pts, machine="uni", gpu="NVIDIA GeForce RTX 3070")
+    b = synth_report(root, "ma100", pts, machine="tg093", gpu="NVIDIA A100-SXM4-40GB")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = PC.main(["--machine", "RTX 3070", str(a), "--machine", "A100", str(b), "--out", str(root / "out")])
+    with open(root / "out" / "compare.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    check(f"two machines: one row per CUDA point (19), the ratio 1.0 for identical timings ({len(rows)})",
+          rc == 0 and len(rows) == 19 and all(r["RTX 3070/A100 us_per_tick"] == "1.000" for r in rows))
+    figs = [root / "out" / f"compare_{k}.{e}" for k in ("us_per_tick", "total_time") for e in ("png", "pdf")]
+    check("both figures written", all(f.is_file() and f.stat().st_size > 10_000 for f in figs))
+    try:
+        with redirect_stdout(io.StringIO()):
+            PC.main(["--machine", "mixed", str(a), str(b), "--machine", "A100", str(b), "--out", str(root / "o2")])
+        refused = False
+    except PC.CompareError as e:
+        refused = "more than one kind of machine" in str(e)
+    check("one --machine with two kinds of hardware: refused", refused)
+    try:
+        PC.main(["--machine", "only", str(a), "--out", str(root / "o3")])
+        refused = False
+    except PC.CompareError:
+        refused = True
+    check("a single --machine: refused (nothing to compare)", refused)
+
+
 def main():
     test_sweeps()
     with tempfile.TemporaryDirectory(prefix="test_scaling_") as tmp:
         test_parsing(tmp)
         test_machine_load(tmp)
         test_plot(tmp)
+        test_compare(tmp)
         test_timing_line(tmp)
     n_fail = sum(1 for _, ok in _RESULTS if not ok)
     if n_fail:

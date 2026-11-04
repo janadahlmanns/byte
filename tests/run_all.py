@@ -40,6 +40,7 @@ SUITES = [
     ("tests.test_scaling", False),
     ("tests.test_cluster", False),
     ("tests.test_array", False),
+    ("tests.test_mutation_parallel", False),
 ]
 
 
