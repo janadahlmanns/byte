@@ -1,0 +1,14 @@
+# Scaling sweeps, GPU capacity (plan_evotorch.md, Step 26): P and R from 3200 to 25600 on
+# CUDA, past the point where the runs no longer all fit on the GPU at once. Run with
+# nothing else on the machine. Plot together with the scaling_cuda report:
+#   python -m analysis.plot_scaling <scaling_cuda report> <this report> [...] --out <folder>
+description: "GPU capacity: population and runs 3200-25600 on CUDA (8 points)"
+configs:
+  - "scaling_population_cuda_capacity [population_size=3200]"
+  - "scaling_population_cuda_capacity [population_size=6400]"
+  - "scaling_population_cuda_capacity [population_size=12800]"
+  - "scaling_population_cuda_capacity [population_size=25600]"
+  - "scaling_runs_cuda_capacity [n_runs=3200]"
+  - "scaling_runs_cuda_capacity [n_runs=6400]"
+  - "scaling_runs_cuda_capacity [n_runs=12800]"
+  - "scaling_runs_cuda_capacity [n_runs=25600]"

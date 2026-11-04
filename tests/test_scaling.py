@@ -126,11 +126,29 @@ def test_sweeps():
     check("the selector shows the right device and every point is selectable",
           all(infos[n].device == ("cuda" if "_cuda " in n else "cpu") and infos[n].selectable
               for n in names))
+    # Step 26: the capacity files continue the CUDA population/runs sweeps.
+    cap = {d: RS.expand_sweep(SWEEPS / f"scaling_{d}_cuda_capacity.yaml") for d in ("population", "runs")}
+    check("capacity sweeps: P and R = 3200, 6400, 12800, 25600",
+          all([_get(c, DIMS[d]) for _n, c in v] == [3200, 6400, 12800, 25600] for d, v in cap.items()))
+    odd = [n for v in cap.values() for n, c in v if stripped(c) != ref
+           or c["experiment"]["evaluator"] != cuda_block]
+    fixed_bad = [n for d, v in cap.items() for n, c in v
+                 for k, val in fixed.items() if k != DIMS[d] and _get(c, k) != val]
+    check(f"... identical to the base sweeps apart from the varied key ({odd[:1]}, {fixed_bad[:1]})",
+          not odd and not fixed_bad)
+    cap_names = [n for v in cap.values() for n, _c in v]
+    infos.update({n: RS.describe_cfg(c, n, "x", {"cpu", "cuda"}) for v in cap.values() for n, c in v})
+    check("... names and simulation names unique, also against the base sweeps",
+          len(set(cap_names + names)) == 57
+          and len({c["experiment"]["simulation_name"] for v in cap.values() for _n, c in v} | set(sims)) == 57)
     for preset, want_n in (("scaling_cuda", 19), ("scaling_cpu", 30), ("scaling_all", 49)):
         p = RS.load_preset(ROOT / "configs" / "presets" / f"{preset}.yaml")
         missing = [c for c in p.configs if c not in infos]
         check(f"preset {preset}: {len(p.configs)} configs, all of them sweep points ({missing[:2]})",
               len(p.configs) == want_n and not missing and len(set(p.configs)) == want_n)
+    p = RS.load_preset(ROOT / "configs" / "presets" / "scaling_cuda_capacity.yaml")
+    check(f"preset scaling_cuda_capacity: the 8 capacity points ({len(p.configs)})",
+          p.configs == cap_names)
 
 
 # ============================================================
@@ -421,12 +439,14 @@ def synth_report(root, name, points, machine="uni", busy=(), drop_timing=(), bac
             backend = "tensor cuda" if be != "cuda" else "scalar"
         summary.append({"order": i, "config": row_name, "status": "ok", "log": log,
                         "config_path": str(cp), "backend": backend, "cpu_workers": "8",
-                        "vram_peak_mib": "", "disturbance": "before: GPU load 90%" if row_name in busy else ""})
+                        "vram_peak_mib": "", "disturbance": "before: GPU load 90%" if row_name in busy else "",
+                        "runs_queued": "yes" if be == "cuda" and x > 1600 else "no"})
         for g in range(4):
             jitter = 1 + 0.01 * (g - 2) if g else 5      # gen 0 slow (compile), never used
             row = {"order": i, "config": row_name, "generation": g, "evaluate_s": "",
                    "ea_us_per_run_tick": "", "genomes_s": "", "select_save_s": "",
-                   "ea_run_ticks": "", "warmup_s": "", "new_graphs": "", "simulate_s": ""}
+                   "ea_run_ticks": "", "warmup_s": "", "new_graphs": "", "simulate_s": "",
+                   "width": str(min(112_000, 100 * x if dim != "neurons" else 10_000))}
             if row_name not in drop_timing:
                 ticks = 10_000
                 sim = ev * jitter
@@ -526,6 +546,30 @@ def test_plot(tmp):
     rc, text, err = run_plot([str(part), "--out", str(root / "o8")])
     check("CUDA points missing: listed per dimension, the rest plotted",
           rc == 0 and text.count("MISSING") == 3 and "tensor CUDA" in text)
+    # Step 26: capacity points extend the CUDA lines; queued points are marked.
+    capflat = [p for d in ("population", "runs")
+               for p in RS.expand_sweep(SWEEPS / f"scaling_{d}_cuda_capacity.yaml")]
+    capr = synth_report(root, "capacity", capflat)
+    rc, text, err = run_plot([str(good), str(capr), "--out", str(root / "o13")])
+    with open(root / "o13" / "points.csv", newline="") as f:
+        crow = [r for r in csv.DictReader(f) if r["backend"] == "cuda" and r["dimension"] == "population"]
+    with open(root / "o13" / "fits.csv", newline="") as f:
+        cfit = [r for r in csv.DictReader(f) if r["backend"] == "cuda" and r["dimension"] == "population"
+                and r["metric"] == "evaluate"][0]
+    check(f"capacity points join the base line: 11 points, x up to 25600 ({len(crow)}, {cfit['x_max']})",
+          rc == 0 and len(crow) == 11 and cfit["x_max"] == "25600" and cfit["points"] == "11"
+          and abs(float(cfit["exponent_k"]) - LAWS["cuda"][1]) < 2e-3)
+    check(f"queued points marked, with the width cap ({[(r['x'], r['runs_queued'], r['width_min']) for r in crow][-4:]})",
+          all(r["runs_queued"] == ("True" if int(r["x"]) > 1600 else "False") for r in crow)
+          and all(r["width_min"] == "112000" for r in crow if int(r["x"]) > 1600))
+    check("nothing missing when the whole capacity run is there", "MISSING" not in text)
+    part = synth_report(root, "capacity_part", capflat[:3])
+    rc, text, err = run_plot([str(good), str(part), "--out", str(root / "o14")])
+    check(f"a partial capacity run: its missing points listed, a series without any capacity "
+          f"point not ({[l.strip() for l in text.splitlines() if 'MISSING' in l]})",
+          rc == 0 and "MISSING population / tensor CUDA: x = [25600]" in text
+          and "MISSING runs" not in text)
+
     # Step 25: compile time is subtracted; old reports need --include-compile <backend>.
     with open(out / "points.csv", newline="") as f:
         prow = {(r["dimension"], r["backend"], r["x"]): r for r in csv.DictReader(f)}

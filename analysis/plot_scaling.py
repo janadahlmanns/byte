@@ -54,7 +54,9 @@ from analysis.plot_neuron_scaling import (COMPILE_FIX_MARKER, INK, INK2, MARKERS
 
 ROOT = Path(__file__).resolve().parent.parent
 SWEEP_DIR = ROOT / "configs" / "sweeps"
-ROW = re.compile(r"^scaling_(neurons|population|runs)_(scalar|cpu|cuda) \[")
+# `_capacity` (plan Step 26): the CUDA population/runs sweeps continued past the GPU's
+# memory cap; the same series as the base sweep of that dimension and backend.
+ROW = re.compile(r"^scaling_(neurons|population|runs)_(scalar|cpu|cuda)(?:_capacity)? \[")
 
 DIMS = {  # dimension -> (dotted config key, axis label, symbol)
     "neurons": ("brain.n_neurons", "neurons n", "n"),
@@ -176,7 +178,9 @@ def load_report(report, include_disturbed=False, include_compile=()):
             "compile_included": compile_included,
             "ea": [float(r["genomes_s"]) + float(r["select_save_s"]) for r in g],
             "cpu_workers": row.get("cpu_workers", ""),
-            "vram_peak_mib": row.get("vram_peak_mib", "")})
+            "vram_peak_mib": row.get("vram_peak_mib", ""),
+            "queued": row.get("runs_queued", "") == "yes",
+            "width": min((int(r["width"]) for r in g if r.get("width")), default=None)})
     return machine_of(system), points, excluded
 
 
@@ -222,11 +226,24 @@ def _first_diff(a, b, path=""):
 
 
 def expected_points(sweep_dir=SWEEP_DIR):
-    """{(dim, backend): [x values]} from the nine sweep files."""
+    """{(dim, backend): [x values]} from the nine sweep files and the _capacity ones.
+    Only the base files make a series expected; capacity points are listed as missing
+    only if some capacity point of that series is present (they are an extra run)."""
     out = {}
     for dim, (key, *_rest) in DIMS.items():
         for be in BACKENDS:
             f = Path(sweep_dir) / f"scaling_{dim}_{be}.yaml"
+            if f.is_file():
+                out[(dim, be)] = list(yaml.safe_load(f.read_text())["vary"][key])
+    return out
+
+
+def capacity_points(sweep_dir=SWEEP_DIR):
+    """{(dim, backend): [x values]} of the scaling_<dim>_<backend>_capacity files."""
+    out = {}
+    for dim, (key, *_rest) in DIMS.items():
+        for be in BACKENDS:
+            f = Path(sweep_dir) / f"scaling_{dim}_{be}_capacity.yaml"
             if f.is_file():
                 out[(dim, be)] = list(yaml.safe_load(f.read_text())["vary"][key])
     return out
@@ -239,7 +256,7 @@ def series_of(points):
         e = pooled.setdefault((p["dim"], p["backend"], p["x"]), {
             "dim": p["dim"], "backend": p["backend"], "x": p["x"], "reports": [],
             "evaluate": [], "us": [], "ea": [], "disturbed": False, "compile_included": False,
-            "with_compile": [], "warmup_s": 0.0, "new_graphs": 0,
+            "with_compile": [], "warmup_s": 0.0, "new_graphs": 0, "queued": False, "width": None,
             "cpu_workers": p["cpu_workers"], "vram_peak_mib": p["vram_peak_mib"]})
         for k in METRICS:
             e[k] += p[k]
@@ -249,6 +266,9 @@ def series_of(points):
         e["with_compile"] += p["with_compile"]
         e["warmup_s"] += p["warmup_s"]
         e["new_graphs"] += p["new_graphs"]
+        e["queued"] |= p["queued"]
+        if p["width"] is not None:
+            e["width"] = p["width"] if e["width"] is None else min(e["width"], p["width"])
     out = {}
     for e in pooled.values():
         for k in METRICS:
@@ -290,6 +310,13 @@ def _panel(ax, series, fits, dim, metric, legend=True):
         ax.errorbar(xs, [m for _a, m, _b in q], yerr=[[m - a for a, m, _b in q], [b - m for _a, m, b in q]],
                     color=SERIES[i], marker=MARKERS[i], markersize=5.5, linewidth=1.5, capsize=3,
                     elinewidth=1, linestyle="--" if dis else "-", label=lab)
+        qx = [e["x"] for e in v if e["queued"]]
+        if qx:
+            # Step 26: hollow where not every run fit on the device at once (queued).
+            qm = [e[metric + "_q"][1] for e in v if e["queued"]]
+            ax.plot(qx, qm, linestyle="none", marker=MARKERS[i], markersize=5.5,
+                    markerfacecolor=SURFACE, markeredgecolor=SERIES[i], markeredgewidth=1.5,
+                    zorder=4)                     # above the errorbar's own markers
         if fit:
             gx = np.geomspace(min(xs), max(xs), 50)
             ax.plot(gx, fit[1] * gx ** fit[0], color=SERIES[i], linewidth=0.8, alpha=0.4)
@@ -313,6 +340,7 @@ def _panel(ax, series, fits, dim, metric, legend=True):
 
 
 NOTE = ("Median over generations 1+, compile warm-ups subtracted (plan Step 25), bars: interquartile range; "
+        "hollow: runs queued (not all fit on the device at once); "
         "thin lines: power-law fits. Base: P = 100, R = 100, n = 11 apart from the varied key. "
         "Data: points.csv, fits.csv.")
 
@@ -364,7 +392,7 @@ def write_csvs(series, fits, machine, out):
                     "us_per_tick_median", "us_q1", "us_q3",
                     "ea_part_s_median", "ea_q1", "ea_q3", "cpu_workers", "vram_peak_mib",
                     "compile_included", "evaluate_with_compile_s_median", "warmup_s_total",
-                    "new_graphs_total"])
+                    "new_graphs_total", "runs_queued", "width_min"])
         for (dim, be), v in series.items():
             for e in v:
                 w.writerow([machine, dim, be, e["x"], " ".join(e["reports"]), len(e["evaluate"]),
@@ -372,7 +400,7 @@ def write_csvs(series, fits, machine, out):
                            + [f"{e[k + '_q'][i]:.4f}" for k in METRICS for i in (1, 0, 2)]
                            + [e["cpu_workers"], e["vram_peak_mib"], e["compile_included"],
                               f"{float(np.median(e['with_compile'])):.4f}", f"{e['warmup_s']:.3f}",
-                              e["new_graphs"]])
+                              e["new_graphs"], e["queued"], "" if e["width"] is None else e["width"]])
     with open(out / "fits.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["machine", "dimension", "backend", "metric", "exponent_k", "prefactor",
@@ -414,7 +442,12 @@ def main(argv=None):
     check_consistent(points)
     machine = f"{next(iter(machines))} — {', '.join(sorted(hosts))}"
     series = series_of(points)
-    for key, xs in expected_points().items():
+    expected = expected_points()
+    for key, xs in capacity_points().items():
+        have = {e["x"] for e in series.get(key, [])}
+        if have & set(xs):                      # the capacity run is part of these reports
+            expected[key] = expected.get(key, []) + xs
+    for key, xs in expected.items():
         have = {e["x"] for e in series.get(key, [])}
         missing = [x for x in xs if x not in have]
         if missing:

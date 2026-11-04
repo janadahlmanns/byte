@@ -1046,7 +1046,7 @@ def write_reports(report_dir, results):
                     "ms_per_iteration", "run_ticks", "us_per_run_tick",
                     "genomes_s", "evaluate_s", "select_save_s", "ea_run_ticks",
                     "ea_us_per_run_tick", "warmup_s", "new_graphs", "simulate_s",
-                    "sim_us_per_run_tick"])
+                    "sim_us_per_run_tick", "width", "all_runs"])
         for r in results:
             # The first eight columns come from the tensor evaluator's own line (empty
             # for the scalar backend); the last five from run_ea's, for every backend.
@@ -1070,6 +1070,8 @@ def write_reports(report_dir, results):
                     sim = g["evaluate_s"] - wu[0]
                     eacols += [f"{wu[0]:.3f}", wu[1], f"{sim:.3f}",
                                f"{1e6 * sim / g['run_ticks']:.2f}" if g["run_ticks"] else ""]
+                # plan Step 26: runs in flight at once, and all runs of the generation
+                eacols += [st["width"], st["all_runs"]] if st else ["", ""]
                 w.writerow([r.order, r.config, i] + (tensor or [""] * 5) + eacols)
     (report_dir / "gpu_snapshots.json").write_text(json.dumps(
         [{"order": r.order, "config": r.config, "before": r.gpu_before, "after": r.gpu_after,

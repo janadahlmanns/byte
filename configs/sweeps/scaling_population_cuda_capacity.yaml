@@ -1,0 +1,22 @@
+# ============================================================
+# SCALING SWEEP, GPU CAPACITY: population beyond 1600, tensor CUDA (plan_evotorch.md, Step 26)
+# ============================================================
+# Continues scaling_population_cuda.yaml (same base and settings) past the point where the
+# runs no longer all fit on the GPU at once (RTX 3070: ~112,000 runs in flight at n = 11,
+# reached at 1600). Question: does the time per worm-tick keep falling once the runs
+# are queued, and where does it level off? On a card with more memory (A100) the cap
+# comes later. analysis/plot_scaling.py draws these points on the same line as
+# scaling_population_cuda, hollow where runs were queued.
+#
+# 25,600 x 100 = 2.56 M runs per generation: ~20 min per point on an RTX 3070.
+# Preset: scaling_cuda_capacity (both files, ~1-1.5 h on the 3070).
+# ============================================================
+base: ea_from_random_tensor_cuda
+set:
+  experiment.output_folder: "data/scaling/"
+  experiment.simulation_name: "scaling_population_cuda"
+  experiment.evolutionary_algorithm.num_generations: 4
+  brain.n_neurons: 11
+  experiment.n_runs: 100
+vary:
+  experiment.population_size: [3200, 6400, 12800, 25600]
