@@ -28,7 +28,8 @@
         <span><i class="sw ring" style="border-color:var(--blue)"></i>eaten</span>
         <span><i class="sw dot" style="background:var(--gold)"></i>agent &amp; trail</span>
         <span><i class="sw box hollow" style="border-color:var(--gold-light)"></i>sensed</span>
-        <span class="cov-only"><i class="sw box" style="background:var(--gold-mid)"></i>visited</span>
+        <span class="cov-only"><i class="sw box ramp"></i>reached &mdash; brighter = longer</span>
+        <span class="cov-only"><i class="sw box ghost"></i>later in the run</span>
       </div>
       <p class="key-note">
         Energy is the arc around the agent. <span id="cov-stats"></span>

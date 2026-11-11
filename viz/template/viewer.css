@@ -417,6 +417,11 @@ select {
 
 .sw.box { border-radius: 2px; }
 .sw.box.hollow { background: none; border: 1.5px solid; }
+
+/* One swatch for the whole occupancy scale rather than a legend entry per
+   shade, and one for the dim base that marks where the run goes next. */
+.sw.box.ramp { background: linear-gradient(90deg, var(--gold-mid), var(--gold-light)); }
+.sw.box.ghost { background: var(--gold-dark); opacity: 0.5; }
 .sw.dot { width: 9px; height: 9px; border-radius: 50%; }
 .sw.ring { border-radius: 50%; background: none; border: 1.5px solid; }
 .sw.ring.dash { border-style: dashed; }

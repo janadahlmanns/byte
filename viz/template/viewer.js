@@ -50,8 +50,22 @@
   let pending = new Uint8Array(W * H);   // eaten, awaiting regrow
   let builtTo = -1;                      // which tick `food` currently represents
   let visits = new Uint32Array(W * H);   // ticks the agent has spent on each cell
-  let visitMax = 1;                      // busiest cell so far, for the ramp
   let visited = 0;                       // how many cells have been touched
+
+  /* The footprint of the whole run, counted once up front. It is drawn as a
+     dim base under the up-to-now layer, so the shape of the route is on screen
+     from the first tick rather than only existing if you happen to stop on the
+     last one. Normalising the ramp against the final busiest cell also keeps a
+     cell's colour fixed for the whole run, where a running maximum re-shaded
+     the entire map as playback went on. */
+  const visitsAll = new Uint32Array(W * H);
+  let visitAllMax = 1;
+  let visitedAll = 0;
+  for (const f of FRAMES) {
+    const k = f.y * W + f.x;
+    if (visitsAll[k] === 0) visitedAll++;
+    if (++visitsAll[k] > visitAllMax) visitAllMax = visitsAll[k];
+  }
 
   function resetGrid() {
     food.fill(0);
@@ -59,7 +73,6 @@
     for (const i of DATA.initial_food) food[i] = 1;
     visits.fill(0);
     visits[FRAMES[0].y * W + FRAMES[0].x] = 1;
-    visitMax = 1;
     visited = 1;
     builtTo = 0;
   }
@@ -79,7 +92,7 @@
       applyFrame(FRAMES[i]);
       const k = FRAMES[i].y * W + FRAMES[i].x;
       if (visits[k] === 0) visited++;
-      if (++visits[k] > visitMax) visitMax = visits[k];
+      visits[k]++;
     }
     builtTo = n;
   }
@@ -218,30 +231,61 @@
     }
     ctx.globalAlpha = 1;
 
-    /* Where the agent has actually been, up to this tick. Shaded on a log
-       scale: an evolved elite spends thousands of ticks on one cell and a
-       single tick on the handful it crossed to get there, and on a linear
-       ramp everything but the camp would be invisible. */
+    /* food. Reduced to an outline while coverage is on: a filled square covers
+       the middle of its cell, and a route with a hole punched in it wherever
+       food happens to stand does not read as a route. Where the food is cannot
+       be the headline when the question on screen is where the agent has been. */
+    const pad = cell * 0.18, side = cell - pad * 2;
     if (coverage) {
-      const span = Math.log(1 + visitMax);
+      ctx.strokeStyle = C.food;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.45;
+      for (let i = 0; i < food.length; i++) {
+        if (food[i]) {
+          ctx.strokeRect((i % W) * cell + pad + 0.5, ((i / W) | 0) * cell + pad + 0.5,
+                         side - 1, side - 1);
+        }
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.fillStyle = C.food;
+      for (let i = 0; i < food.length; i++) {
+        if (food[i]) {
+          ctx.fillRect((i % W) * cell + pad, ((i / W) | 0) * cell + pad, side, side);
+        }
+      }
+    }
+
+    /* Where the agent has been, in two layers: the whole run dim underneath so
+       the finished shape is readable at any tick, and the part already played
+       bright on top. Drawn over the food and regrow marks rather than under
+       them, so the route stays unbroken.
+
+       Occupancy spans three orders of magnitude - an evolved elite spends
+       thousands of ticks on one cell and a single tick on each cell it crossed
+       to get there - so the ramp is logarithmic. But intensity is the secondary
+       question. The structural one is whether the agent was ever here at all,
+       and the cells that carry that answer are the low-count ones, so they get
+       an opacity floor high enough to read on their own instead of being faded
+       out in favour of the camp. */
+    if (coverage) {
+      const span = Math.log(1 + visitAllMax);
+      ctx.fillStyle = C.covLow;
+      ctx.globalAlpha = 0.22;
+      for (let i = 0; i < visitsAll.length; i++) {
+        if (visitsAll[i] && !visits[i]) {
+          ctx.fillRect((i % W) * cell, ((i / W) | 0) * cell, cell, cell);
+        }
+      }
       for (let i = 0; i < visits.length; i++) {
         const v = visits[i];
         if (!v) continue;
         const t = span > 0 ? Math.log(1 + v) / span : 1;
-        ctx.fillStyle = t < 0.5 ? C.covLow : (t < 0.85 ? C.covMid : C.covHigh);
-        ctx.globalAlpha = 0.3 + 0.6 * t;
+        ctx.fillStyle = t < 0.6 ? C.covMid : C.covHigh;
+        ctx.globalAlpha = 0.55 + 0.4 * t;
         ctx.fillRect((i % W) * cell, ((i / W) | 0) * cell, cell, cell);
       }
       ctx.globalAlpha = 1;
-    }
-
-    // food
-    ctx.fillStyle = C.food;
-    const pad = cell * 0.18, side = cell - pad * 2;
-    for (let i = 0; i < food.length; i++) {
-      if (food[i]) {
-        ctx.fillRect((i % W) * cell + pad, ((i / W) | 0) * cell + pad, side, side);
-      }
     }
 
     // trail — drawn as discrete cells, not a polyline: the world is toroidal,
@@ -1121,8 +1165,9 @@
     const covStats = document.getElementById("cov-stats");
     if (covStats) {
       covStats.textContent = coverage
-        ? visited + " of " + (W * H) + " cells visited, busiest "
-          + visitMax + " ticks"
+        ? visited + " of " + visitedAll + " cells reached · " + visitedAll
+          + " of " + (W * H) + " over the whole run · busiest "
+          + visitAllMax + " ticks"
         : "";
     }
 
