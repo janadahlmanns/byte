@@ -41,6 +41,7 @@ SUITES = [
     ("tests.test_cluster", False),
     ("tests.test_array", False),
     ("tests.test_mutation_parallel", False),
+    ("tests.test_behaviour_equivalence", False),
 ]
 
 
