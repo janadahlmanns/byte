@@ -33,12 +33,16 @@
     // in the same gold as every excitatory edge it is drawn on top of.
     learn: css.getPropertyValue("--text").trim(),
     text: css.getPropertyValue("--text").trim(),
-    covLow: css.getPropertyValue("--gold-dark").trim(),
-    covMid: css.getPropertyValue("--gold-mid").trim(),
-    covHigh: css.getPropertyValue("--gold-light").trim(),
+    /* Occupancy ramp, pale to dark: on a white ground more time spent has
+       to mean more ink. covGhost marks cells the run reaches only later. */
+    covGhost: css.getPropertyValue("--gold-light").trim(),
+    covLow: css.getPropertyValue("--gold-mid").trim(),
+    covHigh: css.getPropertyValue("--gold-dark").trim(),
     dim: css.getPropertyValue("--dim").trim(),
     panelEdge: css.getPropertyValue("--edge").trim(),
-    neuronIdle: css.getPropertyValue("--panel").trim(),
+    // Not --panel: an idle neuron filled with the panel colour is invisible
+    // on a white panel, and the node has to read as a shape either way.
+    neuronIdle: css.getPropertyValue("--surface-2").trim(),
     neuronEdge: css.getPropertyValue("--edge").trim(),
   };
 
@@ -220,7 +224,7 @@
 
     // cells eaten and awaiting regrowth
     ctx.fillStyle = C.pending;
-    ctx.globalAlpha = 0.28;
+    ctx.globalAlpha = 0.5;
     for (let i = 0; i < pending.length; i++) {
       if (pending[i] && !food[i]) {
         const cx = (i % W) * cell, cy = ((i / W) | 0) * cell;
@@ -270,8 +274,8 @@
        out in favour of the camp. */
     if (coverage) {
       const span = Math.log(1 + visitAllMax);
-      ctx.fillStyle = C.covLow;
-      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = C.covGhost;
+      ctx.globalAlpha = 0.33;
       for (let i = 0; i < visitsAll.length; i++) {
         if (visitsAll[i] && !visits[i]) {
           ctx.fillRect((i % W) * cell, ((i / W) | 0) * cell, cell, cell);
@@ -281,8 +285,8 @@
         const v = visits[i];
         if (!v) continue;
         const t = span > 0 ? Math.log(1 + v) / span : 1;
-        ctx.fillStyle = t < 0.6 ? C.covMid : C.covHigh;
-        ctx.globalAlpha = 0.55 + 0.4 * t;
+        ctx.fillStyle = t < 0.6 ? C.covLow : C.covHigh;
+        ctx.globalAlpha = 0.5 + 0.45 * t;
         ctx.fillRect((i % W) * cell, ((i / W) | 0) * cell, cell, cell);
       }
       ctx.globalAlpha = 1;
@@ -295,7 +299,7 @@
     const from = coverage ? n : Math.max(0, n - TRAIL_LEN);
     for (let i = from; i < n; i++) {
       const age = (i - from) / Math.max(1, n - from);
-      ctx.globalAlpha = 0.05 + 0.3 * age;
+      ctx.globalAlpha = 0.16 + 0.44 * age;
       ctx.fillStyle = C.agent;
       const r = cell * (0.12 + 0.14 * age);
       ctx.beginPath();
@@ -335,7 +339,7 @@
       if (!(key in sense)) continue;
       const lit = sense[key] > 0;
       ctx.strokeStyle = C.sensor;
-      ctx.globalAlpha = lit ? 0.95 : 0.25;
+      ctx.globalAlpha = lit ? 0.95 : 0.42;
       ctx.strokeRect(px * cell + 1, py * cell + 1, cell - 2, cell - 2);
       if (lit) {
         ctx.globalAlpha = 0.3;
@@ -355,7 +359,7 @@
     const colour = f.alive ? C.agent : C.dead;
 
     // glow: the agent is one cell among thousands and needs to stand out
-    ctx.globalAlpha = 0.1;
+    ctx.globalAlpha = 0.17;
     ctx.fillStyle = colour;
     ctx.beginPath(); ctx.arc(cx, cy, ring, 0, 6.2832); ctx.fill();
     ctx.globalAlpha = 1;
@@ -713,15 +717,15 @@
       // The signal wiring is the network itself, so it is the primary layer and
       // never fades below the modulation overlay drawn on top of it. Only the
       // dedicated modulation view pushes it back.
-      bctx.globalAlpha = (0.18 + 0.62 * mag * e.rel) * (live ? 1.6 : 1)
-                         * (modMode === "all" ? 0.22 : 1);
+      bctx.globalAlpha = (0.30 + 0.60 * mag * e.rel) * (live ? 1.6 : 1)
+                         * (modMode === "all" ? 0.32 : 1);
       bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
       bctx.lineWidth = 0.5 + 3 * mag;
 
       // Detail view keeps pruned edges as faint ghosts, so the genome's full
       // wiring stays inspectable alongside what survived.
       if (pruned) {
-        bctx.globalAlpha = 0.07;
+        bctx.globalAlpha = 0.2;
         bctx.strokeStyle = C.dim;
         bctx.lineWidth = 0.8;
         bctx.setLineDash([2, 3]);
@@ -858,7 +862,7 @@
       if (!anyActive && !showAll && !detail) continue;
 
       // A diamond marks every modulated connection, faint until something acts.
-      bctx.globalAlpha = anyActive ? 0.95 : (showAll ? 0.6 : 0.16);
+      bctx.globalAlpha = anyActive ? 0.95 : (showAll ? 0.68 : 0.3);
       bctx.fillStyle = C.dim;
       diamond(m0.x, m0.y, dia);
       bctx.fill();
@@ -869,7 +873,7 @@
         const from = nodePos(m.by, bCell.w, bCell.h, Math.min(bCell.w, bCell.h) * 0.14);
         const strength = Math.min(1, Math.abs(m.w) * 2);
 
-        bctx.globalAlpha = active ? 0.3 + 0.6 * strength : 0.25 + 0.35 * strength;
+        bctx.globalAlpha = active ? 0.35 + 0.6 * strength : 0.3 + 0.4 * strength;
         bctx.strokeStyle = m.w >= 0 ? C.exc : C.inh;
         bctx.lineWidth = active ? 1 + 1.5 * strength : 0.6 + 0.9 * strength;
         bctx.setLineDash(active ? [4, 3] : [3, 3]);

@@ -1,25 +1,36 @@
-/* Byte replay viewer — colourblind-safe blue/gold on dark.
-   Palette from configs/viz/color_palette_colorblindsafe.txt: blue vs gold
-   survives deuteranopia and protanopia, unlike a green/red pair. */
+/* Byte replay viewer.
+
+   Light ground, because these runs are recorded and shown to an audience:
+   projected slides, printed figures and papers all assume a white page, and a
+   dark panel photographs and prints badly. Every alpha in viewer.js is tuned
+   against this background - a fill that reads on black washes out on white, so
+   the two cannot be swapped by redefining tokens alone. */
 
 :root {
-  --bg: #0e1512;
-  --panel: #131c18;
-  --edge: #24332c;
-  --grid: #1a2420;
-  --text: #e8efea;
-  --dim: #8ca093;
+  color-scheme: light;
 
-  --gold: #d4af37;
-  --gold-light: #ddd55f;
-  /* The remaining two golds from the palette, used as a sequential ramp for
-     how often a cell was occupied. */
-  --gold-mid: #b38219;
-  --gold-dark: #705915;
-  --blue: #aad5ee;
-  --blue-mid: #336f99;
-  --dead: #c4553f;
-  --warn: #e0913a;
+  --bg: #eef2ef;
+  --panel: #ffffff;
+  /* A second surface, between panel and edge: canvas marks that must be
+     visible as shapes without claiming a colour, such as an idle neuron, which
+     on a white panel would otherwise be invisible. */
+  --surface-2: #e7edea;
+  --edge: #ccd8d1;
+  --grid: #dfe8e3;
+  --text: #16211c;
+  --dim: #5d6f66;
+
+  --gold: #a8790d;
+  --gold-light: #c79a12;
+  /* A sequential ramp for how often a cell was occupied. On a light ground the
+     ramp runs pale to dark, the opposite way round to a dark one: more time
+     spent has to mean more ink, not more light. */
+  --gold-mid: #8a6413;
+  --gold-dark: #5d4409;
+  --blue: #2b6c92;
+  --blue-mid: #74a3c0;
+  --dead: #b23c26;
+  --warn: #b5700f;
 }
 
 * { box-sizing: border-box; }
@@ -193,10 +204,10 @@ button {
   min-width: 32px;
 }
 
-button:hover { background: #2f4239; }
+button:hover { background: var(--surface-2); }
 button:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
-button.primary { background: var(--gold); color: #12160f; font-weight: 600; }
-button.primary:hover { background: var(--gold-light); }
+button.primary { background: var(--gold); color: #ffffff; font-weight: 600; }
+button.primary:hover { background: var(--gold-light); color: #ffffff; }
 
 /* Activity lanes stacked over the scrub. The lane canvas reserves a label
    gutter on its left, and the scrub is inset by the same amount so that a
@@ -236,7 +247,8 @@ button.primary:hover { background: var(--gold-light); }
 
 #seek::-webkit-slider-runnable-track {
   height: 7px;
-  background: #2f4239;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
   border-radius: 4px;
 }
 
@@ -254,7 +266,8 @@ button.primary:hover { background: var(--gold-light); }
 
 #seek::-moz-range-track {
   height: 7px;
-  background: #2f4239;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
   border-radius: 4px;
 }
 
@@ -353,7 +366,7 @@ select {
 .compass div.lit {
   background: var(--gold-light);
   border-color: var(--gold-light);
-  color: #12160f;
+  color: #ffffff;
   font-weight: 700;
 }
 
@@ -457,8 +470,8 @@ select {
 }
 
 .modes button.on {
-  background: var(--blue-mid);
-  color: var(--text);
+  background: var(--blue);
+  color: #ffffff;
 }
 
 .hint {
