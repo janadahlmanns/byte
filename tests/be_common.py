@@ -256,13 +256,117 @@ def read_arm(path):
     return out
 
 
-def read_per_tick(h5_path, P, R, columns=None):
-    """{(v, r): structured per-tick array} for every run (fields as the recorder writes
-    them). `columns` limits the fields read."""
+# ---------------------------------------------------------------------------
+# Per-tick records: a split writer for large brains
+# ---------------------------------------------------------------------------
+# The recorder's per-tick array has one float32 field per tracked connection. HDF5
+# stores a compound type's description in the dataset's object header, which is
+# limited to 64 KiB: about 1,000-1,500 fields fit, and at n = 50 a genome tracks ~1,500
+# connections ("object header message is too large"; found on the university PC,
+# 2026-11-14). Scalar, tensor and original code share this writer, so all fail alike.
+# The arms therefore replace it, in memory, by one that writes the same numbers as
+# per_tick (the base fields), per_tick_weights (ticks x connections, float32) and
+# per_tick_weight_names. read_per_tick rebuilds the original array exactly.
+
+SPLIT_ATTR = "be_split_per_tick"
+
+
+def split_per_tick(a):
+    names = a.dtype.names
+    if tuple(names[:len(PER_TICK_BASE)]) != PER_TICK_BASE:
+        raise EquivalenceError(f"per-tick fields {names[:len(PER_TICK_BASE)]} are not the "
+                               f"recorder's {PER_TICK_BASE}")
+    wcols = list(names[len(PER_TICK_BASE):])
+    bad = [c for c in wcols if a.dtype[c] != np.float32]
+    if bad:
+        raise EquivalenceError(f"per-tick weight columns not float32: {bad[:5]}")
+    base = np.empty(len(a), dtype=[(f, a.dtype[f]) for f in PER_TICK_BASE])
+    for f in PER_TICK_BASE:
+        base[f] = a[f]
+    w = np.empty((len(a), len(wcols)), dtype=np.float32)
+    for j, c in enumerate(wcols):
+        w[:, j] = a[c]
+    return base, w, wcols
+
+
+def save_per_tick_split(hdf5_path, variant_id, run_id, per_tick_array, lock=None):
+    """Drop-in for simulate.hdf5_utils.save_per_tick_to_hdf5 (same signature, same group
+    layout), writing the weight columns as their own dataset."""
+    base, w, wcols = split_per_tick(per_tick_array)
+
+    def _write():
+        with h5py.File(hdf5_path, "a") as f:
+            grp = f.require_group(f"variant_{variant_id}").require_group(f"run_{run_id}")
+            for k in ("per_tick", "per_tick_weights", "per_tick_weight_names"):
+                if k in grp:
+                    del grp[k]
+            grp.create_dataset("per_tick", data=base, compression="gzip")
+            grp.create_dataset("per_tick_weights", data=w, compression="gzip")
+            grp.create_dataset("per_tick_weight_names",
+                               data=np.array([c.encode() for c in wcols], dtype=f"S{max([len(c) for c in wcols] + [1])}"))
+            grp.attrs[SPLIT_ATTR] = 1
+
+    if lock is not None:
+        with lock:
+            _write()
+    else:
+        _write()
+
+
+def install_split_writer(*modules):
+    """Replace save_per_tick_to_hdf5 in every given module that has it, and make worker
+    pools fork, so the scalar code's workers (which write per-tick data themselves)
+    inherit the replacement. verify_split() afterwards proves it reached them: no
+    silent fallback to the old writer."""
+    import multiprocessing as mp
+    if mp.get_start_method(allow_none=True) != "fork":
+        mp.set_start_method("fork", force=True)
+    done = []
+    for m in modules:
+        if hasattr(m, "save_per_tick_to_hdf5"):
+            m.save_per_tick_to_hdf5 = save_per_tick_split
+            done.append(m.__name__)
+    if not done:
+        raise EquivalenceError("no module to install the split per-tick writer into")
+    return done
+
+
+def verify_split(h5_path, P, R):
+    with h5py.File(h5_path, "r") as f:
+        for v in range(P):
+            for r in range(R):
+                g = f[f"variant_{v}/run_{r}"]
+                if not g.attrs.get(SPLIT_ATTR):
+                    raise EquivalenceError(f"{h5_path}: variant {v} run {r} was written by the "
+                                           f"original per-tick writer (the split writer did not "
+                                           f"reach the process that wrote it)")
+
+
+def read_per_tick(h5_path, P, R, weights=True):
+    """{(v, r): structured per-tick array} for every run, exactly as the recorder built
+    it (split files are reassembled). weights=False: the base fields only."""
     out = {}
     with h5py.File(h5_path, "r") as f:
         for v in range(P):
             for r in range(R):
-                d = f[f"variant_{v}/run_{r}/per_tick"]
-                out[(v, r)] = d.fields(list(columns))[()] if columns else d[()]
+                g = f[f"variant_{v}/run_{r}"]
+                base = g["per_tick"][()]
+                if "per_tick_weights" not in g:
+                    out[(v, r)] = base if weights else base[list(PER_TICK_BASE)]
+                    continue
+                if not weights:
+                    out[(v, r)] = base
+                    continue
+                w = g["per_tick_weights"][()]
+                names = [n.decode() for n in g["per_tick_weight_names"][()]]
+                # h5py tags string fields with encoding metadata, which a dtype list
+                # cannot carry: rebuild each field's type from its plain type string.
+                a = np.empty(len(base), dtype=[(fld, np.dtype(base.dtype[fld].str))
+                                               for fld in base.dtype.names]
+                             + [(c, "<f4") for c in names])
+                for fld in base.dtype.names:
+                    a[fld] = base[fld]
+                for j, c in enumerate(names):
+                    a[c] = w[:, j]
+                out[(v, r)] = a
     return out

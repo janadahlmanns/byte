@@ -49,8 +49,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.be_common import (MOVES, PER_TICK_BASE, RESULT_KEYS, EquivalenceError,  # noqa: E402
                              call_eval, check_seeds_recorded, find_h5, flatten_genomes,
-                             genome_hash, read_arm, read_per_tick, read_summaries,
-                             write_arm)
+                             genome_hash, install_split_writer, read_arm, read_per_tick,
+                             read_summaries, verify_split, write_arm)
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_BASE = ROOT / "data" / "behaviour_equivalence"
@@ -351,16 +351,22 @@ def run_arm(outdir, name):
     t0 = time.perf_counter()
     if arm["kind"] == "scalar":
         import mvb.simulation_API as api
+        import simulate.hdf5_utils as hu
+        meta["split_writer"] = install_split_writer(hu, api)
         call_eval(api.eval_generation, genomes, cfg, str(folder), seeds=seeds,
                   per_tick=arm["per_tick"], randomness_cfg=randomness)
         wall = time.perf_counter() - t0
         h5 = find_h5(str(folder))
         res = read_summaries(h5, P, R)
         check_seeds_recorded(res, seeds, name)
+        if arm["per_tick"]:
+            verify_split(h5, P, R)
         meta.update(wall_s=wall, h5=h5)
     else:
         import torch
         import mvb_torch.adapter as adapter
+        import simulate.hdf5_utils as hu
+        meta["split_writer"] = install_split_writer(hu, adapter)
         captured = []
         real = adapter.eval_generation_batch
 
@@ -398,6 +404,7 @@ def run_arm(outdir, name):
             for k in RESULT_KEYS:
                 if not np.array_equal(rec[k].astype(np.float64), res[k].astype(np.float64)):
                     raise EquivalenceError(f"arm {name}: tracked {k} differ from the batch result")
+            verify_split(h5, P, R)
             meta["h5"] = h5
         meta.update(wall_s=wall, warmup_s=float(gres.warmup_s), new_graphs=int(gres.new_graphs),
                     torch=torch.__version__,
@@ -779,7 +786,7 @@ def analyse(outdir):
         l2["variables"][key] = entry
         if key == "lifespans":
             verdict_parts.append(entry["pass"])
-    s2d_ticks = ticks_of("S2d", kd)
+    s2d_ticks = read_per_tick(arms["S2d"]["meta"]["h5"], P, kd, weights=False)
     l2["decision_statistics"] = decision_stats(decision_features(s1d_ticks), decision_features(td_ticks),
                                                decision_features(s2d_ticks), P)
     S["levels"]["L2_live"] = l2

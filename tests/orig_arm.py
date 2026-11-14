@@ -24,8 +24,8 @@ from pathlib import Path
 import numpy as np
 
 from be_common import (EquivalenceError, call_eval, check_seeds_recorded, find_h5,
-                       genome_hash, loaded_files, read_summaries, unflatten_genomes,
-                       write_arm)
+                       genome_hash, install_split_writer, loaded_files, read_summaries,
+                       unflatten_genomes, verify_split, write_arm)
 
 
 def git(worktree, *args):
@@ -68,6 +68,10 @@ def main(argv=None):
 
     head = check_worktree(Path.cwd(), a.commit)
     import mvb.simulation_API as api        # the worktree's (checked above)
+    import simulate.hdf5_utils as hu
+    # Only HOW per-tick arrays are written changes (be_common: HDF5's header limit at
+    # n = 50); the code that computes them is the worktree's, unmodified on disk.
+    split_writer = install_split_writer(hu, api)
 
     with np.load(a.input) as z:
         flat = {k: z[k] for k in z.files}
@@ -91,7 +95,9 @@ def main(argv=None):
     h5 = find_h5(a.folder)
     res = read_summaries(h5, P, R)
     check_seeds_recorded(res, seeds, a.arm)
-    meta = dict(meta_in, wall_s=wall, code_commit=head, code_dirty=False,
+    if meta_in["per_tick"]:
+        verify_split(h5, P, R)
+    meta = dict(meta_in, split_writer=split_writer, wall_s=wall, code_commit=head, code_dirty=False,
                 code_root=str(Path.cwd()), h5=str(h5), python=sys.version.split()[0],
                 numpy=np.__version__, modules=loaded_files(Path.cwd()))
     write_arm(a.out, results=res, meta=meta)

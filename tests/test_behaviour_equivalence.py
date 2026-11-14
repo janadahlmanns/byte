@@ -12,6 +12,10 @@
   [6] resume: a mismatching arm is refused, a missing arm is rerun alone
   [7] the original-code runner refuses the wrong code: our mvb on the path, a dirty
       worktree, another commit
+  [8] per-tick records of large brains (HDF5's 64 KiB header limit, hit at n = 50 on the
+      university PC): the split writer round-trips 1,600 weight columns exactly, an
+      old-writer file is refused, and at n = 50 the scalar and tensor pre-drawn per-tick
+      records (about 1,500 columns) are written, read back and identical
 
 Usage
 -----
@@ -320,6 +324,66 @@ def test_orig_refusals(out, wts):
     check("a worktree at another commit than asked -> refused", e and "expected" in e)
 
 
+def test_split_writer(base):
+    print("\n[8] Per-tick records of large brains (split writer)")
+    import h5py
+    from tests.be_common import (PER_TICK_BASE, call_eval, find_h5, install_split_writer,
+                                 read_per_tick, save_per_tick_split, verify_split)
+    from mvb_torch.tracking import PER_TICK_BASE_DTYPE
+    rng = np.random.default_rng(8)
+    dt = list(PER_TICK_BASE_DTYPE) + [(f"{i // 50}_{i % 50}", "f4") for i in range(1600)]
+    a = np.zeros(40, dtype=dt)
+    for f, _t in PER_TICK_BASE_DTYPE:
+        a[f] = rng.integers(0, 3, 40).astype(a.dtype[f]) if f != "movement" else rng.choice([b"N", b"stay"], 40)
+    for i in range(1600):
+        a[dt[len(PER_TICK_BASE_DTYPE) + i][0]] = rng.standard_normal(40).astype(np.float32)
+    h5 = base / "split.h5"
+    e = raises(lambda: h5py.File(base / "plain.h5", "w").create_dataset("x", data=a, compression="gzip"))
+    check(f"the plain layout fails at 1,600 columns, as on the university PC ({(e or '')[:45]})",
+          e and "too large" in e)
+    save_per_tick_split(h5, 0, 0, a)
+    back = read_per_tick(h5, 1, 1)[(0, 0)]
+    check("split writer: 1,600 columns written and reassembled exactly (dtype and every value)",
+          back.dtype == a.dtype and all(np.array_equal(back[f], a[f]) for f in a.dtype.names))
+    check("weights=False returns only the base fields",
+          read_per_tick(h5, 1, 1, weights=False)[(0, 0)].dtype.names == PER_TICK_BASE)
+    with h5py.File(base / "old.h5", "w") as f:
+        f.create_dataset("variant_0/run_0/per_tick", data=a[list(PER_TICK_BASE)])
+    e = raises(lambda: verify_split(base / "old.h5", 1, 1), EquivalenceError)
+    check("a file from the old writer is refused by verify_split", e and "original per-tick writer" in e)
+    wrong = np.zeros(3, dtype=[("tick", "i4"), ("x", "f4")])
+    check("a record without the recorder's base fields is refused",
+          raises(lambda: save_per_tick_split(base / "w.h5", 0, 0, wrong), EquivalenceError))
+
+    # n = 50, pre-drawn (serial: no worker pool), 2 genomes x 1 run, every tick recorded
+    import mvb.simulation_API as api
+    import mvb_torch.adapter as adapter
+    import simulate.hdf5_utils as hu
+    install_split_writer(hu, api, adapter)
+    sp = BE.PARTS["b"]
+    cfg = BE.load_cfg(sp["config"])
+    cfg["experiment"]["n_runs"] = 1
+    g = BE.build_population(cfg, sp["elites"], sp["blocks"])[0][20:22]
+    seeds = BE.draw_all_seeds(2, 1)[1]
+    rcfg = {"enabled": True, "max_brain_ticks": BE.max_brain_ticks(cfg)}
+    outs = {}
+    for name, fn in (("scalar", api.eval_generation),
+                     ("tensor", adapter.make_tensor_evaluator({"backend": "tensor", "device": "cpu",
+                                                               "dtype": "float64"}, cfg, rcfg))):
+        folder = base / f"n50_{name}"
+        folder.mkdir()
+        call_eval(fn, g, cfg, str(folder), seeds=seeds, per_tick=True, randomness_cfg=rcfg)
+        h = find_h5(str(folder))
+        verify_split(h, 2, 1)
+        outs[name] = read_per_tick(h, 2, 1)
+    cols = len(outs["scalar"][(0, 0)].dtype.names) - len(PER_TICK_BASE)
+    same = all(outs["scalar"][k].dtype == outs["tensor"][k].dtype
+               and all(np.array_equal(outs["scalar"][k][f], outs["tensor"][k][f]) for f in outs["scalar"][k].dtype.names)
+               for k in outs["scalar"])
+    check(f"n = 50: scalar and tensor pre-drawn per-tick records written ({cols} weight columns) "
+          f"and identical in every field", cols > 1000 and same)
+
+
 def main():
     test_statistics()
     test_population()
@@ -332,6 +396,7 @@ def main():
         test_controls(out, base)
         test_resume(out, base)
         test_orig_refusals(out, wts)
+        test_split_writer(base)
     finally:
         remove_worktrees(wts)
         shutil.rmtree(base, ignore_errors=True)
