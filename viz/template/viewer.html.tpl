@@ -23,9 +23,9 @@
       <h2>World</h2>
       <div class="canvas-box"><canvas id="world"></canvas></div>
       <div class="key">
-        <span><i class="sw box" style="background:var(--blue)"></i>food</span>
-        <span><i class="sw dot" style="background:var(--blue-mid)"></i>regrowing</span>
-        <span><i class="sw ring" style="border-color:var(--blue)"></i>eaten</span>
+        <span><i class="sw box" style="background:var(--green)"></i>food</span>
+        <span><i class="sw dot" style="background:var(--green-mid)"></i>regrowing</span>
+        <span><i class="sw ring" style="border-color:var(--green)"></i>eaten</span>
         <span><i class="sw dot" style="background:var(--gold)"></i>agent &amp; trail</span>
         <span><i class="sw box hollow" style="border-color:var(--gold-light)"></i>sensed</span>
         <span class="cov-only"><i class="sw box ramp"></i>reached &mdash; brighter = longer</span>

@@ -19,8 +19,8 @@
   const css = getComputedStyle(document.documentElement);
   const C = {
     grid: css.getPropertyValue("--grid").trim(),
-    food: css.getPropertyValue("--blue").trim(),
-    pending: css.getPropertyValue("--blue-mid").trim(),
+    food: css.getPropertyValue("--green").trim(),
+    pending: css.getPropertyValue("--green-mid").trim(),
     agent: css.getPropertyValue("--gold").trim(),
     sensor: css.getPropertyValue("--gold-light").trim(),
     dead: css.getPropertyValue("--dead").trim(),

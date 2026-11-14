@@ -9,16 +9,22 @@
 :root {
   color-scheme: light;
 
-  --bg: #eef2ef;
+  --bg: #eef1f3;
   --panel: #ffffff;
   /* A second surface, between panel and edge: canvas marks that must be
      visible as shapes without claiming a colour, such as an idle neuron, which
      on a white panel would otherwise be invisible. */
-  --surface-2: #e7edea;
-  --edge: #ccd8d1;
-  --grid: #dfe8e3;
-  --text: #16211c;
-  --dim: #5d6f66;
+  --surface-2: #e8ecef;
+  --edge: #ccd5da;
+  --grid: #e1e7ea;
+  --text: #161c20;
+  --dim: #5f6b72;
+
+  /* Food. Green is the one thing in the world panel the agent is looking for,
+     so it gets the only saturated hue there; the agent keeps gold and the two
+     differ in shape as well as colour. */
+  --green: #1f7a4f;
+  --green-mid: #8cc0a6;
 
   --gold: #a8790d;
   --gold-light: #c79a12;
@@ -470,7 +476,7 @@ select {
 }
 
 .modes button.on {
-  background: var(--blue);
+  background: var(--text);
   color: #ffffff;
 }
 
