@@ -224,6 +224,11 @@ def test_end_to_end(base, wts):
     first = (out / "summary.json").read_bytes()
     BE.analyse(out)
     check("--analyse reproduces summary.json byte for byte", (out / "summary.json").read_bytes() == first)
+    moved = base / "moved_elsewhere"
+    shutil.copytree(out, moved)
+    check("a copied run folder (rsync to another machine) analyses identically",
+          BE.analyse(moved) == verdict and (moved / "summary.json").read_bytes() == first)
+    shutil.rmtree(moved)
     check("figures written", all((out / f"{n}.png").exists() for n in
                                  ("genome_means", "bland_altman", "lifespan_ecdf", "per_run_difference")))
     m = read_arm(out / "arms" / "O.npz")["meta"]
@@ -281,10 +286,18 @@ def test_resume(out, base):
     check("without --resume, existing arms are refused", e and "--resume" in e)
     before = {p.name: p.stat().st_mtime_ns for p in (d / "arms").glob("*.npz")}
     (d / "arms" / "Tr.npz").unlink()
-    BE.execute(d, resume=True)
+    (d / "arms" / "O0.npz").unlink()
+    cwd = os.getcwd()
+    os.chdir(ROOT)
+    try:   # resumed with a RELATIVE path, as on the university PC (O0 runs in its worktree)
+        BE.main(["--resume", os.path.relpath(d, ROOT)])
+    finally:
+        os.chdir(cwd)
     after = {p.name: p.stat().st_mtime_ns for p in (d / "arms").glob("*.npz")}
-    check("a missing arm (Tr) is rerun, every other arm reused untouched",
-          "Tr.npz" in after and all(after[n] == t for n, t in before.items() if n != "Tr.npz"))
+    check("missing arms (Tr, and O0 in its worktree) are rerun from a RELATIVE --resume path, "
+          "every other arm reused untouched",
+          "Tr.npz" in after and "O0.npz" in after
+          and all(after[n] == t for n, t in before.items() if n not in ("Tr.npz", "O0.npz")))
     check("the rerun Tr equals T bit for bit",
           BE.results_equal(read_arm(d / "arms" / "T.npz"), read_arm(d / "arms" / "Tr.npz")))
 

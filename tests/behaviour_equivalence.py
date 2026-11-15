@@ -694,6 +694,22 @@ def decision_divergence(ta, tb, exact=False):
     return out
 
 
+def arm_h5(outdir, arm):
+    """The arm's HDF5 inside THIS copy of the run folder. The stored path is where it was
+    written (absolute, or relative to the checkout, on whatever machine ran it); only
+    its part from arms/<name>/ on is used, so a run folder copied to another machine
+    (rsync) analyses the same."""
+    stored = Path(arm["meta"]["h5"])
+    parts = stored.parts
+    if "arms" not in parts:
+        raise EquivalenceError(f"arm {arm['meta']['arm']}: HDF5 path {stored} is not inside arms/")
+    i = len(parts) - 1 - parts[::-1].index("arms")
+    p = Path(outdir).joinpath(*parts[i:])
+    if not p.is_file():
+        raise EquivalenceError(f"arm {arm['meta']['arm']}: {p} not found (stored as {stored})")
+    return str(p)
+
+
 def results_equal(A, B, sub=None):
     for k in RESULT_KEYS:
         a = A[k] if sub is None else A[k][:, :sub]
@@ -734,7 +750,7 @@ def analyse(outdir):
     S["O0_files_differing"] = stale
 
     def ticks_of(name, R):
-        return read_per_tick(arms[name]["meta"]["h5"], P, R)
+        return read_per_tick(arm_h5(outdir, arms[name]), P, R)
 
     # --- L1: pre-drawn, model ------------------------------------------------------
     l1 = dict(per_run=per_run_diff(arms["Sp"], arms["Tp"], mt),
@@ -786,7 +802,7 @@ def analyse(outdir):
         l2["variables"][key] = entry
         if key == "lifespans":
             verdict_parts.append(entry["pass"])
-    s2d_ticks = read_per_tick(arms["S2d"]["meta"]["h5"], P, kd, weights=False)
+    s2d_ticks = read_per_tick(arm_h5(outdir, arms["S2d"]), P, kd, weights=False)
     l2["decision_statistics"] = decision_stats(decision_features(s1d_ticks), decision_features(td_ticks),
                                                decision_features(s2d_ticks), P)
     S["levels"]["L2_live"] = l2
@@ -1025,16 +1041,18 @@ def main(argv=None):
     ap.add_argument("--dir", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
 
+    # Absolute from here on: the original-code arms run with their worktree as working
+    # directory, where a relative run folder would point somewhere else.
     if a.run_arm:
-        return run_arm(a.dir, a.run_arm)
+        return run_arm(str(Path(a.dir).resolve()), a.run_arm)
     if a.analyse:
-        return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[analyse(a.analyse)]
+        return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[analyse(Path(a.analyse).resolve())]
     if a.resume:
-        outdir = Path(a.resume)
+        outdir = Path(a.resume).resolve()
     else:
         if not (a.part and a.orig_worktree and a.orig_commit and a.current_worktree):
             ap.error("a new run needs --part, --orig-worktree, --orig-commit and --current-worktree")
-        outdir = Path(a.out) if a.out else default_outdir(a.part)
+        outdir = (Path(a.out) if a.out else default_outdir(a.part)).resolve()
         if outdir.exists():
             raise EquivalenceError(f"{outdir} exists; use --resume {outdir}")
         run = plan_run(a.part, PARTS[a.part], outdir, a.orig_worktree, a.orig_commit,
