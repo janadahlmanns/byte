@@ -275,7 +275,11 @@ def main(argv=None):
     machine = next(iter(machines))
     scaling = []
     for r in a.scaling:
-        (m2, _h), pts, _e = PS.load_report(r, a.include_disturbed)
+        # Only the scalar and CUDA population points are used. The tensor-CPU rows of a
+        # Step 22 report may predate Step 25 (no warm-up columns); they are read with the
+        # compile included and dropped below, so they cannot block the report. CUDA rows
+        # without warm-up data still raise.
+        (m2, _h), pts, _e = PS.load_report(r, a.include_disturbed, include_compile=("cpu",))
         if m2 != machine:
             raise BreakevenError(f"--scaling {Path(r).name} is from another machine ({m2})")
         scaling += [p for p in pts if p["dim"] == "population" and p["backend"] in ("scalar", "cuda")]

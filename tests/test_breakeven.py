@@ -11,6 +11,8 @@
   [4] refusals: a missing backend point, a config difference beyond the backend, a
       wrong backend in the report, mixed machines, a disturbed point (unless
       --include-disturbed)
+  [5] --scaling with real-shaped Step 22 reports: old tensor-CPU rows without warm-up
+      columns (as in the university PC's report) are ignored; old CUDA rows are refused
 
 Usage
 -----
@@ -165,7 +167,7 @@ def run_plot(args):
         with redirect_stdout(buf):
             rc = PB.main(args)
         return rc, buf.getvalue(), None
-    except PB.BreakevenError as e:
+    except (PB.BreakevenError, PB.PS.ScalingError) as e:
         return None, buf.getvalue(), str(e)
 
 
@@ -215,12 +217,29 @@ def test_refusals(tmp):
     check(f"two machines -> refused ({err})", rc is None and err and "more than one kind of machine" in err)
 
 
+def test_scaling_reference(tmp):
+    print("\n[5] --scaling reference series")
+    from tests.test_scaling import all_points, synth_report
+    ap = all_points()                                  # {(dim, backend): [(name, cfg)]}
+    pts = ap[("population", "scalar")] + ap[("population", "cpu")]
+    old = synth_report(tmp, "s22_scalar_cpu", pts, old_format=("cpu",))
+    cu = synth_report(tmp, "s22_cuda", ap[("population", "cuda")])
+    rep = synth(tmp, "with_ref", fams=("random",), cpu="i7")
+    rc, txt, err = run_plot([str(rep), "--out", str(Path(tmp) / "oref"), "--scaling", str(old), str(cu)])
+    check(f"a Step 22 report with pre-Step-25 tensor-CPU rows is accepted ({err})", rc == 0)
+    cu_old = synth_report(tmp, "s22_cuda_old", ap[("population", "cuda")], old_format=("cuda",))
+    rc, txt, err = run_plot([str(rep), "--out", str(Path(tmp) / "oref2"), "--scaling", str(cu_old)])
+    check(f"... but CUDA rows without warm-up data are still refused ({(err or '')[:60]})",
+          rc is None and err and "no compile warm-up data" in err)
+
+
 def main():
     test_sweeps()
     with tempfile.TemporaryDirectory() as tmp:
         test_run_ea(tmp)
         test_plot(tmp)
         test_refusals(tmp)
+        test_scaling_reference(tmp)
     failed = [n for n, ok in _RESULTS if not ok]
     print(f"\n{len(_RESULTS) - len(failed)}/{len(_RESULTS)} passed")
     for n in failed:

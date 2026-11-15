@@ -1,0 +1,169 @@
+# Version runs (plan_evotorch.md, Step 29): plain run_ea of a given commit, from a git
+# worktree, with a config built from THAT commit's own template file and the model / EA
+# values of the canonical config (this checkout's HEAD). Run with
+#   python -m tests.version_runs configs/version_runs/original.yaml --worktree ../byte_versions
+# Plot: python -m analysis.plot_versions <report folder> --out <folder>
+#
+# Per job: commit (a hash, or HEAD = this checkout's HEAD), template (a config name in
+# that commit's configs/experiments/), canonical (a config name here, read at HEAD),
+# backend (scalar | cuda), set (dotted keys applied last), group and label (for the plot),
+# P (the population size, for the plot's x axis).
+
+description: "Item 3: the original code (8e17e694c7) vs today's scalar and CUDA, break-even lookup points + one n = 50 point, 5 generations"
+jobs:
+  - name: n11_P2_orig_scalar
+    commit: 8e17e694c7
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: original scalar
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P2_head_scalar
+    commit: HEAD
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: today scalar
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P2_head_cuda
+    commit: HEAD
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: original_n11
+    label: today CUDA
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P8_orig_scalar
+    commit: 8e17e694c7
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: original scalar
+    P: 8
+    set:
+      experiment.population_size: 8
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P8_head_scalar
+    commit: HEAD
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: today scalar
+    P: 8
+    set:
+      experiment.population_size: 8
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P8_head_cuda
+    commit: HEAD
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: original_n11
+    label: today CUDA
+    P: 8
+    set:
+      experiment.population_size: 8
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P32_orig_scalar
+    commit: 8e17e694c7
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: original scalar
+    P: 32
+    set:
+      experiment.population_size: 32
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P32_head_scalar
+    commit: HEAD
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: original_n11
+    label: today scalar
+    P: 32
+    set:
+      experiment.population_size: 32
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n11_P32_head_cuda
+    commit: HEAD
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: original_n11
+    label: today CUDA
+    P: 32
+    set:
+      experiment.population_size: 32
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n50_P2_orig_scalar
+    commit: 8e17e694c7
+    template: ea_from_random
+    canonical: ea_from_random_large_tensor_cuda
+    backend: scalar
+    group: original_n50
+    label: original scalar
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n50_P2_head_scalar
+    commit: HEAD
+    template: ea_from_random
+    canonical: ea_from_random_large_tensor_cuda
+    backend: scalar
+    group: original_n50
+    label: today scalar
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1
+  - name: n50_P2_head_cuda
+    commit: HEAD
+    template: ea_from_random_large_tensor_cuda
+    canonical: ea_from_random_large_tensor_cuda
+    backend: cuda
+    group: original_n50
+    label: today CUDA
+    P: 2
+    set:
+      experiment.population_size: 2
+      experiment.n_runs: 300
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.elite_size: 1

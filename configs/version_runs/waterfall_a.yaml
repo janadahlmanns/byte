@@ -1,0 +1,98 @@
+# Version runs (plan_evotorch.md, Step 29): plain run_ea of a given commit, from a git
+# worktree, with a config built from THAT commit's own template file and the model / EA
+# values of the canonical config (this checkout's HEAD). Run with
+#   python -m tests.version_runs configs/version_runs/waterfall_a.yaml --worktree ../byte_versions
+# Plot: python -m analysis.plot_versions <report folder> --out <folder>
+#
+# Per job: commit (a hash, or HEAD = this checkout's HEAD), template (a config name in
+# that commit's configs/experiments/), canonical (a config name here, read at HEAD),
+# backend (scalar | cuda), set (dotted keys applied last), group and label (for the plot),
+# P (the population size, for the plot's x axis); add (evaluator keys the commit's
+# code requires but its template lacks).
+
+description: "Item 4, waterfall A: the production lookup config (P 260, R 300, elite 10, n = 11), 5 generations, one run per commit"
+jobs:
+  - name: wfA_0_8e17e69
+    commit: 8e17e694c7
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: waterfall_a
+    label: original
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+  - name: wfA_1_740a341
+    commit: 740a3413dd
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: waterfall_a
+    label: arctanh threshold
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+  - name: wfA_2_3dfcd31
+    commit: 3dfcd3167b
+    template: ea_from_lookup
+    canonical: ea_from_lookup_tensor_cuda
+    backend: scalar
+    group: waterfall_a
+    label: Python floats + math.tanh
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+  - name: wfA_3_ef34271
+    commit: ef34271fcb
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: waterfall_a
+    label: PyTorch port
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+  - name: wfA_4_b88ba9d
+    commit: b88ba9ddd9
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: waterfall_a
+    label: torch.compile
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+    add:
+      experiment.evaluator.compile: true   # required by b88b's code, missing in its config file
+  - name: wfA_5_35f2840
+    commit: 35f28400c8
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: waterfall_a
+    label: fast mutation (and Steps 8-20)
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+  - name: wfA_6_93de867
+    commit: 93de8677c4
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: waterfall_a
+    label: per_child mutation
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.mutation_rng: per_child   # 93de's contribution
+  - name: wfA_7_HEAD
+    commit: HEAD
+    template: ea_from_lookup_tensor_cuda
+    canonical: ea_from_lookup_tensor_cuda
+    backend: cuda
+    group: waterfall_a
+    label: today
+    P: 260
+    set:
+      experiment.evolutionary_algorithm.num_generations: 5
+      experiment.evolutionary_algorithm.mutation_rng: per_child   # 93de's contribution
