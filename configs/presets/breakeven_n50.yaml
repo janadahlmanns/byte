@@ -1,0 +1,8 @@
+# Break-even sweeps (plan_evotorch.md, Step 28). Scalar points first, then CUDA.
+# Run on one machine with nothing else running. Plot: python -m analysis.plot_breakeven <report> --out <folder>
+description: "Break-even at n = 50 (optional, slow scalar): P = 2 and 4 (4 points)"
+configs:
+  - "breakeven_n50_scalar [population_size=2]"
+  - "breakeven_n50_scalar [population_size=4]"
+  - "breakeven_n50_cuda [population_size=2]"
+  - "breakeven_n50_cuda [population_size=4]"

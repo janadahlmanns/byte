@@ -1,0 +1,26 @@
+# ============================================================
+# BREAK-EVEN SWEEP: production lookup config, R = 300, n = 11, scalar CPU (mvb/, worker processes) (plan_evotorch.md, Step 28)
+# ============================================================
+# From which population size is the CUDA tensor code faster than the scalar code?
+# Two families, each a scalar and a CUDA file identical apart from the backend
+# (tests/test_breakeven.py checks that):
+#   lookup: the production config (ea_from_lookup_tensor_cuda), R = 300
+#   random: the Step 22 scaling base (random genomes), R = 100; extends that sweep's
+#           population curve (P = 25..400, elite 10) down to P = 2
+#   n50:    optional, P = 2 and 4 at n = 50 (slow in the scalar code: ~1.5 h)
+# elite_size 1 for every point: the EA needs P > elite_size, and P = 2 is the smallest
+# EA (P = 1 has no child). 4 generations: gen 0 holds the CUDA compile, gens 1-3 timed.
+# The scalar code runs one genome per worker: min(P, cores) cores are busy.
+# Presets: breakeven (lookup + random), breakeven_n50.
+# Plot: python -m analysis.plot_breakeven <report folder(s)> --out <folder>
+# ============================================================
+base: ea_from_lookup_tensor_cuda
+set:
+  experiment.output_folder: "data/breakeven/"
+  experiment.simulation_name: "breakeven_lookup_scalar"
+  experiment.evolutionary_algorithm.num_generations: 4
+  experiment.evolutionary_algorithm.elite_size: 1
+  experiment.n_runs: 300
+  experiment.evaluator: {backend: scalar}
+vary:
+  experiment.population_size: [2, 4, 8, 16, 32, 64]
