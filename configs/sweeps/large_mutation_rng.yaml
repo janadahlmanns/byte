@@ -1,0 +1,21 @@
+# ============================================================
+# LARGE CONFIG, shared vs per_child mutation, 6 generations (A100 check, 2026-11-16)
+# ============================================================
+# The A100 production run (job 1863413, 9.46 h) used mutation_rng: shared, before
+# per_child existed (plan Step 27): mutation took 15.9% of the run, on one EPYC core.
+# This measures both modes in ONE job on the same node:
+#   - per_child: the mutation cost on the A100 with all of the job's cores
+#     (projection: ~45 s -> a few s per generation, ~187 -> ~145 s per generation);
+#   - shared: the reference on the same node, and a reproducibility check: its
+#     generations 0-5 must equal job 1863413's (run-ticks per generation, generation
+#     statistics).
+# Everything else is the production large config. Preset: large_mutation_rng.
+#   sbatch.tinygpu --partition=a100 --gres=gpu:a100:1 hpc/tinygpu_job.sh large_mutation_rng
+# ============================================================
+base: ea_from_random_large_tensor_cuda
+set:
+  experiment.output_folder: "data/large_mutation/"
+  experiment.simulation_name: "large_mutation_rng"
+  experiment.evolutionary_algorithm.num_generations: 6
+vary:
+  experiment.evolutionary_algorithm.mutation_rng: [shared, per_child]

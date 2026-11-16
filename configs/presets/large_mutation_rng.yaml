@@ -1,0 +1,7 @@
+# The large config with shared and per_child mutation, 6 generations each, in one job
+# (configs/sweeps/large_mutation_rng.yaml). For the A100:
+#   sbatch.tinygpu --partition=a100 --gres=gpu:a100:1 hpc/tinygpu_job.sh large_mutation_rng
+description: "Large config, shared vs per_child mutation, 6 generations each (~40 min on an A100)"
+configs:
+  - "large_mutation_rng [mutation_rng=shared]"
+  - "large_mutation_rng [mutation_rng=per_child]"
