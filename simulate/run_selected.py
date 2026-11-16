@@ -582,11 +582,27 @@ def slurm_info():
     return {k: os.environ[k] for k in SLURM_VARS if k in os.environ}
 
 
-def cpus_allowed():
+def cpus_allowed(sys_root="/sys/devices/system/cpu"):
+    """{"count": allowed logical CPUs (hyperthreads count separately), "list": ranges,
+    "physical_cores": distinct (package, core) among them (plan Step 30: a node may give
+    both hyperthreads of every core), or 'unavailable: ...'}."""
     cpus = ML.allowed_cpus()
     if cpus is None:
         return UNAVAILABLE + "no sched_getaffinity on this OS (all cores)"
-    return {"count": len(cpus), "list": _cpu_ranges(cpus)}
+    return {"count": len(cpus), "list": _cpu_ranges(cpus),
+            "physical_cores": physical_cores(cpus, sys_root)}
+
+
+def physical_cores(cpus, sys_root="/sys/devices/system/cpu"):
+    seen = set()
+    for c in cpus:
+        topo = Path(sys_root) / f"cpu{c}" / "topology"
+        try:
+            seen.add(((topo / "physical_package_id").read_text().strip(),
+                      (topo / "core_id").read_text().strip()))
+        except OSError as e:
+            return UNAVAILABLE + f"no CPU topology for cpu{c} ({type(e).__name__})"
+    return len(seen)
 
 
 def _cpu_ranges(cpus):

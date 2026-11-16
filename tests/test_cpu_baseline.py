@@ -13,6 +13,9 @@
       exact; files written
   [5] refusals: a duplicate machine / config, a missing counterpart on the reference
       machine, a tampered config, no or two CUDA machines
+  [6] hyperthreads (2026-11-16): @all runs on every given CPU; run_selected records the
+      physical cores behind the allowed CPUs; the plot keeps 128 threads on 64 cores
+      apart from 64 cores, labels both, and draws it off the core-scaling line
 
 Usage
 -----
@@ -130,6 +133,13 @@ def test_job_script(tmp):
                            ("flag", ("--configs",), "takes preset names")):
         rc, out, calls = run_script(tmp, 4, "0-3", 4, tag, segments=segs)
         check(f"{' '.join(segs)} -> refused before anything runs", rc != 0 and msg in out and calls is None)
+    sif = Path(tmp) / "all" / "byte.sif"
+    rc, out, calls = run_script(tmp, 8, "0-7", 4, "all", segments=("cpu_baseline_tinyfat", "cpu_baseline_tinyfat@all"))
+    check(f"@all: every given CPU incl. hyperthreads (8 threads on 4 cores), after the 4-core run ({calls})",
+          rc == 0 and calls == [
+              f"OMP=4 CPUS=0,1,2,3 exec {sif} python -m simulate.run_selected --preset cpu_baseline_tinyfat",
+              f"OMP=8 CPUS=0,1,2,3,4,5,6,7 exec {sif} python -m simulate.run_selected --preset cpu_baseline_tinyfat"]
+          and "8 threads on 4 physical cores (hyperthreads included)" in out)
     rc, out, calls = run_script(tmp, 4, "0-3", 4, "onefails", segments=("cpu_baseline_tinyfat", "cpu_baseline_cores@2"),
                                 fail_preset="cpu_baseline_tinyfat")
     check("a failing preset: the next still runs, the job exits non-zero",
@@ -174,14 +184,20 @@ TIMES = {  # (machine tag, config) -> seconds per whole generation
     ("uni", "n50_scalar"): 300.0, ("uni", "n50_cpu"): 400.0, ("uni", "n50_cuda"): 1.0,
     ("tf64", "n11_scalar"): 40.0, ("tf64", "n11_cpu"): 50.0, ("tf64", "n50_scalar"): 150.0, ("tf64", "n50_cpu"): 200.0,
     ("tf32", "n11_scalar"): 70.0, ("tf16", "n11_scalar"): 130.0,
+    ("tf128", "n11_scalar"): 33.0, ("tf128", "n11_cpu"): 45.0,
 }
 
 
-def synth(root, name, tag, cpu, cores, gpu, configs, tamper=None):
+def synth(root, name, tag, cpu, cores, gpu, configs, tamper=None, phys="same"):
+    """phys: physical cores behind the `cores` allowed CPUs ('same' = cores; None = not
+    recorded, as in reports from before 2026-11-16)."""
     exp = PB.expected_configs()
     rdir = Path(root) / name
     (rdir / "configs").mkdir(parents=True)
-    (rdir / "system.json").write_text(json.dumps({"cpu_model": cpu, "cpus_allowed": {"count": cores},
+    allowed = {"count": cores}
+    if phys is not None:
+        allowed["physical_cores"] = cores if phys == "same" else phys
+    (rdir / "system.json").write_text(json.dumps({"cpu_model": cpu, "cpus_allowed": allowed,
                                                   "gpus": [{"name": gpu}] if gpu else "unavailable: none"}))
     summary, gens = [], []
     for i, short in enumerate(configs, start=1):
@@ -212,7 +228,7 @@ def synth(root, name, tag, cpu, cores, gpu, configs, tamper=None):
 
 def four_machines(tmp, prefix="", **kw):
     return [synth(tmp, f"{prefix}uni", "uni", UNI["cpu_model"], 20, UNI["gpu"],
-                  ["n11_scalar", "n11_cpu", "n11_cuda", "n50_scalar", "n50_cpu", "n50_cuda"], **kw),
+                  ["n11_scalar", "n11_cpu", "n11_cuda", "n50_scalar", "n50_cpu", "n50_cuda"], phys=None, **kw),
             synth(tmp, f"{prefix}tf64", "tf64", EPYC, 64, None, ["n11_scalar", "n11_cpu", "n50_scalar", "n50_cpu"]),
             synth(tmp, f"{prefix}tf32", "tf32", EPYC, 32, None, ["n11_scalar"]),
             synth(tmp, f"{prefix}tf16", "tf16", EPYC, 16, None, ["n11_scalar"])]
@@ -268,6 +284,41 @@ def test_refusals(tmp):
     check("two machines with CUDA -> refused", rc is None and err and "exactly one machine with CUDA" in err)
 
 
+def test_hyperthreads(tmp):
+    print("\n[6] Hyperthreads")
+    sysroot = Path(tmp) / "sys"
+    for c in range(8):                       # 4 cores, 2 threads each: cpu c and c+4 share core c % 4
+        t = sysroot / f"cpu{c}" / "topology"
+        t.mkdir(parents=True)
+        (t / "physical_package_id").write_text("0\n")
+        (t / "core_id").write_text(f"{c % 4}\n")
+    check("physical_cores: CPUs 0-7 = 4 cores; 0-3 = 4; 0,4 = 1",
+          RS.physical_cores(range(8), sysroot) == 4 and RS.physical_cores(range(4), sysroot) == 4
+          and RS.physical_cores([0, 4], sysroot) == 1)
+    check("physical_cores: missing topology -> explicit unavailable",
+          str(RS.physical_cores([99], sysroot)).startswith("unavailable"))
+    ca = RS.cpus_allowed()
+    check(f"cpus_allowed carries physical_cores here ({ca})",
+          isinstance(ca, str) or "physical_cores" in ca)
+    reps = four_machines(tmp, "h_") + [synth(tmp, "h_tf128", "tf128", EPYC, 128, None, ["n11_scalar", "n11_cpu"], phys=64)]
+    points, ref = PB.collect(reps)
+    rows = PB.table(points, ref)
+    labels = {r["machine"] for r in rows}
+    check("128 threads on 64 cores is its own machine, next to 64 cores, 1 thread each",
+          any("128 threads on 64 cores" in m for m in labels) and any("64 cores, 1 thread each" in m for m in labels))
+    check("a report without physical cores is labelled 'cores not recorded'",
+          any("20 threads, cores not recorded" in m for m in labels))
+    smt = [p for p in points if p["machine"]["smt"]]
+    check("only the 128-thread points are flagged as hyperthreaded (kept off the core-scaling line)",
+          smt and all(p["machine"]["threads"] == 128 for p in smt))
+    out = Path(tmp) / "h_out"
+    rc, _t, err = run_plot([*map(str, reps), "--out", str(out)])
+    with open(out / "cpu_baseline.csv") as f:
+        rows_csv = list(csv.DictReader(f))
+    check(f"plot runs; the CSV has threads and physical cores ({err})",
+          rc == 0 and any(r["threads"] == "128" and r["physical_cores"] == "64" for r in rows_csv))
+
+
 def main():
     test_sweeps()
     with tempfile.TemporaryDirectory() as tmp:
@@ -275,6 +326,7 @@ def main():
         test_tensor_cpu_runs(tmp)
         test_plot(tmp)
         test_refusals(tmp)
+        test_hyperthreads(tmp)
     failed = [n for n, ok in _RESULTS if not ok]
     print(f"\n{len(_RESULTS) - len(failed)}/{len(_RESULTS)} passed")
     for n in failed:

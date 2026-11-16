@@ -5,7 +5,9 @@
 #   sbatch.tinyfat hpc/tinyfat_job.sh cpu_baseline_tinyfat cpu_baseline_cores@32 cpu_baseline_cores@16
 # Each argument is a preset, optionally @N: then that preset runs on the first N of the
 # job's cores only (taskset; torch's threads set to N), so one 64-core job also gives
-# the 16- and 32-core points. All arguments are checked before anything runs; the
+# the 16- and 32-core points. @all: on EVERY CPU the job was given, hyperthreads
+# included (128 threads on a full TinyFat node):
+#   sbatch.tinyfat hpc/tinyfat_job.sh cpu_baseline_tinyfat@all All arguments are checked before anything runs; the
 # presets run one after another, each with its own report folder. A failing preset
 # does not stop the later ones; the job then exits non-zero.
 # Partition `work`: 2 x AMD EPYC 7502, 64 cores / 128 threads per node, cores allocated
@@ -61,11 +63,14 @@ PRESETS=(); NCORES=()
 for seg in "$@"; do
     case "$seg" in
         --*) echo "ERROR: $seg: this script takes preset names (preset or preset@cores)" >&2; exit 1 ;;
+        *@all) p=${seg%@*}; n=all ;;
         *@*) p=${seg%@*}; n=${seg##*@} ;;
         *)   p=$seg; n=$HAVE ;;
     esac
-    [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: $seg: the core count must be a positive integer" >&2; exit 1; }
-    [ "$n" -le "$HAVE" ] || { echo "ERROR: $seg: $n cores, but the job has $HAVE" >&2; exit 1; }
+    if [ "$n" != all ]; then
+        [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: $seg: the core count must be a positive integer or 'all'" >&2; exit 1; }
+        [ "$n" -le "$HAVE" ] || { echo "ERROR: $seg: $n cores, but the job has $HAVE" >&2; exit 1; }
+    fi
     [ -f "configs/presets/$p.yaml" ] || [ -f "$SLURM_SUBMIT_DIR/configs/presets/$p.yaml" ] \
         || { echo "ERROR: $seg: no preset configs/presets/$p.yaml" >&2; exit 1; }
     PRESETS+=("$p"); NCORES+=("$n")
@@ -83,16 +88,24 @@ for i in "${!PRESETS[@]}"; do
     p=${PRESETS[$i]}; n=${NCORES[$i]}
     # The first n of the job's cores (all of them when n = $HAVE): torch's threads, the
     # compile workers and the scalar code's worker count all follow the affinity.
-    # awk, not head: head would close the pipe early, and with pipefail the SIGPIPE of
-    # the writer would end the job.
-    LIST=$(expand "$ALLOWED" | awk -v n="$n" 'NR <= n' | paste -sd, -)
+    if [ "$n" = all ]; then
+        # Every CPU the job was given, hyperthreads included: "all this node gives".
+        LIST=$(expand "$GIVEN" | paste -sd, -)
+        n=$NGIVEN
+        WHAT="$n threads on $NPHYS physical cores (hyperthreads included)"
+    else
+        # awk, not head: head would close the pipe early, and with pipefail the SIGPIPE
+        # of the writer would end the job.
+        LIST=$(expand "$ALLOWED" | awk -v n="$n" 'NR <= n' | paste -sd, -)
+        WHAT="$n cores, one thread each"
+    fi
     echo
-    echo "=== preset $p on $n cores ($LIST) ==="
+    echo "=== preset $p on $WHAT ($LIST) ==="
     if OMP_NUM_THREADS=$n TORCHINDUCTOR_COMPILE_THREADS=$n \
        taskset -c "$LIST" apptainer exec "$SIF" python -m simulate.run_selected --preset "$p"; then
-        echo "=== preset $p on $n cores: done ==="
+        echo "=== preset $p on $WHAT: done ==="
     else
-        echo "=== preset $p on $n cores: FAILED (exit $?) ===" >&2
+        echo "=== preset $p on $WHAT: FAILED (exit $?) ===" >&2
         FAILED+=("$p@$n")
     fi
 done

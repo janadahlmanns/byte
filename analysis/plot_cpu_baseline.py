@@ -53,12 +53,26 @@ def short_cpu(model):
 
 
 def machine_key(system):
+    """threads = allowed logical CPUs; phys = the physical cores behind them (reports
+    from before 2026-11-16 do not record it: None, labelled 'cores not recorded')."""
     gpus = system.get("gpus")
     gpu = gpus[0]["name"] if isinstance(gpus, list) and gpus else None
     allowed = system.get("cpus_allowed")
-    cores = allowed["count"] if isinstance(allowed, dict) else system.get("cpu_count")
-    return dict(cpu=system.get("cpu_model", "?"), cores=int(cores), gpu=gpu,
-                label=f"{system.get('cpu_model', '?')} ({cores} cores)" + (f" + {gpu}" if gpu else ""))
+    threads = allowed["count"] if isinstance(allowed, dict) else system.get("cpu_count")
+    phys = allowed.get("physical_cores") if isinstance(allowed, dict) else None
+    phys = phys if isinstance(phys, int) else None
+    cpu = system.get("cpu_model", "?")
+    return dict(cpu=cpu, cores=int(threads), threads=int(threads), phys=phys,
+                smt=(phys is not None and phys < int(threads)), gpu=gpu,
+                label=f"{cpu} ({threads_text(int(threads), phys)})" + (f" + {gpu}" if gpu else ""))
+
+
+def threads_text(threads, phys):
+    if phys is None:
+        return f"{threads} threads, cores not recorded"
+    if phys == threads:
+        return f"{phys} cores, 1 thread each"
+    return f"{threads} threads on {phys} cores"
 
 
 def expected_configs():
@@ -156,6 +170,7 @@ def table(points, ref):
         best_cpu = min((p for p in pts if p["backend"] != "cuda"), key=lambda p: p["q"][1], default=None)
         for p in sorted(pts, key=lambda p: (p["backend"] == "cuda", -p["q"][1])):
             rows.append(dict(size=size, machine=p["machine"]["label"], cores=p["machine"]["cores"],
+                             phys=p["machine"]["phys"],
                              code=CODE[p["backend"]], median_s=p["q"][1], q25=p["q"][0], q75=p["q"][2],
                              wall_s=p["wall"],
                              vs_ref_scalar=(ref_scalar["q"][1] / p["q"][1]) if ref_scalar else None,
@@ -186,8 +201,10 @@ def draw(points, rows, ref, out):
                 txt += f"\nGPU {r['gpu_lead']:.3g}× faster"
             ax.text(i, r["median_s"] * 1.06, txt, ha="center", va="bottom", fontsize=6.5, color=INK)
         ax.set_xticks(range(len(rs)))
-        ax.set_xticklabels([f"{r['code']}\n{short_cpu(r['point']['machine']['cpu'])}\n{r['cores']} cores"
-                            for r in rs], fontsize=6.5)
+        ax.set_xticklabels([f"{r['code']}\n{short_cpu(r['point']['machine']['cpu'])}\n"
+                            + threads_text(r['point']['machine']['threads'], r['point']['machine']['phys'])
+                            .replace(", ", "\n").replace(" on ", "\non ")
+                            for r in rs], fontsize=6.2)
         ax.set_yscale("log")
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
         ax.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
@@ -198,19 +215,29 @@ def draw(points, rows, ref, out):
     for p in sc:
         by_cpu.setdefault(p["machine"]["cpu"], []).append(p)
     for i, (cpu, ps) in enumerate(sorted(by_cpu.items(), key=lambda kv: -len(kv[1]))):
-        ps = sorted(ps, key=lambda p: p["machine"]["cores"])
-        xs, ys = [p["machine"]["cores"] for p in ps], [p["q"][1] for p in ps]
-        ax.plot(xs, ys, marker="o", color=SERIES[i % len(SERIES)], linewidth=1.6, label=short_cpu(cpu))
-        if len(ps) > 1:
-            ax.plot(xs, [ys[0] * xs[0] / x for x in xs], linestyle=":", color=SERIES[i % len(SERIES)],
-                    linewidth=1, label=f"ideal linear from {xs[0]} cores")
+        col = SERIES[i % len(SERIES)]
+        # The core-scaling line: one thread per core (or not recorded). A hyperthreaded
+        # point is drawn hollow at its thread count, not on the line.
+        line = sorted((p for p in ps if not p["machine"]["smt"]), key=lambda p: p["machine"]["threads"])
+        smt = [p for p in ps if p["machine"]["smt"]]
+        if line:
+            xs, ys = [p["machine"]["threads"] for p in line], [p["q"][1] for p in line]
+            ax.plot(xs, ys, marker="o", color=col, linewidth=1.6, markersize=7, label=short_cpu(cpu))
+            if len(line) > 1:
+                ax.plot(xs, [ys[0] * xs[0] / x for x in xs], linestyle=":", color=col, linewidth=1,
+                        label=f"ideal linear from {xs[0]} cores")
+        for p in smt:
+            ax.plot([p["machine"]["threads"]], [p["q"][1]], marker="o", markersize=8, linestyle="none",
+                    markerfacecolor=SURFACE, markeredgecolor=col, markeredgewidth=1.8,
+                    label=f"{short_cpu(cpu)}: {p['machine']['threads']} threads on {p['machine']['phys']} cores")
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.legend(fontsize=7, frameon=False, labelcolor=INK)
-    _style(ax, "(c) Scalar code vs cores (n = 11)", "allowed cores (log2)", "seconds per EA generation (log)")
+    _style(ax, "(c) Scalar code vs cores (n = 11)", "threads used (log2); hollow: hyperthreads included",
+           "seconds per EA generation (log)")
     fig.suptitle("CPU baseline: many-core server CPU vs the uni PC's CPU and GPU", x=0.01, ha="left",
                  fontsize=11, color=INK, fontweight="bold")
     fig.text(0.01, 0.005, f"Reference (speed-ups): {ref}. Whole EA generation from [EA timing], generations 1+, "
@@ -237,10 +264,11 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "cpu_baseline.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["size", "machine", "cores", "code", "median_s_per_gen", "q25", "q75", "wall_s",
+        w.writerow(["size", "machine", "threads", "physical_cores", "code", "median_s_per_gen", "q25", "q75", "wall_s",
                     "speedup_vs_reference_scalar", "gpu_lead_over_this", "fastest_cpu"])
         for r in rows:
-            w.writerow([r["size"], r["machine"], r["cores"], r["code"], f"{r['median_s']:.4f}", f"{r['q25']:.4f}",
+            w.writerow([r["size"], r["machine"], r["cores"], "" if r["phys"] is None else r["phys"], r["code"],
+                        f"{r['median_s']:.4f}", f"{r['q25']:.4f}",
                         f"{r['q75']:.4f}", f"{r['wall_s']:.2f}",
                         f"{r['vs_ref_scalar']:.3f}" if r["vs_ref_scalar"] else "",
                         f"{r['gpu_lead']:.3f}" if r["gpu_lead"] else "", r["fastest_cpu"]])
