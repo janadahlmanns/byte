@@ -9,9 +9,11 @@
 # presets run one after another, each with its own report folder. A failing preset
 # does not stop the later ones; the job then exits non-zero.
 # Partition `work`: 2 x AMD EPYC 7502, 64 cores / 128 threads per node, cores allocated
-# individually (doc.nhr.fau.de/clusters/tinyfat). SMT is on, so the job checks that it
-# got PHYSICAL cores: nproc must equal --cpus-per-task and no two allowed CPUs may be
-# hyperthreads of one core. Otherwise it stops before running anything.
+# individually (doc.nhr.fau.de/clusters/tinyfat). SMT is on, and a 64-core job may be
+# given BOTH hyperthreads of each core (seen 2026-11-16: "Running on cores 0-127"). The
+# job therefore uses exactly ONE thread of each physical core it was given (taskset):
+# it stops if it got fewer physical cores than --cpus-per-task, and uses the first
+# --cpus-per-task cores if it got more. Torch's threads follow that count.
 # Output: <job name>-<job id>.out in the submit folder; the report in
 # data/runtime_reports/<time>_<CPU model>_job<id>/ (no GPU: named after the CPU).
 # ============================================================
@@ -34,21 +36,25 @@ CACHE=${BYTE_CACHE:-$WORK/byte-cache}       # compiled kernels, kept between job
 
 # --- the allocation: physical cores only ------------------------------------------
 WANT=${SLURM_CPUS_PER_TASK:?ERROR: SLURM_CPUS_PER_TASK not set (submit with sbatch.tinyfat)}
-HAVE=$(nproc)
-[ "$HAVE" = "$WANT" ] || { echo "ERROR: nproc is $HAVE, but $WANT cores were requested" >&2; exit 1; }
-ALLOWED=$(taskset -cp $$ | sed 's/.*: *//')
+GIVEN=$(taskset -cp $$ | sed 's/.*: *//')
 expand() {  # "0-3,8,10-11" -> one CPU number per line
     tr ',' '\n' <<<"$1" | while IFS=- read -r a b; do seq "$a" "${b:-$a}"; done
 }
-# CPU,CORE,SOCKET for every CPU of the node; count the distinct (socket, core) pairs
-# among the allowed CPUs.
-CORES=$(lscpu -p=CPU,CORE,SOCKET | grep -v '^#' \
-        | awk -F, -v allowed="$(expand "$ALLOWED" | tr '\n' ' ')" \
-          'BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
-           ($1 in ok) { seen[$3 "," $2] = 1 } END { print length(seen) }')
-[ "$CORES" = "$HAVE" ] || {
-    echo "ERROR: the $HAVE allowed CPUs ($ALLOWED) are only $CORES physical cores (hyperthreads)" >&2; exit 1; }
-echo "allocation: $HAVE physical cores ($ALLOWED)"
+# One CPU per physical core: among the given CPUs, the lowest-numbered thread of each
+# (socket, core), in CPU order (lscpu -p: CPU,CORE,SOCKET for every CPU of the node).
+PHYS=$(lscpu -p=CPU,CORE,SOCKET | grep -v '^#' \
+       | awk -F, -v given="$(expand "$GIVEN" | tr '\n' ' ')" \
+         'BEGIN { n = split(given, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+          ($1 in ok) { k = $3 "," $2; if (!(k in first) || $1 + 0 < first[k] + 0) first[k] = $1 }
+          END { for (k in first) print first[k] }' | sort -n)
+NPHYS=$(grep -c . <<<"$PHYS" || true)
+NGIVEN=$(expand "$GIVEN" | grep -c .)
+[ "$NPHYS" -ge "$WANT" ] || {
+    echo "ERROR: $WANT cores requested, but the $NGIVEN given CPUs ($GIVEN) are only $NPHYS physical cores" >&2; exit 1; }
+[ "$NPHYS" -eq "$WANT" ] || echo "NOTE: given $NPHYS physical cores, $WANT requested: using the first $WANT"
+ALLOWED=$(awk -v n="$WANT" 'NR <= n' <<<"$PHYS" | paste -sd, -)
+HAVE=$WANT
+echo "allocation: given $NGIVEN CPUs ($GIVEN) = $NPHYS physical cores; using $HAVE, one thread each ($ALLOWED)"
 
 # --- the segments: preset[@cores], all checked first --------------------------------
 PRESETS=(); NCORES=()
@@ -77,7 +83,9 @@ for i in "${!PRESETS[@]}"; do
     p=${PRESETS[$i]}; n=${NCORES[$i]}
     # The first n of the job's cores (all of them when n = $HAVE): torch's threads, the
     # compile workers and the scalar code's worker count all follow the affinity.
-    LIST=$(expand "$ALLOWED" | head -n "$n" | paste -sd, -)
+    # awk, not head: head would close the pipe early, and with pipefail the SIGPIPE of
+    # the writer would end the job.
+    LIST=$(expand "$ALLOWED" | awk -v n="$n" 'NR <= n' | paste -sd, -)
     echo
     echo "=== preset $p on $n cores ($LIST) ==="
     if OMP_NUM_THREADS=$n TORCHINDUCTOR_COMPILE_THREADS=$n \

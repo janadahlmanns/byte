@@ -3,8 +3,9 @@
 
   [1] sweeps: per size the scalar / cpu / cuda files are identical apart from the
       evaluator; values as planned; the presets list the planned configs
-  [2] tinyfat_job.sh with stub commands: runs with physical cores; stops when nproc
-      differs from the request, and when allowed CPUs are hyperthreads of one core;
+  [2] tinyfat_job.sh with stub commands: uses one thread per physical core (also when
+      given both hyperthreads of every core, as TinyFat did on 2026-11-16); stops when
+      the given CPUs are fewer physical cores than requested;
       several presets in one job, preset@N on the first N cores with N threads; bad
       segments refused before anything runs; a failing preset does not stop the rest
   [3] the tensor-CPU configs (n = 11 and n = 50) run on this machine (tiny, compile off)
@@ -133,11 +134,18 @@ def test_job_script(tmp):
                                 fail_preset="cpu_baseline_tinyfat")
     check("a failing preset: the next still runs, the job exits non-zero",
           rc != 0 and calls is not None and len(calls) == 2 and "failed: cpu_baseline_tinyfat@4" in out)
-    rc, out, calls = run_script(tmp, 8, "0-7", 4, "mismatch")
-    check("nproc 8 for a request of 4 -> stops, nothing run", rc != 0 and "nproc is 8" in out and calls is None)
+    sif = Path(tmp) / "smt_all" / "byte.sif"
+    rc, out, calls = run_script(tmp, 8, "0-7", 4, "smt_all")
+    check(f"given CPUs 0-7 (both hyperthreads of 4 cores; TinyFat's case) -> runs on 0,1,2,3, 4 threads ({calls})",
+          rc == 0 and calls == [f"OMP=4 CPUS=0,1,2,3 exec {sif} python -m simulate.run_selected --preset cpu_baseline_tinyfat"])
     rc, out, calls = run_script(tmp, 4, "0,1,4,5", 4, "smt")
-    check(f"CPUs 0,1,4,5 (two cores' hyperthreads) -> stops ({out.strip().splitlines()[-1][:70]})",
+    check(f"CPUs 0,1,4,5 (only 2 physical cores) for 4 requested -> stops ({out.strip().splitlines()[-1][:70]})",
           rc != 0 and "only 2 physical cores" in out and calls is None)
+    sif = Path(tmp) / "more" / "byte.sif"
+    rc, out, calls = run_script(tmp, 8, "0-7", 2, "more")
+    check(f"4 physical cores given for 2 requested -> NOTE, uses the first 2 ({calls})",
+          rc == 0 and "NOTE: given 4 physical cores, 2 requested" in out
+          and calls == [f"OMP=2 CPUS=0,1 exec {sif} python -m simulate.run_selected --preset cpu_baseline_tinyfat"])
 
 
 def test_tensor_cpu_runs(tmp):
