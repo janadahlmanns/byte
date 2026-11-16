@@ -1,0 +1,21 @@
+# ============================================================
+# CPU BASELINE: production lookup config, P 260, R 300, n = 11, 5 generations, tensor CPU (torch threads, compiled) (plan_evotorch.md, Step 30)
+# ============================================================
+# Is the GPU speed-up only large because the CPU baseline was a 20-core desktop? The same
+# configs run on a 64-core server CPU (TinyFat, 2 x AMD EPYC 7502) and on the uni PC
+# (CPU and CUDA). The three files of one size are identical apart from the evaluator
+# (tests/test_cpu_baseline.py checks that).
+# Presets: cpu_baseline_tinyfat (n11 + n50, scalar + cpu), cpu_baseline_cores (n11
+# scalar, for the 16 / 32-core jobs), cpu_baseline_unipc (all six).
+#   sbatch.tinyfat hpc/tinyfat_job.sh cpu_baseline_tinyfat cpu_baseline_cores@32 cpu_baseline_cores@16
+# (one 64-core job; @N runs that preset on the first N of the job's cores)
+# Plot: python -m analysis.plot_cpu_baseline <report folders> --out <folder>
+# ============================================================
+base: ea_from_lookup_tensor_cuda
+set:
+  experiment.output_folder: "data/cpu_baseline/"
+  experiment.simulation_name: "cpu_baseline_n11_cpu"
+  experiment.evolutionary_algorithm.num_generations: 5
+  experiment.evaluator.device: cpu      # tensor code on the CPU, compiled (as in Step 22)
+vary:
+  experiment.population_size: [260]

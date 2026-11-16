@@ -1,0 +1,9 @@
+# CPU baseline (plan_evotorch.md, Step 30). Plot: python -m analysis.plot_cpu_baseline <reports> --out <folder>
+description: "CPU baseline on the uni PC: n = 11 and n = 50, scalar, tensor CPU and CUDA (6 configs)"
+configs:
+  - "cpu_baseline_n11_scalar [population_size=260]"
+  - "cpu_baseline_n11_cpu [population_size=260]"
+  - "cpu_baseline_n11_cuda [population_size=260]"
+  - "cpu_baseline_n50_scalar [population_size=64]"
+  - "cpu_baseline_n50_cpu [population_size=64]"
+  - "cpu_baseline_n50_cuda [population_size=64]"

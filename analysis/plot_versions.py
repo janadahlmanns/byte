@@ -149,7 +149,8 @@ def draw_waterfall(jobs, machine, out):
     if not rows:
         return []
     fig, axes = plt.subplots(1, 2, figsize=(14, 4.8), facecolor=SURFACE)
-    names = [f"{r['job']['sha'][:7]}\n{r['job']['label']}" for r in rows]
+    import textwrap
+    names = [r['job']['sha'][:7] + "\n" + "\n".join(textwrap.wrap(r['job']['label'], 13)) for r in rows]
     for ax, key, title, ylabel in ((axes[0], "gen", "Seconds per EA generation (median, IQR)", "seconds (log)"),
                                    (axes[1], "wall", "Total wall time (5 generations)", "seconds (log)")):
         for i, r in enumerate(rows):

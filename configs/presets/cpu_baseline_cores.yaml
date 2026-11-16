@@ -1,0 +1,4 @@
+# CPU baseline (plan_evotorch.md, Step 30). Plot: python -m analysis.plot_cpu_baseline <reports> --out <folder>
+description: "CPU baseline core scaling: n = 11 scalar only (run at 16 and 32 cores)"
+configs:
+  - "cpu_baseline_n11_scalar [population_size=260]"
