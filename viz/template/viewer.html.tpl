@@ -49,13 +49,14 @@
       </div>
 
       <div class="key" id="brain-key">
-        <span><i class="sw line" style="background:var(--gold-light)"></i>excitatory</span>
+        <span><i class="sw line" style="background:var(--red)"></i>excitatory</span>
         <span><i class="sw line" style="background:var(--blue)"></i>inhibitory</span>
-        <span><i class="sw dot" style="background:var(--gold)"></i>firing</span>
+        <span><i class="sw line" style="background:var(--wire)"></i>sensor wiring (fixed)</span>
+        <span><i class="sw dot" style="background:var(--text)"></i>firing</span>
         <span><i class="sw dia"></i>modulated</span>
         <span><i class="sw line dash"></i>modulator active</span>
         <span><i class="sw ring" style="border-color:var(--text)"></i>weight moved</span>
-        <span><i class="sw ring dash" style="border-color:var(--gold-light)"></i>candidate</span>
+        <span><i class="sw ring dash" style="border-color:var(--text)"></i>candidate</span>
         <span class="detail-only"><i class="sw line dotted"></i>pruned</span>
         <span class="detail-only"><i class="sw pip"></i>saturated</span>
       </div>

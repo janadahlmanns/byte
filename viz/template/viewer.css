@@ -35,6 +35,13 @@
   --gold-dark: #5d4409;
   --blue: #2b6c92;
   --blue-mid: #74a3c0;
+
+  /* Weight sign in the brain. Red/blue rather than the old gold/blue: the
+     brain panel carries no yellow at all now, and red against blue stays
+     separable under deuteranopia and protanopia by lightness. */
+  --red: #c43d30;
+  /* Fixed sensor wiring, which has no sign to show. */
+  --wire: #9aa7ae;
   --dead: #b23c26;
   --warn: #b5700f;
 }
@@ -444,7 +451,7 @@ select {
 .sw.dot { width: 9px; height: 9px; border-radius: 50%; }
 .sw.ring { border-radius: 50%; background: none; border: 1.5px solid; }
 .sw.ring.dash { border-style: dashed; }
-.sw.pip { width: 5px; height: 5px; border-radius: 50%; background: var(--gold-light); }
+.sw.pip { width: 5px; height: 5px; border-radius: 50%; background: var(--text); }
 
 .sw.line { width: 15px; height: 3px; border-radius: 2px; }
 .sw.line.dash {

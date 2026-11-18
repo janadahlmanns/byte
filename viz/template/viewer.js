@@ -26,11 +26,18 @@
     dead: css.getPropertyValue("--dead").trim(),
     edge: css.getPropertyValue("--edge").trim(),
     warn: css.getPropertyValue("--warn").trim(),
-    exc: css.getPropertyValue("--gold-light").trim(),
+    exc: css.getPropertyValue("--red").trim(),
     inh: css.getPropertyValue("--blue").trim(),
-    // Gold and blue are reserved for the sign of a weight. A weight moving is
-    // not a statement about sign, so it is marked in neutral white rather than
-    // in the same gold as every excitatory edge it is drawn on top of.
+    // Sensor wiring, which is fixed and so has no sign to report.
+    wire: css.getPropertyValue("--wire").trim(),
+    // Anything active in the brain is drawn in ink rather than in a hue: a
+    // firing neuron is a state, not a sign, and the two colours that mean
+    // something here are already spoken for.
+    fire: css.getPropertyValue("--text").trim(),
+    surface2: css.getPropertyValue("--surface-2").trim(),
+    // Red and blue are reserved for the sign of a weight. A weight moving is
+    // not a statement about sign, so it is marked in neutral ink rather than
+    // in the same red as every excitatory edge it is drawn on top of.
     learn: css.getPropertyValue("--text").trim(),
     text: css.getPropertyValue("--text").trim(),
     /* Occupancy ramp, pale to dark: on a white ground more time spent has
@@ -143,7 +150,7 @@
   }
 
   const EVENT_COLOR = {
-    ate: C.food, phase: C.warn, death: C.dead, learn: C.exc,
+    ate: C.food, phase: C.warn, death: C.dead, learn: C.learn,
     move: C.text, think: C.agent, fallback: C.warn,
   };
 
@@ -695,14 +702,25 @@
       const w = bWeights[i];
       const a = nodePos(e.src, W2, H2, pad);
       const b = nodePos(e.tgt, W2, H2, pad);
-      const live = typeof e.src === "number" ? fired(e.src) : false;
+      // Sensor wiring is fixed - identical weights in every genome, never
+      // mutated, never plastic - so it is not an evolved weight and showing it
+      // with the signed encoding implied that it was. It is drawn as structure
+      // instead: one neutral grey at a constant width, brightening only to
+      // show that the sensor behind it is reading something.
+      const structural = typeof e.src === "string";
+      const live = structural
+        ? ((FRAMES[n].sense || {})[e.src.slice(3)] > 0)
+        : fired(e.src);
 
       // Both bounds of the plasticity rule are absorbing: the |w|(1-|w|) factor
       // is zero at 0 and at +/-1 alike, so a weight that reaches either can
       // never move again. A pruned edge is therefore permanently dead wiring,
       // not a connection that happens to be quiet.
-      const pruned = Math.abs(w) < 0.01;
-      const frozen = Math.abs(w) >= 0.999;
+      // Structural wiring is excluded from both: it sits at a fixed 0.8-1.0
+      // for the life of the run, so counting it as saturated would report a
+      // bound it never travelled to.
+      const pruned = !structural && Math.abs(w) < 0.01;
+      const frozen = !structural && Math.abs(w) >= 0.999;
       if (pruned) nPruned++;
       if (frozen) nFrozen++;
 
@@ -717,10 +735,11 @@
       // The signal wiring is the network itself, so it is the primary layer and
       // never fades below the modulation overlay drawn on top of it. Only the
       // dedicated modulation view pushes it back.
-      bctx.globalAlpha = (0.30 + 0.60 * mag * e.rel) * (live ? 1.6 : 1)
+      bctx.globalAlpha = (structural ? (live ? 0.9 : 0.5)
+                                     : (0.30 + 0.60 * mag * e.rel) * (live ? 1.6 : 1))
                          * (modMode === "all" ? 0.32 : 1);
-      bctx.strokeStyle = w >= 0 ? C.exc : C.inh;
-      bctx.lineWidth = 0.5 + 3 * mag;
+      bctx.strokeStyle = structural ? C.wire : (w >= 0 ? C.exc : C.inh);
+      bctx.lineWidth = structural ? 1.7 : 0.5 + 3 * mag;
 
       // Detail view keeps pruned edges as faint ghosts, so the genome's full
       // wiring stays inspectable alongside what survived.
@@ -796,10 +815,10 @@
     for (const key of S2.inputs) {
       const p = nodePos("in:" + key, W2, H2, pad);
       const on = (FRAMES[n].sense || {})[key] > 0;
-      bctx.fillStyle = on ? C.sensor : C.panelEdge;
+      bctx.fillStyle = on ? C.fire : C.surface2;
       roundRect(p.x - r * 0.95, p.y - r * 0.6, r * 1.9, r * 1.2, 3);
       bctx.fill();
-      bctx.fillStyle = on ? "#12160f" : C.dim;
+      bctx.fillStyle = on ? "#ffffff" : C.dim;
       bctx.fillText(shortSensor(key), p.x, p.y);
     }
 
@@ -810,7 +829,10 @@
       const isCand = (cand >> neu.id & 1) === 1;
 
       if (isCand) {                                  // candidate for the decision
-        bctx.strokeStyle = C.sensor;
+        // Drawn outside the node, so it reads whether or not the node is
+        // filled, and dashed so it is never mistaken for the solid halo that
+        // marks a weight moving.
+        bctx.strokeStyle = C.fire;
         bctx.globalAlpha = 0.9;
         bctx.lineWidth = 1.5;
         bctx.setLineDash([3, 3]);
@@ -820,13 +842,13 @@
       }
 
       bctx.beginPath(); bctx.arc(p.x, p.y, r, 0, 6.2832);
-      bctx.fillStyle = on ? C.agent : C.neuronIdle;
+      bctx.fillStyle = on ? C.fire : C.neuronIdle;
       bctx.fill();
       bctx.lineWidth = 1.5;
-      bctx.strokeStyle = on ? C.agent : C.neuronEdge;
+      bctx.strokeStyle = on ? C.fire : C.neuronEdge;
       bctx.stroke();
 
-      bctx.fillStyle = on ? "#12160f" : C.text;
+      bctx.fillStyle = on ? "#ffffff" : C.text;
       bctx.font = "600 " + Math.round(r * 0.95) + "px Consolas, monospace";
       bctx.fillText(String(neu.id), p.x, p.y);
 
@@ -1057,9 +1079,11 @@
      control at all. The sparse lanes go nearest the scrub instead. */
   const LANES = [
     { label: "eats", colour: C.food, ticks: new Set(eatTicks) },
-    { label: "learns", colour: C.exc, ticks: decisionTicks(bLearned && bLearned.keys()) },
-    { label: "thinks", colour: C.agent, ticks: decisionTicks(bThink) },
-    { label: "moves", colour: C.text, ticks: new Set(moveTicks) },
+    { label: "learns", colour: C.learn, ticks: decisionTicks(bLearned && bLearned.keys()) },
+    { label: "thinks", colour: C.dim, ticks: decisionTicks(bThink) },
+    // The agent's own colour, since moving is the agent acting; learning keeps
+    // the neutral ink it is marked with on the edges themselves.
+    { label: "moves", colour: C.agent, ticks: new Set(moveTicks) },
   ];
 
   const SHAPE_H = LANES.length * LANE_H + (LANES.length - 1) * LANE_GAP;
