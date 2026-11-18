@@ -14,14 +14,17 @@ CPU/float64 with the bit-exact `sequential` contraction; otherwise it runs live 
 
 Tracking (plan Step 7): with per-run tracking on, the evaluator writes the same HDF5
 file `eval_generation` writes, through the scalar's own `simulate/hdf5_utils.py`
-functions, from the main process after the generation (no lock). The arrays come from
-`mvb_torch.tracking`. `run_ea` never tracks (it switches tracking off); `run_batch`
+functions' layout, from the main process after the generation (no lock). The arrays come
+from `mvb_torch.tracking`. Since Step 32 the writing goes through one open file per
+generation (`mvb_torch.h5_writer`), optionally staged on a local disk
+(`experiment.evaluator.tracking_stage_dir`). `run_ea` never tracks (it switches tracking off); `run_batch`
 does.
 """
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import h5py
@@ -41,6 +44,7 @@ from simulate.hdf5_utils import (
     save_wiring_to_hdf5,
 )
 
+from . import h5_writer
 from . import philox
 from . import tracking as trk
 from .decision import build_output_spec
@@ -57,6 +61,11 @@ from .genome_codec import encode_genomes, sparse_slot_bytes
 MARKER = "[tensor-evaluator]"
 
 _REQUIRED = ("backend", "device", "dtype")
+# Optional, and printed in the evaluator's first line, so its value is never hidden
+# (plan Step 32): where the tracking file is written before it is copied to its folder.
+# Absent or 'none': written in place. Not required, so the configs of earlier commits
+# (tests/version_runs.py) and the tests' evaluator dicts stay valid.
+_OPTIONAL = ("tracking_stage_dir",)
 # Keys that existed once and were removed: refused with an explanation, never ignored.
 _REMOVED = {
     "slots_per_genome": "slots_per_genome was removed (plan_evotorch.md Step 8, R3): the "
@@ -91,7 +100,7 @@ def validate_evaluator_cfg(evaluator_cfg: Dict[str, Any],
             f"enabled (pre-drawn bundles are not Philox, and the bit-exact reference path "
             f"is never compiled); remove them."
         )
-    extra = [k for k in evaluator_cfg if k not in _REQUIRED + _LIVE_ONLY]
+    extra = [k for k in evaluator_cfg if k not in _REQUIRED + _LIVE_ONLY + _OPTIONAL]
     if extra:
         raise KeyError(
             f"[ERROR] experiment.evaluator has unknown keys {extra}. Randomness is not "
@@ -148,6 +157,7 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
     cache_dir = use_versioned_compile_cache() if compile_ else None
     predrawn = _predrawn_enabled(randomness_cfg)
     spec = build_output_spec(cfg["brain"])
+    stage_dir = h5_writer.check_stage_dir(evaluator_cfg.get("tracking_stage_dir"))
 
     mode = "predrawn" if predrawn else "live"
     contraction = "sequential" if predrawn else live_contraction(device)
@@ -157,7 +167,8 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
           f"contraction={contraction} rng={rng} compile={'on' if compile_ else 'off'}"
           + (f" tf32=off gpu={torch.cuda.get_device_name(device)}" if device.type == "cuda" else "")
           + (f" threads={torch.get_num_threads()}" if device.type == "cpu" else "")
-          + (f" compile_cache={cache_dir}" if cache_dir else ""))
+          + (f" compile_cache={cache_dir}" if cache_dir else "")
+          + f" tracking_stage={stage_dir if stage_dir else 'none'}")
 
     def evaluate(genomes, cfg_, EXPERIMENT_FOLDER, SIMULATION_NAME,
                  ENABLE_PER_RUN_TRACKING, ENABLE_PER_TICK_TRACKING,
@@ -191,6 +202,11 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
             hdf5_path = make_experiment_dir(EXPERIMENT_FOLDER, SIMULATION_NAME,
                                             skip_timestamp=skip_timestamp)
             print(f"[batch] writing to {hdf5_path}\n")
+            fs = h5_writer.filesystem_of(Path(hdf5_path).parent)
+            if fs["network"] and stage_dir is None and (ENABLE_PER_TICK_TRACKING or ENABLE_HEAT_MAP_TRACKING):
+                print(f"{MARKER} note: the tracking file is on a network filesystem "
+                      f"({fs['fstype']} at {fs['mount']}); writing it is slow there. "
+                      f"experiment.evaluator.tracking_stage_dir can point to a local folder.")
             create_hdf5_file(hdf5_path, cfg_)
             with h5py.File(hdf5_path, 'a') as f:
                 f.attrs['tracking_per_run_enabled'] = int(ENABLE_PER_RUN_TRACKING)
@@ -280,8 +296,11 @@ def make_tensor_evaluator(evaluator_cfg: Dict[str, Any], cfg: Dict[str, Any],
 
         if flags.per_run:
             t1 = time.perf_counter()
-            write_tracking(hdf5_path, genomes, res, seeds, tracker, sim)
-            print(f"{MARKER} tracking written in {time.perf_counter() - t1:.2f}s")
+            tw: Dict[str, float] = {}
+            write_tracking(hdf5_path, genomes, res, seeds, tracker, sim,
+                           stage_dir=stage_dir, timings=tw)
+            print(f"{MARKER} tracking written in {time.perf_counter() - t1:.2f}s ("
+                  + ", ".join(f"{k} {v:.2f}s" for k, v in tw.items()) + ")")
             print(f"[batch] Simulation completed. Saved to {hdf5_path.name}")
 
         # --- the structure run_ea reads (F6.5), with eval_generation's dtypes ----
@@ -320,54 +339,138 @@ def generation_stats_line(device, wall, run_ticks, width, n_all, all_runs_bytes)
             f"width {width} of {n_all}, all runs need ~{mib(all_runs_bytes)} MiB (est.)")
 
 
-def write_tracking(hdf5_path, genomes, res, seeds: SeedSet, tracker, sim: SimConfig):
-    """Write every variant's tracking datasets, in the order and with the functions
-    `eval_variant` uses (plan D7)."""
+class _PerCallSink:
+    """The writes as before Step 32: simulate/hdf5_utils.py's functions, each opening
+    and closing the file. Kept as the reference for tests/test_h5_writer.py and for the
+    before/after measurement (tests/tracking_bench.py); not used by run_batch."""
+
+    def __init__(self, path):
+        self.p = path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def variant_summary(self, v, a):
+        save_variant_summary_to_hdf5(self.p, v, a)
+
+    def wiring(self, v, a):
+        save_wiring_to_hdf5(self.p, v, a)
+
+    def modulation(self, v, a):
+        save_modulation_to_hdf5(self.p, v, a)
+
+    def eta(self, v, a):
+        save_eta_to_hdf5(self.p, v, a)
+
+    def tonic_activations(self, v, a):
+        save_tonic_activations_to_hdf5(self.p, v, a)
+
+    def per_tick(self, v, r, a):
+        save_per_tick_to_hdf5(self.p, v, r, a)
+
+    def heatmap(self, v, r, a):
+        save_heatmaps_to_hdf5(self.p, v, r, a)
+
+
+def tracking_size_bound(lifespans, tracker, sim: SimConfig) -> int:
+    """Upper bound of the bytes `write_tracking` adds: the uncompressed arrays plus 4 KiB
+    of HDF5 headers per dataset and group. Used for the staging folder's space check."""
+    flags = tracker.flags
+    P, R = lifespans.shape
+    base = np.dtype(trk.PER_TICK_BASE_DTYPE).itemsize
+    total = 0
+    for v in range(P):
+        C = len(tracker.conns[v])
+        total += R * (64 + 8 * C) + 5 * 4096 + 4096         # summary, wiring, small ones
+        if flags.per_tick:
+            total += int((lifespans[v] + 1).sum()) * (base + 4 * C) + R * 2 * 4096
+        if flags.heat_map:
+            total += R * (sim.height * sim.width * 4 + 2 * 4096)
+    return int(total)
+
+
+def write_tracking(hdf5_path, genomes, res, seeds: SeedSet, tracker, sim: SimConfig,
+                   stage_dir=None, timings=None, per_call=False):
+    """Write every variant's tracking datasets, in the order and with the layout
+    `eval_variant` uses (plan D7).
+
+    Step 32: one open file for the generation (`h5_writer.TrackingFile`), optionally
+    staged in `stage_dir`; and streamed, one variant at a time (the per-run rows come
+    sorted by genome), so only one variant's per-tick tables and heat maps are in memory.
+    `per_call=True` writes through the old per-call functions instead (reference only).
+    `timings` (a dict) receives build_s, h5_s and, when staged, stage_in_s / stage_out_s."""
     flags = tracker.flags
     P, R = len(genomes), sim.n_runs
+    timings = {} if timings is None else timings
     lifespans = res.lifespans.cpu().numpy()
     eats = res.eats.cpu().numpy()
     distance = res.distance.cpu().numpy()
     final_energy = res.final_energy.cpu().numpy()
     final_w = tracker.final_w[: P * R].cpu().numpy().reshape(P, R, tracker.C)
+    if per_call and stage_dir is not None:
+        raise ValueError("per_call writing is the unstaged reference; no stage_dir")
+    if stage_dir is not None:
+        h5_writer.check_stage_space(stage_dir, tracking_size_bound(lifespans, tracker, sim),
+                                    existing_bytes=Path(hdf5_path).stat().st_size)
 
-    per_tick: Dict[int, Dict[int, np.ndarray]] = {v: {} for v in range(P)}
-    heat: Dict[int, Dict[int, np.ndarray]] = {v: {} for v in range(P)}
-    if tracker.logging:
-        for v, r, ints, w in tracker.per_run_rows():
-            if flags.per_tick:
-                per_tick[v][r] = trk.build_per_tick(ints, w, genomes[v], tracker.conns[v],
-                                                    sim.start_pos, sim.energy_capacity)
-            if flags.heat_map:
-                heat[v][r] = trk.build_heat_map(ints, sim.start_pos, sim.height, sim.width)
-        for v in range(P):
-            got = len(per_tick[v]) if flags.per_tick else len(heat[v])
-            if got != R:
-                raise RuntimeError(f"tracking assembled {got} of {R} runs for genome {v}")
+    rows = tracker.per_run_rows() if tracker.logging else iter(())
+    pending = next(rows, None)
+    build_s = h5_s = 0.0
+    with h5_writer.staged(Path(hdf5_path), None if per_call else stage_dir, timings) as path:
+        sink = _PerCallSink(path) if per_call else h5_writer.TrackingFile(path)
+        with sink:
+            for v in range(P):
+                t = time.perf_counter()
+                per_tick: Dict[int, np.ndarray] = {}
+                heat: Dict[int, np.ndarray] = {}
+                while pending is not None and pending[0] == v:
+                    _, r, ints, w = pending
+                    if flags.per_tick:
+                        per_tick[r] = trk.build_per_tick(ints, w, genomes[v], tracker.conns[v],
+                                                         sim.start_pos, sim.energy_capacity)
+                    if flags.heat_map:
+                        heat[r] = trk.build_heat_map(ints, sim.start_pos, sim.height, sim.width)
+                    pending = next(rows, None)
+                if tracker.logging:
+                    got = len(per_tick) if flags.per_tick else len(heat)
+                    if got != R:
+                        raise RuntimeError(f"tracking assembled {got} of {R} runs for genome {v}")
 
-    for v in range(P):
-        summary = np.zeros(R, dtype=trk.SUMMARY_DTYPE)
-        summary['run_id'] = np.arange(R)
-        summary['lifetime_ticks'] = lifespans[v]
-        summary['foods'] = eats[v]
-        summary['distance'] = distance[v]
-        summary['final_energy'] = final_energy[v]
-        summary['seed_noise'] = seeds.noise_seeds[v]
-        summary['seed_decision'] = seeds.decision_seeds[v]
+                summary = np.zeros(R, dtype=trk.SUMMARY_DTYPE)
+                summary['run_id'] = np.arange(R)
+                summary['lifetime_ticks'] = lifespans[v]
+                summary['foods'] = eats[v]
+                summary['distance'] = distance[v]
+                summary['final_energy'] = final_energy[v]
+                summary['seed_noise'] = seeds.noise_seeds[v]
+                summary['seed_decision'] = seeds.decision_seeds[v]
 
-        wiring = trk.wiring_template(genomes[v], R)
-        for c in range(len(tracker.conns[v])):
-            for r in range(R):
-                wiring[c][f'weight_final_run_{r:04d}'] = final_w[v, r, c]
+                wiring = trk.wiring_template(genomes[v], R)
+                for c in range(len(tracker.conns[v])):
+                    for r in range(R):
+                        wiring[c][f'weight_final_run_{r:04d}'] = final_w[v, r, c]
+                modulation = trk.modulation_array(genomes[v])
+                eta = trk.genome_eta(genomes[v])
+                tonic = trk.genome_tonic(genomes[v])
+                t2 = time.perf_counter()
+                build_s += t2 - t
 
-        save_variant_summary_to_hdf5(hdf5_path, v, summary)
-        save_wiring_to_hdf5(hdf5_path, v, wiring)
-        save_modulation_to_hdf5(hdf5_path, v, trk.modulation_array(genomes[v]))
-        save_eta_to_hdf5(hdf5_path, v, trk.genome_eta(genomes[v]))
-        save_tonic_activations_to_hdf5(hdf5_path, v, trk.genome_tonic(genomes[v]))
-        if flags.per_tick:
-            for r in range(R):
-                save_per_tick_to_hdf5(hdf5_path, v, r, per_tick[v][r])
-        if flags.heat_map:
-            for r in range(R):
-                save_heatmaps_to_hdf5(hdf5_path, v, r, heat[v][r])
+                sink.variant_summary(v, summary)
+                sink.wiring(v, wiring)
+                sink.modulation(v, modulation)
+                sink.eta(v, eta)
+                sink.tonic_activations(v, tonic)
+                if flags.per_tick:
+                    for r in range(R):
+                        sink.per_tick(v, r, per_tick[r])
+                if flags.heat_map:
+                    for r in range(R):
+                        sink.heatmap(v, r, heat[r])
+                h5_s += time.perf_counter() - t2
+            if pending is not None:
+                raise RuntimeError(f"tracking rows for genome {pending[0]}, but the "
+                                   f"generation has {P} genomes")
+    timings["build_s"], timings["h5_s"] = build_s, h5_s

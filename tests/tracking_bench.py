@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What tracking costs in the tensor code (plan_evotorch.md, Step 31). Measurement only.
+"""What tracking costs in the tensor code (plan_evotorch.md, Steps 31 and 32). Measurement only.
 
 Each case runs the tensor evaluator exactly as `run_batch` calls it (eval_generation's
 signature, the tracking flags, a fresh HDF5), in its own subprocess, and records:
@@ -7,8 +7,11 @@ signature, the tracking flags, a fresh HDF5), in its own subprocess, and records
   sim_s           the simulation without the compile warm-up (batch call - warm-up)
   warmup_s        the compile warm-up
   write_s         adapter.write_tracking (all HDF5 writing after the generation)
-  breakdown       per HDF5 save function: calls and seconds (timers wrapped around the
-                  functions in this process only; no file of the repository changes)
+  phases          write_tracking's own timings (Step 32): build_s (per-tick tables, heat
+                  maps), h5_s (HDF5 calls), stage_in_s / stage_out_s (copies, if staged)
+  breakdown       per hdf5_utils save function that was called: calls and seconds
+                  (timers wrapped around the functions in this process only); since
+                  Step 32 only the setup writes and per_call cases call them
   wall_s, h5_mib, gpu_peak_mib, rss_peak_mib, status (ok / failed: ... / timeout)
 
 Tracking levels: off, run (per-run), tick (per-run + per-tick), heat (per-run + heat
@@ -17,15 +20,22 @@ write during the generation, so only its total time (wall_s) is recorded. Cases 
   A  replay a few genomes: the 10 production lookup elites, n = 11, R 300; all levels,
      CUDA, CPU and scalar
   B  a whole production generation: the 260-genome Step 12 population, n = 11, R 300;
-     all levels on CUDA and scalar, off / run on CPU (30-minute limit per case)
+     all levels on CUDA, CPU and scalar (30-minute limit per case). With --stage-dir set,
+     also B_cuda_all_direct: all levels written in place, to separate the one-file
+     writer's gain from staging's
   C  large brains: the first 10 large-run elites, n = 50, R 100; off / run / heat /
      tick on CUDA and scalar (tick: expected to fail on HDF5's header limit,
      known_issues.md)
 
+Each tensor case records its writer (Step 32: one_file; reports from before Step 32 have
+none, i.e. per_call) and its staging folder. --stage-dir is required for a new run
+(a local folder, or none). --skip-scalar leaves the scalar cases out (the scalar code did
+not change in Step 32, so the earlier reports' scalar cases still hold). Before the first
+case of each device and population, an untimed warm-up case fills the compile cache.
+
 Usage
 -----
-    python -m tests.tracking_bench --cases A C          # ~15-20 min on the uni PC
-    python -m tests.tracking_bench --cases B            # up to ~2 h
+    python -m tests.tracking_bench --cases A B C --stage-dir /tmp --skip-scalar
     python -m tests.tracking_bench --resume data/runtime_reports/<folder>
 The HDF5 files are deleted after their size is recorded (--keep-files keeps them).
 """
@@ -54,27 +64,27 @@ SAVE_FUNCS = ("create_hdf5_file", "save_genome_properties_to_hdf5", "save_varian
 TIMEOUT_S = {"A": 1800, "B": 1800, "C": 1800}
 
 
-def case_list(groups):
-    """name -> dict(group, population, n, R, level, device)."""
+def case_list(groups, stage="none", scalar=True):
+    """name -> dict(group, population, P, R, level, device[, writer, stage]).
+    Tensor cases write with the one-file writer (Step 32), staged in `stage` ('none':
+    in place)."""
     out = {}
+    pops = {"A": ("elites_n11", 10, 300), "B": ("step12_n11", 260, 300), "C": ("elites_n50", 10, 100)}
+    devices = {"A": ("cuda", "cpu"), "B": ("cuda", "cpu"), "C": ("cuda",)}
+    levels = {"A": list(LEVELS), "B": list(LEVELS), "C": ["off", "run", "heat", "tick"]}
     for g in groups:
-        if g == "A":
-            for dev in ("cuda", "cpu", "scalar"):
-                for lv in LEVELS:
-                    out[f"A_{dev}_{lv}"] = dict(group="A", population="elites_n11", P=10, R=300, level=lv, device=dev)
-        elif g == "B":
-            for lv in LEVELS:
-                out[f"B_cuda_{lv}"] = dict(group="B", population="step12_n11", P=260, R=300, level=lv, device="cuda")
-            for lv in ("off", "run"):
-                out[f"B_cpu_{lv}"] = dict(group="B", population="step12_n11", P=260, R=300, level=lv, device="cpu")
-            for lv in LEVELS:
-                out[f"B_scalar_{lv}"] = dict(group="B", population="step12_n11", P=260, R=300, level=lv, device="scalar")
-        elif g == "C":
-            for dev in ("cuda", "scalar"):
-                for lv in ("off", "run", "heat", "tick"):
-                    out[f"C_{dev}_{lv}"] = dict(group="C", population="elites_n50", P=10, R=100, level=lv, device=dev)
-        else:
+        if g not in pops:
             raise SystemExit(f"ERROR: unknown case group {g!r} (A, B, C)")
+        pop, P, R = pops[g]
+        for dev in devices[g] + (("scalar",) if scalar else ()):
+            for lv in levels[g]:
+                c = dict(group=g, population=pop, P=P, R=R, level=lv, device=dev)
+                if dev != "scalar":
+                    c.update(writer="one_file", stage=stage)
+                out[f"{g}_{dev}_{lv}"] = c
+        if g == "B" and stage != "none":
+            out["B_cuda_all_direct"] = dict(group="B", population=pop, P=P, R=R, level="all", device="cuda",
+                                            writer="one_file", stage="none")
     return out
 
 
@@ -156,6 +166,8 @@ def run_case(rdir, name, keep_files=False, case=None):
     from mvb_torch.generation import draw_seeds, make_simulation_rngs
     from tests.be_common import call_eval
     ev = dict(cfg["experiment"]["evaluator"], device=case["device"])
+    if case.get("stage", "none") != "none":
+        ev["tracking_stage_dir"] = case["stage"]
     if case["device"] == "cuda" and not torch.cuda.is_available():
         out["status"] = "skipped: no CUDA on this machine"
         return out
@@ -173,6 +185,19 @@ def run_case(rdir, name, keep_files=False, case=None):
                 calls[fname][1] += time.perf_counter() - t
         return w
 
+    originals = {f: getattr(adapter, f) for f in SAVE_FUNCS + ("eval_generation_batch", "write_tracking")}
+    try:
+        return _run_tensor_case(rdir, name, case, out, genomes, cfg, keep_files, ev, calls, timed, adapter)
+    finally:                                   # restored: cases run in one process in the tests
+        for f, fn in originals.items():
+            setattr(adapter, f, fn)
+
+
+def _run_tensor_case(rdir, name, case, out, genomes, cfg, keep_files, ev, calls, timed, adapter):
+    import numpy as np
+    import torch
+    from mvb_torch.generation import draw_seeds, make_simulation_rngs
+    from tests.be_common import call_eval
     for f in SAVE_FUNCS:                       # the names the adapter imported
         setattr(adapter, f, timed(f, getattr(adapter, f)))
     batch = {}
@@ -185,11 +210,15 @@ def run_case(rdir, name, keep_files=False, case=None):
         return r
 
     def write_spy(*a, **k):
+        if case.get("writer", "one_file") == "per_call":
+            k["per_call"] = True
+        k["timings"] = phases = k.get("timings") if k.get("timings") is not None else {}
         t = time.perf_counter()
         try:
             return real_write(*a, **k)
         finally:
             batch["write_s"] = time.perf_counter() - t
+            batch["phases"] = dict(phases)
 
     adapter.eval_generation_batch, adapter.write_tracking = batch_spy, write_spy
     per_run, per_tick, heat = LEVELS[case["level"]]
@@ -216,6 +245,7 @@ def run_case(rdir, name, keep_files=False, case=None):
         out["run_ticks"] = int(res.lifespans.sum())
         out["iterations"] = int(res.iterations)
     out["write_s"] = batch.get("write_s", 0.0)
+    out["phases"] = batch.get("phases", {})
     out["breakdown"] = {f: {"calls": c, "s": s} for f, (c, s) in calls.items() if c}
     h5 = list(folder.rglob("*.h5"))
     out["h5_mib"] = sum(p.stat().st_size for p in h5) / 2 ** 20
@@ -232,29 +262,55 @@ def run_case(rdir, name, keep_files=False, case=None):
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def plan(rdir, groups):
+def plan(rdir, groups, stage="none", scalar=True):
+    import mvb_torch.h5_writer as W
+    if stage != "none":
+        stage = str(W.check_stage_dir(stage))       # refused here, before any case runs
     rdir.mkdir(parents=True)
     (rdir / "cases").mkdir()
-    run = dict(groups=groups, cases=case_list(groups),
+    run = dict(groups=groups, cases=case_list(groups, stage, scalar), writer="one_file (Step 32)", stage=stage,
                created=datetime.datetime.now().isoformat(timespec="seconds"))
     (rdir / "run.json").write_text(json.dumps(run, indent=1))
     from simulate import machine_load
     from simulate.run_selected import system_info, torch_probe
     info = system_info(torch_probe())
     info["idle_check"] = machine_load.idle_check()
+    info["filesystem"] = {"report": W.filesystem_of(rdir),
+                          "stage": W.filesystem_of(stage) if stage != "none" else None}
     (rdir / "system.json").write_text(json.dumps(info, indent=1, default=str))
     print(f"[tracking_bench] idle check: {info['idle_check'].get('verdict')}", flush=True)
     return run
 
 
-def execute(rdir, keep_files=False, timeouts=None):
+WARM_CASE = dict(group="warm", P=2, R=3, level="off")
+
+
+def warm_up(rdir, case):
+    """An untimed tiny case on the device and population of `case`, so the first timed
+    case does not pay a cold compile cache (Step 31: A_cuda_off's warm-up 15 s, not 3 s).
+    Its result is printed, not recorded; a failure is only reported (the timed case
+    will show the real error)."""
+    w = dict(WARM_CASE, population=case["population"], device=case["device"])
+    print(f"[warm-up] {case['device']} {case['population']} (untimed) ...", flush=True)
+    cmd = [sys.executable, "-m", "tests.tracking_bench", "--warm-case", json.dumps(w), "--dir", str(rdir)]
+    p = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=1800)
+    print(f"[warm-up] {'done' if p.returncode == 0 else 'FAILED: ' + ((p.stderr or p.stdout).strip().splitlines() or ['?'])[-1][:200]}",
+          flush=True)
+
+
+def execute(rdir, keep_files=False, timeouts=None, warm=True):
     run = json.loads((rdir / "run.json").read_text())
     timeouts = timeouts or TIMEOUT_S
+    warmed = set()
     for name, case in run["cases"].items():
         f = rdir / "cases" / f"{name}.json"
         if f.exists():
             print(f"[{name}] done earlier, skipped", flush=True)
             continue
+        key = (case["device"], case["population"])
+        if warm and case["device"] != "scalar" and key not in warmed:
+            warmed.add(key)
+            warm_up(rdir, case)
         print(f"[{name}] {case['group']}: {case['P']} genomes x {case['R']} runs, level {case['level']}, "
               f"{case['device']}", flush=True)
         cmd = [sys.executable, "-m", "tests.tracking_bench", "--run-case", name, "--dir", str(rdir)]
@@ -289,9 +345,10 @@ def write_tables(rdir):
         if not f.exists():
             continue
         r = json.loads(f.read_text())
-        rows.append({k: r.get(k, "") for k in ("name", "group", "device", "level", "P", "R", "status", "wall_s",
-                                               "warmup_s", "sim_s", "write_s", "run_ticks", "iterations",
-                                               "h5_mib", "gpu_peak_mib", "rss_peak_mib")})
+        rows.append({**{k: r.get(k, "") for k in ("name", "group", "device", "level", "P", "R", "writer", "stage",
+                                                  "status", "wall_s", "warmup_s", "sim_s", "write_s")},
+                     **{k: (r.get("phases") or {}).get(k, "") for k in ("build_s", "h5_s", "stage_in_s", "stage_out_s")},
+                     **{k: r.get(k, "") for k in ("run_ticks", "iterations", "h5_mib", "gpu_peak_mib", "rss_peak_mib")}})
         for fn, d in (r.get("breakdown") or {}).items():
             br.append(dict(name=name, function=fn, calls=d["calls"], seconds=f"{d['s']:.4f}"))
     for fname, data in (("summary.csv", rows), ("write_breakdown.csv", br)):
@@ -323,9 +380,19 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--resume", metavar="DIR")
     ap.add_argument("--keep-files", action="store_true")
+    ap.add_argument("--stage-dir", help="tensor cases stage their file here (a local folder) or 'none'; "
+                                        "required for a new run")
+    ap.add_argument("--skip-scalar", action="store_true",
+                    help="no scalar cases (reuse the earlier reports' scalar cases in the plot)")
     ap.add_argument("--run-case", help=argparse.SUPPRESS)
+    ap.add_argument("--warm-case", help=argparse.SUPPRESS)
     ap.add_argument("--dir", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
+    if a.warm_case:
+        res = run_case(a.dir, "_warm_up", case=json.loads(a.warm_case))
+        shutil.rmtree(Path(a.dir) / "runs" / "_warm_up", ignore_errors=True)
+        print(f"warm-up: {res['status']}")
+        return 0 if res["status"] == "ok" else 1
     if a.run_case:
         res = run_case(a.dir, a.run_case, a.keep_files)
         (Path(a.dir) / "cases" / f"{a.run_case}.json").write_text(json.dumps(res, indent=1))
@@ -335,10 +402,12 @@ def main(argv=None):
     else:
         if not a.cases:
             ap.error("give --cases (A, B, C) or --resume")
+        if a.stage_dir is None:
+            ap.error("give --stage-dir (a local folder, e.g. /tmp, or none)")
         rdir = (Path(a.out) if a.out else default_dir()).resolve()
         if rdir.exists():
             raise SystemExit(f"ERROR: {rdir} exists; use --resume")
-        plan(rdir, a.cases)
+        plan(rdir, a.cases, a.stage_dir, scalar=not a.skip_scalar)
     execute(rdir, a.keep_files)
     return 0
 

@@ -31,6 +31,7 @@ SUITES = [
     ("tests.test_large_brain", False),
     ("tests.test_sparse_modulation", False),
     ("tests.test_io_tensor", True),
+    ("tests.test_h5_writer", False),
     ("tests.test_ea_tensor", True),
     ("tests.test_predrawn", False),
     ("tests.test_run_selected", False),

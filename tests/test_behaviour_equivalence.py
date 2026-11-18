@@ -371,8 +371,9 @@ def test_split_writer(base):
     # n = 50, pre-drawn (serial: no worker pool), 2 genomes x 1 run, every tick recorded
     import mvb.simulation_API as api
     import mvb_torch.adapter as adapter
+    import mvb_torch.h5_writer as h5_writer
     import simulate.hdf5_utils as hu
-    install_split_writer(hu, api, adapter)
+    install_split_writer(hu, api, adapter, h5_writer)
     sp = BE.PARTS["b"]
     cfg = BE.load_cfg(sp["config"])
     cfg["experiment"]["n_runs"] = 1

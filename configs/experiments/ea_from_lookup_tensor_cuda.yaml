@@ -79,6 +79,7 @@ experiment:
     dtype: float32
     philox_rounds: 10     # Philox4x32 rounds, 7-10 (live mode; replay must match)
     compile: true          # torch.compile (live mode; replay must match): fuses the decision step and Philox; CUDA probe: decide 7x, Philox 20x
+    tracking_stage_dir: none   # run_batch tracking only: a local folder (e.g. /tmp) to write the HDF5 in before copying it to output_folder; pays off when output_folder is on a network filesystem (plan Step 32)
 
 
 # ============================================================

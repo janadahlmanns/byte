@@ -15,6 +15,11 @@
   [6] scalar cases: every level runs (total time only), its file has the same dataset
       names as the tensor file; n = 50 per-tick fails on the header limit as in the
       tensor code; the CSV's speed-up = scalar total / tensor total
+  [7] Step 32: writer and staging per case. A per_call case (the old writer) and a
+      staged one_file case write the same datasets as the one_file case; the per_call
+      case calls the save functions R times per kind, the one_file case none; phases
+      (build_s, h5_s, stage_in_s / stage_out_s) recorded; the warm-up runs once per
+      device and population and is not recorded; --stage-dir is required
 
 Usage
 -----
@@ -53,11 +58,17 @@ def test_cases():
     c = TB.case_list(["A", "B", "C"])
     check("A: 5 levels x CUDA + CPU + scalar, 10 x 300", sum(k.startswith("A_") for k in c) == 15
           and all((v["P"], v["R"]) == (10, 300) for k, v in c.items() if k.startswith("A_")))
-    check("B: 5 levels on CUDA and scalar + off / run on CPU, 260 x 300", sum(k.startswith("B_") for k in c) == 12
+    check("B: 5 levels on CUDA, CPU and scalar, 260 x 300; no _direct case without staging",
+          sum(k.startswith("B_") for k in c) == 15 and "B_cuda_all_direct" not in c
           and all((v["P"], v["R"]) == (260, 300) for k, v in c.items() if k.startswith("B_")))
     check("C: off / run / heat / tick on CUDA and scalar, 10 x 100 at n = 50",
           sorted(v["level"] for k, v in c.items() if k.startswith("C_")) == sorted(["heat", "off", "run", "tick"] * 2)
           and all(v["population"] == "elites_n50" for k, v in c.items() if k.startswith("C_")))
+    c = TB.case_list(["A", "B", "C"], stage="/st", scalar=False)
+    check("staged, no scalar: tensor cases one_file staged in /st; B_cuda_all_direct unstaged; no scalar case",
+          not any(v["device"] == "scalar" for v in c.values())
+          and all(v["writer"] == "one_file" and v["stage"] == "/st" for k, v in c.items() if k != "B_cuda_all_direct")
+          and c["B_cuda_all_direct"]["stage"] == "none" and c["B_cuda_all_direct"]["level"] == "all")
 
 
 def datasets(path):
@@ -68,24 +79,21 @@ def datasets(path):
 
 
 def test_levels(tmp):
-    print("\n[2] Every tracking level, tiny")
-    want = {"off": {}, "run": {"save_variant_summary_to_hdf5": 2, "save_wiring_to_hdf5": 2},
-            "tick": {"save_per_tick_to_hdf5": 6}, "heat": {"save_heatmaps_to_hdf5": 6},
-            "all": {"save_per_tick_to_hdf5": 6, "save_heatmaps_to_hdf5": 6}}
+    print("\n[2] Every tracking level, tiny (one_file writer)")
     rd = Path(tmp) / "levels"
     (rd / "cases").mkdir(parents=True)
     files = {}
-    for lv, calls in want.items():
+    for lv in TB.LEVELS:
         r = TB.run_case(rd, f"t_{lv}", keep_files=True, case=dict(TINY, level=lv))
         got = {f: d["calls"] for f, d in r["breakdown"].items()}
-        ok = r["status"] == "ok" and all(got.get(f) == n for f, n in calls.items())
+        ok = r["status"] == "ok"
         if lv == "off":
-            ok &= not got and r["h5_mib"] == 0
-        if lv in ("run", "heat"):
-            ok &= "save_per_tick_to_hdf5" not in got
-        if lv in ("run", "tick"):
-            ok &= "save_heatmaps_to_hdf5" not in got
-        check(f"{lv}: status ok, call counts {calls or 'none'} (got {got})", ok)
+            ok &= not got and r["h5_mib"] == 0 and not r["phases"]
+        else:
+            # only the setup writes go through hdf5_utils; the tracking goes through one file
+            ok &= set(got) == {"create_hdf5_file", "save_genome_properties_to_hdf5"}
+            ok &= r["phases"].get("h5_s", 0) > 0 and "build_s" in r["phases"]
+        check(f"{lv}: status ok, phases {sorted(r['phases'])}, hdf5_utils calls {sorted(got) or 'none'}", ok)
         h5 = list((rd / "runs" / f"t_{lv}").rglob("*.h5"))
         files[lv] = h5[0] if h5 else None
     names = {lv: set(datasets(p)) if p else set() for lv, p in files.items()}
@@ -192,6 +200,53 @@ def test_scalar(tmp, files):
           abs(float(rows["t_all"]["speedup_vs_scalar"]) - s_all["wall_s"] / rt["wall_s"]) < 1e-3)
 
 
+def test_step32(tmp, files):
+    print("\n[7] Step 32: writer, staging, warm-up")
+    import contextlib
+    import io
+    rd = Path(tmp) / "step32"
+    (rd / "cases").mkdir(parents=True)
+    r = TB.run_case(rd, "pc_all", keep_files=True, case=dict(TINY, level="all", writer="per_call", stage="none"))
+    got = {f: d["calls"] for f, d in r["breakdown"].items()}
+    h5 = list((rd / "runs" / "pc_all").rglob("*.h5"))
+    check(f"per_call: the save functions are called per dataset (per_tick {got.get('save_per_tick_to_hdf5')}, "
+          f"heat maps {got.get('save_heatmaps_to_hdf5')}); same dataset names as one_file",
+          r["status"] == "ok" and got.get("save_per_tick_to_hdf5") == 6 and got.get("save_heatmaps_to_hdf5") == 6
+          and h5 and set(datasets(h5[0])) == set(datasets(files["all"])))
+    st = Path(tmp) / "stage"
+    st.mkdir()
+    r = TB.run_case(rd, "st_all", keep_files=True, case=dict(TINY, level="all", writer="one_file", stage=str(st)))
+    h5 = list((rd / "runs" / "st_all").rglob("*.h5"))
+    a, b = datasets(h5[0]) if h5 else {}, datasets(files["all"])
+    same = set(a) == set(b) and all(
+        (np.array_equal(a[k], b[k]) if not isinstance(a[k], bytes) else a[k] == b[k])
+        for k in a if "genome_properties" not in k)
+    check(f"staged: same datasets and values as unstaged; stage copies timed "
+          f"({sorted(k for k in r['phases'] if k.startswith('stage'))}); stage folder empty",
+          r["status"] == "ok" and same and {"stage_in_s", "stage_out_s"} <= set(r["phases"]) and not list(st.iterdir()))
+
+    rw = Path(tmp) / "warm"
+    (rw / "cases").mkdir(parents=True)
+    (rw / "run.json").write_text(json.dumps({"groups": ["A"], "cases": {
+        "w1": dict(TINY, level="off"), "w2": dict(TINY, level="run")}}))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        TB.execute(rw, timeouts={"A": 600})
+    out = buf.getvalue()
+    check(f"warm-up: once per device and population, before the first case, not recorded "
+          f"({out.count('[warm-up] cpu elites_n11')} start line(s))",
+          out.count("[warm-up] cpu elites_n11") == 1 and "[warm-up] done" in out
+          and out.index("[warm-up]") < out.index("[w1]")
+          and sorted(p.name for p in (rw / "cases").glob("*.json")) == ["w1.json", "w2.json"])
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            TB.main(["--cases", "A", "--out", str(Path(tmp) / "no_stage")])
+        code = None
+    except SystemExit as e:
+        code = e.code
+    check("a new run without --stage-dir is refused", code == 2 and not (Path(tmp) / "no_stage").exists())
+
+
 def main():
     test_cases()
     with tempfile.TemporaryDirectory() as tmp:
@@ -200,6 +255,7 @@ def main():
         rd2 = test_status(tmp)
         test_plot(tmp, rd2)
         test_scalar(tmp, files)
+        test_step32(tmp, files)
     failed = [n for n, ok in _RESULTS if not ok]
     print(f"\n{len(_RESULTS) - len(failed)}/{len(_RESULTS)} passed")
     for n in failed:

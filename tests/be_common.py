@@ -289,22 +289,32 @@ def split_per_tick(a):
     return base, w, wcols
 
 
+def _write_split(f, variant_id, run_id, per_tick_array):
+    """The split layout, into an open file (shared by both writers below)."""
+    base, w, wcols = split_per_tick(per_tick_array)
+    grp = f.require_group(f"variant_{variant_id}").require_group(f"run_{run_id}")
+    for k in ("per_tick", "per_tick_weights", "per_tick_weight_names"):
+        if k in grp:
+            del grp[k]
+    grp.create_dataset("per_tick", data=base, compression="gzip")
+    grp.create_dataset("per_tick_weights", data=w, compression="gzip")
+    grp.create_dataset("per_tick_weight_names",
+                       data=np.array([c.encode() for c in wcols], dtype=f"S{max([len(c) for c in wcols] + [1])}"))
+    grp.attrs[SPLIT_ATTR] = 1
+
+
+def _tracking_file_per_tick_split(self, v, r, arr):
+    """Drop-in for mvb_torch.h5_writer.TrackingFile.per_tick (the tensor code's one-file
+    writer since plan Step 32)."""
+    _write_split(self.f, v, r, arr)
+
+
 def save_per_tick_split(hdf5_path, variant_id, run_id, per_tick_array, lock=None):
     """Drop-in for simulate.hdf5_utils.save_per_tick_to_hdf5 (same signature, same group
     layout), writing the weight columns as their own dataset."""
-    base, w, wcols = split_per_tick(per_tick_array)
-
     def _write():
         with h5py.File(hdf5_path, "a") as f:
-            grp = f.require_group(f"variant_{variant_id}").require_group(f"run_{run_id}")
-            for k in ("per_tick", "per_tick_weights", "per_tick_weight_names"):
-                if k in grp:
-                    del grp[k]
-            grp.create_dataset("per_tick", data=base, compression="gzip")
-            grp.create_dataset("per_tick_weights", data=w, compression="gzip")
-            grp.create_dataset("per_tick_weight_names",
-                               data=np.array([c.encode() for c in wcols], dtype=f"S{max([len(c) for c in wcols] + [1])}"))
-            grp.attrs[SPLIT_ATTR] = 1
+            _write_split(f, variant_id, run_id, per_tick_array)
 
     if lock is not None:
         with lock:
@@ -326,6 +336,9 @@ def install_split_writer(*modules):
         if hasattr(m, "save_per_tick_to_hdf5"):
             m.save_per_tick_to_hdf5 = save_per_tick_split
             done.append(m.__name__)
+        if hasattr(m, "TrackingFile"):          # mvb_torch.h5_writer (Step 32)
+            m.TrackingFile.per_tick = _tracking_file_per_tick_split
+            done.append(f"{m.__name__}.TrackingFile")
     if not done:
         raise EquivalenceError("no module to install the split per-tick writer into")
     return done

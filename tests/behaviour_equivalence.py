@@ -365,8 +365,9 @@ def run_arm(outdir, name):
     else:
         import torch
         import mvb_torch.adapter as adapter
+        import mvb_torch.h5_writer as h5_writer
         import simulate.hdf5_utils as hu
-        meta["split_writer"] = install_split_writer(hu, adapter)
+        meta["split_writer"] = install_split_writer(hu, adapter, h5_writer)
         captured = []
         real = adapter.eval_generation_batch
 
