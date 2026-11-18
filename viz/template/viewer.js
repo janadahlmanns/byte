@@ -35,6 +35,7 @@
     // something here are already spoken for.
     fire: css.getPropertyValue("--text").trim(),
     surface2: css.getPropertyValue("--surface-2").trim(),
+    panel: css.getPropertyValue("--panel").trim(),
     // Red and blue are reserved for the sign of a weight. A weight moving is
     // not a statement about sign, so it is marked in neutral ink rather than
     // in the same red as every excitatory edge it is drawn on top of.
@@ -185,8 +186,13 @@
   const ctx = canvas.getContext("2d");
   let cell = 8;
 
+  /* Raised while capturing a still. sizeCanvas sets the pixel size and the CSS
+     size separately, so multiplying this multiplies resolution and nothing on
+     screen moves - the figure is redrawn at print size, not upscaled. */
+  let exportScale = 1;
+
   function sizeCanvas(el, c, w, h) {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = (window.devicePixelRatio || 1) * exportScale;
     el.width = Math.round(w * dpr);
     el.height = Math.round(h * dpr);
     el.style.width = w + "px";
@@ -1432,6 +1438,189 @@
   // devicePixelRatio can change without any box changing, when the window
   // moves to a monitor at a different scale.
   window.addEventListener("resize", relayout);
+
+  // ---------------------------------------------------------------
+  // Capture: a still for a figure, a video for a talk
+  // ---------------------------------------------------------------
+
+  /* Composited from the two canvases rather than screenshotted, so what is
+     saved is exactly what is drawn - no page furniture, no browser chrome,
+     and at whatever resolution is asked for. */
+
+  const META = DATA.meta || {};
+  // source_file carries the path it was exported from, and a download name
+  // with separators in it is not a name the browser will accept.
+  const STEM = String(META.source_file || "run")
+                 .replace(/^.*[\\/]/, "")
+                 .replace(/\.h5$/i, "")
+             + "_g" + META.genome_id + "_r" + META.run_id;
+  const STILL_SCALE = 3;
+
+  /* A recording runs at whatever speed the transport is set to, so what is
+     saved is what you were watching. The video frame rate and the tick rate
+     are separate things: holding each tick for several identical frames keeps
+     playback smooth while the run advances slowly enough to follow.
+
+     The frame rate is chosen as a whole multiple of the tick rate so the tick
+     rate comes out exact rather than rounded - at 24 fps, 8 ticks/s is three
+     frames a tick, while 2 ticks/s is twelve. */
+  function recPlan(ticksPerSecond) {
+    const perTick = Math.max(1, Math.ceil(24 / ticksPerSecond));
+    return { perTick: perTick, fps: ticksPerSecond * perTick };
+  }
+
+  function clock(seconds) {
+    const s = Math.max(0, Math.round(seconds));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  /* H.264 first. A .webm will not play in PowerPoint or Keynote, and these
+     recordings exist to go into talks; the webm entries are the fallback for
+     browsers that will not write mp4. */
+  const VIDEO_TYPES = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm",
+  ];
+
+  function pickVideoType() {
+    if (typeof MediaRecorder === "undefined") return null;
+    for (const t of VIDEO_TYPES) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return null;
+  }
+
+  function compositeFrame(target, scale) {
+    const bc = document.getElementById("brain");
+    const pad = Math.round(18 * scale);
+    const capH = Math.round(30 * scale);
+    const gap = Math.round(14 * scale);
+    const w = pad * 2 + canvas.width + gap + bc.width;
+    const h = pad * 2 + capH + Math.max(canvas.height, bc.height);
+
+    // Only on a real change: assigning width resets the bitmap, and doing that
+    // every frame interrupts the stream being captured from it.
+    if (target.width !== w || target.height !== h) {
+      target.width = w;
+      target.height = h;
+    }
+
+    const g = target.getContext("2d");
+    g.fillStyle = C.panel;
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = C.dim;
+    g.font = Math.round(13 * scale) + "px Consolas, \"Cascadia Mono\", monospace";
+    g.textBaseline = "middle";
+    g.fillText("genome " + META.genome_id + "  ·  run " + META.run_id
+               + "  ·  tick " + FRAMES[cur].t + " / " + FRAMES[N - 1].t,
+               pad, pad + capH / 2);
+    g.drawImage(canvas, pad, pad + capH);
+    g.drawImage(bc, pad + canvas.width + gap, pad + capH);
+    return target;
+  }
+
+  function download(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  }
+
+  function saveStill() {
+    exportScale = STILL_SCALE;
+    relayout();
+    const out = compositeFrame(document.createElement("canvas"), STILL_SCALE);
+    exportScale = 1;
+    relayout();
+    // out already holds the pixels, so restoring the scale first is safe.
+    out.toBlob(function (b) {
+      if (b) download(b, STEM + "_t" + FRAMES[cur].t + ".png");
+    }, "image/png");
+  }
+
+  let recording = null;
+
+  function recordRun() {
+    const btn = document.getElementById("rec-btn");
+    if (recording) { recording.cancelled = true; return; }
+
+    const type = pickVideoType();
+    if (!type) { if (btn) btn.textContent = "no recorder"; return; }
+    setPlaying(false);
+
+    const out = compositeFrame(document.createElement("canvas"), 1);
+    // captureStream(0) hands over a frame only when asked, so one tick is one
+    // frame however long the compositing takes.
+    const stream = out.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    const chunks = [];
+    const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8e6 });
+
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = function () {
+      track.stop();
+      const cancelled = recording && recording.cancelled;
+      recording = null;
+      document.getElementById("app").classList.remove("recording");
+      if (btn) { btn.textContent = "record"; btn.classList.remove("on"); }
+      if (!chunks.length || cancelled) return;
+      download(new Blob(chunks, { type: type }),
+               STEM + (type.indexOf("mp4") >= 0 ? ".mp4" : ".webm"));
+    };
+
+    recording = { cancelled: false };
+    document.getElementById("app").classList.add("recording");
+    if (btn) btn.title = "Click again to cancel";
+    if (btn) btn.classList.add("on");
+    rec.start();
+
+    // Fixed for the whole recording: changing speed halfway would change how
+    // long a tick lasts partway through the file.
+    const plan = recPlan(speed);
+    const totalFrames = N * plan.perTick;
+    const startedAt = performance.now();
+    let frame = 0;
+
+    (function step() {
+      if (!recording || recording.cancelled || frame >= totalFrames) {
+        if (rec.state !== "inactive") rec.stop();
+        return;
+      }
+      // Only redraw when the tick actually changes; the frames in between are
+      // the same picture held, which is what makes the pace readable.
+      if (frame % plan.perTick === 0) {
+        show(frame / plan.perTick);
+        compositeFrame(out, 1);
+      }
+      if (track.requestFrame) track.requestFrame();
+      else if (stream.requestFrame) stream.requestFrame();
+      if (btn) {
+        btn.textContent = "recording " + Math.round((frame / totalFrames) * 100)
+                        + "% · " + clock((totalFrames - frame) / plan.fps) + " left";
+      }
+      frame++;
+      // Scheduled against a fixed start time rather than by a constant delay.
+      // setTimeout always overshoots a little, and at one call per frame that
+      // error accumulates into a file that runs slower than the speed asked
+      // for - about 7% over a minute before this.
+      const due = startedAt + (frame * 1000) / plan.fps;
+      setTimeout(step, Math.max(0, due - performance.now()));
+    })();
+  }
+
+  const pngBtn = document.getElementById("png-btn");
+  if (pngBtn) pngBtn.addEventListener("click", saveStill);
+  const recBtn = document.getElementById("rec-btn");
+  if (recBtn) {
+    recBtn.addEventListener("click", recordRun);
+    if (!pickVideoType()) { recBtn.disabled = true; recBtn.title = "This browser cannot record video"; }
+  }
 
   resetGrid();
   fitShape();

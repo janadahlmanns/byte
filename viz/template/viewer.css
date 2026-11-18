@@ -487,6 +487,15 @@ select {
   color: #ffffff;
 }
 
+/* While recording, the transport is driven by the recorder rather than by the
+   reader, so the controls are shown as unavailable instead of silently
+   fighting it. */
+#app.recording #transport,
+#app.recording .modes:not(.capture) { opacity: 0.4; pointer-events: none; }
+
+.modes.capture button { color: var(--text); }
+.modes button:disabled { opacity: 0.45; cursor: not-allowed; }
+
 .hint {
   font-size: 11px;
   color: var(--dim);

@@ -119,6 +119,14 @@
 
     <div class="readout" id="shape-note"></div>
 
+    <!-- Capture. Kept apart from the view modes and off the keyboard: a
+         recording runs the whole timeline, which is not something to start by
+         brushing a key. -->
+    <div class="modes capture">
+      <button id="png-btn" title="Save this tick as a high-resolution image">save frame</button>
+      <button id="rec-btn" title="Record the whole run as a video file">record</button>
+    </div>
+
     <div class="modes">
       <button id="cov-btn" title="Shade cells by how often the agent occupied them (c)">coverage</button>
       <button id="detail-btn" title="Show pruned and saturated connections (d)">detail</button>
