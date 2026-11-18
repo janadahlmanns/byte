@@ -63,7 +63,7 @@ def eval_args(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def call_eval(fn, genomes, cfg, folder, *, seeds, per_tick, randomness_cfg=None,
-              with_randomness_kw=True, per_run=True):
+              with_randomness_kw=True, per_run=True, heat_map=False):
     """Call an eval_generation-compatible function as run_ea does, with per-run tracking
     on unless per_run=False (and per-tick if asked), and the given seeds as
     pre_computed_seeds_dict.
@@ -79,14 +79,14 @@ def call_eval(fn, genomes, cfg, folder, *, seeds, per_tick, randomness_cfg=None,
     # in the HDF5 are the ones given.
     rngs = [np.random.default_rng(0) for _ in range(3)]
     kw = dict(pre_computed_seeds_dict=pre, replay_info=None, switch_phases=a["switch_phases"])
-    if per_tick and not per_run:
-        raise EquivalenceError("per-tick tracking needs per-run tracking")
+    if (per_tick or heat_map) and not per_run:
+        raise EquivalenceError("per-tick and heat-map tracking need per-run tracking")
     if with_randomness_kw:
         kw["randomness_cfg"] = randomness_cfg
     elif randomness_cfg is not None:
         raise EquivalenceError("this eval_generation has no randomness_cfg")
     out = fn(genomes, cfg, folder, "be_arm",
-             bool(per_run), bool(per_tick), False,     # per-run, per-tick as asked, no heat map
+             bool(per_run), bool(per_tick), bool(heat_map),   # tracking as asked (heat map off by default)
              False, False, 4, 4, P,
              *rngs,
              a["brain_module_name"], a["MAX_TICKS"], a["N_RUNS"], a["grid_width"],
