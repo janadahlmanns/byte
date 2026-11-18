@@ -149,9 +149,14 @@
     for (const i of moveTicks) events.push({ i: i, kind: "move" });
   }
 
+  /* One colour each: these sit on a single strip, so two kinds sharing a
+     colour makes them one kind to the reader. A tick that fell back to a
+     random action is marked in plain grey rather than in the warning colour -
+     it is an ordinary outcome of the decision rule, and the scrub bar should
+     let you find it without implying something went wrong. */
   const EVENT_COLOR = {
     ate: C.food, phase: C.warn, death: C.dead, learn: C.learn,
-    move: C.text, think: C.agent, fallback: C.warn,
+    move: C.agent, think: C.inh, fallback: C.dim,
   };
 
   function drawMarkers() {
@@ -989,28 +994,43 @@
       // on a stability beat and nowhere else, so the two are told apart.
       btctx.fillStyle = k < warm ? C.edge : C.dim;
       btctx.fillRect(x, 5, slot, BEAT_H - 10);
-      // A tick ends either because the rule fired or because the loop ran out.
-      // Only the second is worth a colour: it means no decision was reached
-      // and the action was random, which is otherwise indistinguishable from
-      // a tick that simply took a while.
-      if (k === total - 1 && bCommit && bCommit[d] < 0) {
-        btctx.fillStyle = C.dead;
-        btctx.fillRect(x, 5, slot, BEAT_H - 10);
-      }
-      // Marked above the slot rather than over it. The beat being looked at is
-      // by default the last one, which is also where the run-out mark goes, and
-      // filling the slot would hide that mark exactly when it matters.
-      if (k === sel) {
+    }
+
+    /* A tick always ends on its last beat: the rule commits and the loop
+       returns immediately, or the loop runs out. So that slot is the outcome,
+       and it carries both answers rather than flagging only one of them.
+       Solid means a decision was taken there; hollow means none was and the
+       action was chosen at random.
+
+       Neither is drawn in a warning colour. Running out is an ordinary result
+       of the rule - no candidate held a majority - and colouring it like a
+       fault made a normal outcome look like a crash. */
+    if (bCommit) {
+      const lx = (total - 1) * (slot + gap);
+      btctx.clearRect(lx, 5, slot, BEAT_H - 10);
+      if (bCommit[d] < 0) {
+        btctx.strokeStyle = C.text;
+        btctx.lineWidth = 1;
+        btctx.strokeRect(lx + 0.5, 5.5, Math.max(1, slot - 1), BEAT_H - 11);
+      } else {
         btctx.fillStyle = C.text;
-        btctx.fillRect(x, 0, slot, 3);
+        btctx.fillRect(lx, 5, slot, BEAT_H - 10);
       }
+    }
+
+    // Marked above the slot rather than over it, so it never covers the
+    // outcome mark - which sits on the last beat, and the last beat is where
+    // the view starts.
+    if (sel >= 0) {
+      btctx.fillStyle = C.text;
+      btctx.fillRect(sel * (slot + gap), 0, slot, 3);
     }
 
     // Where propagation ends and the network starts being asked to commit.
     // A shade difference alone leaves the reader counting slots to find it.
     if (warm > 0 && warm < total) {
       const bx = warm * (slot + gap) - gap / 2;
-      btctx.fillStyle = C.warn;
+      btctx.fillStyle = C.text;
       btctx.fillRect(bx - 0.5, 0, 1, BEAT_H);
     }
   }
