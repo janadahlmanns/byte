@@ -23,9 +23,9 @@ write during the generation, so only its total time (wall_s) is recorded. Cases 
      all levels on CUDA, CPU and scalar (30-minute limit per case). With --stage-dir set,
      also B_cuda_all_direct: all levels written in place, to separate the one-file
      writer's gain from staging's
-  C  large brains: the first 10 large-run elites, n = 50, R 100; off / run / heat /
-     tick on CUDA and scalar (tick: expected to fail on HDF5's header limit,
-     known_issues.md)
+  C  large brains: the first 10 large-run elites, n = 50, R 100; all levels on CUDA and
+     scalar (per-tick records are written split since Step 33: ~1,500 connection columns
+     exceed HDF5's header limit)
 
 Each tensor case records its writer (Step 32: one_file; reports from before Step 32 have
 none, i.e. per_call) and its staging folder. --stage-dir is required for a new run
@@ -71,7 +71,7 @@ def case_list(groups, stage="none", scalar=True):
     out = {}
     pops = {"A": ("elites_n11", 10, 300), "B": ("step12_n11", 260, 300), "C": ("elites_n50", 10, 100)}
     devices = {"A": ("cuda", "cpu"), "B": ("cuda", "cpu"), "C": ("cuda",)}
-    levels = {"A": list(LEVELS), "B": list(LEVELS), "C": ["off", "run", "heat", "tick"]}
+    levels = {"A": list(LEVELS), "B": list(LEVELS), "C": list(LEVELS)}
     for g in groups:
         if g not in pops:
             raise SystemExit(f"ERROR: unknown case group {g!r} (A, B, C)")

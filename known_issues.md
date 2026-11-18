@@ -1,6 +1,6 @@
 # Known issues
 
-## 1. Per-tick tracking fails for large brains (HDF5 header limit)
+## 1. Per-tick tracking fails for large brains (HDF5 header limit) — FIXED 2026-11-18 (see "Fix" at the end of this section)
 
 **Found:** 2026-11-14, on the university PC (RTX 3070), during the behavioural-equivalence
 test at n = 50 (plan_evotorch.md, Step 12, part b).
@@ -47,8 +47,41 @@ differs. The workaround is verified by these checks:
 
 This was the only option for the original code, whose files cannot be changed.
 
-**Not fixed in production.** Fixing it means changing the per-tick file format. Every
-reader would then have to accept both the old and the new layout: the writer in both
-backends, the replay tools and the analysis scripts. It is not needed for the thesis
-runs or for the equivalence test. It needs its own plan if per-tick tracking of large
-brains is wanted.
+**Fix (2026-11-18, plan_evotorch.md Step 33).**
+
+*Writing.* Records that fit are written exactly as before: one compound dataset, byte
+for byte the same file format. Only records above the limit are split:
+
+| Record | Split when | On disk |
+|---|---|---|
+| `variant_V/run_R/per_tick` | more than 1,000 connection columns (n = 50 brains track ~1,500) | `per_tick_base` (the 10 base fields), `per_tick_weights` (ticks × connections, float32), `per_tick_weight_names`, and the attribute `per_tick_layout = "split"` on the run group |
+| `variant_V/wiring` | more than 800 runs (it has one column per run) | `wiring_base`, `wiring_weights` (connections × runs), `wiring_weight_names`, and the attribute `wiring_layout = "split"` |
+
+- **The `wiring` row is the same limit, found while fixing this:** `wiring` fails above
+  854 runs at any brain size. No run so far has used more than 300 runs.
+- **The scalar code and the tensor code** both write through `simulate/hdf5_utils.py`,
+  so both are fixed, and their files stay identical.
+- **The first split write** of a run prints one line saying so.
+
+*Reading.* Files from earlier simulations (all n = 11: at most 44 connection columns)
+and every new file below the limits read exactly as before with plain h5py. To read
+files of any size with the same code, change the line that opens the file:
+
+```python
+from simulate.hdf5_utils import open_tracking
+with open_tracking("path/to/file.h5") as f:          # instead of h5py.File(path, "r")
+    pt = f["variant_0/run_3/per_tick"][()]           # unchanged: the full record, any n
+```
+
+- `open_tracking` returns the same structured array the simulation built: every base
+  field and every connection column, in the original order.
+- It also supports slices, single fields and nested access
+  (`f["variant_0"]["run_3"]["per_tick"]`); everything else in the file reads as with
+  h5py.
+- **Plain h5py on a split record fails** with "object 'per_tick' doesn't exist" (a
+  KeyError). It never returns the base fields without the weights.
+
+Tests: `tests/test_hdf5_layout.py`. It covers round trips at 10 / 1,000 / 1,001 / 2,500
+columns and 300 / 800 / 801 / 2,000 runs, and checks that `open_tracking` reads the
+n = 11 reference files exactly as h5py does. It also runs a real n = 50 run with all
+tracking, scalar and tensor, and includes negative controls.

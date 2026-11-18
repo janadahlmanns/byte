@@ -7,14 +7,14 @@
       the others absent
   [3] the timing wrappers change nothing: the HDF5 written with and without them is
       identical in content
-  [4] status handling: per-tick at n = 50 fails on HDF5's header limit and is recorded
-      ("object header message is too large"); a too-short time limit is recorded as a
+  [4] status handling: per-tick at n = 50 runs (split records, Step 33); a failing case
+      is recorded as failed; a too-short time limit is recorded as a
       timeout; a CUDA case on a machine without CUDA is recorded as skipped; resume
       skips finished cases
   [5] the plot runs on a tiny report; its CSV agrees with the cases
   [6] scalar cases: every level runs (total time only), its file has the same dataset
-      names as the tensor file; n = 50 per-tick fails on the header limit as in the
-      tensor code; the CSV's speed-up = scalar total / tensor total
+      names as the tensor file; n = 50 per-tick runs, as in the tensor code; the CSV's
+      speed-up = scalar total / tensor total
   [7] Step 32: writer and staging per case. A per_call case (the old writer) and a
       staged one_file case write the same datasets as the one_file case; the per_call
       case calls the save functions R times per kind, the one_file case none; phases
@@ -61,8 +61,8 @@ def test_cases():
     check("B: 5 levels on CUDA, CPU and scalar, 260 x 300; no _direct case without staging",
           sum(k.startswith("B_") for k in c) == 15 and "B_cuda_all_direct" not in c
           and all((v["P"], v["R"]) == (260, 300) for k, v in c.items() if k.startswith("B_")))
-    check("C: off / run / heat / tick on CUDA and scalar, 10 x 100 at n = 50",
-          sorted(v["level"] for k, v in c.items() if k.startswith("C_")) == sorted(["heat", "off", "run", "tick"] * 2)
+    check("C: all 5 levels on CUDA and scalar, 10 x 100 at n = 50",
+          sorted(v["level"] for k, v in c.items() if k.startswith("C_")) == sorted(list(TB.LEVELS) * 2)
           and all(v["population"] == "elites_n50" for k, v in c.items() if k.startswith("C_")))
     c = TB.case_list(["A", "B", "C"], stage="/st", scalar=False)
     check("staged, no scalar: tensor cases one_file staged in /st; B_cuda_all_direct unstaged; no scalar case",
@@ -133,8 +133,16 @@ def test_status(tmp):
     rd = Path(tmp) / "status"
     (rd / "cases").mkdir(parents=True)
     r = TB.run_case(rd, "c_tick", case=dict(group="C", population="elites_n50", P=1, R=1, level="tick", device="cpu"))
-    check(f"n = 50 per-tick: recorded as failed on the header limit ({r['status'][:70]})",
-          r["status"].startswith("failed") and "object header message is too large" in r["status"])
+    check(f"n = 50 per-tick: ok since Step 33 (split records) ({r['status'][:70]})", r["status"] == "ok")
+    from simulate import hdf5_utils as H
+    H._SPLIT_ABOVE["per_tick"] = 5000           # the rule above HDF5's limit: the old failure
+    try:
+        r = TB.run_case(rd, "c_fail", case=dict(group="C", population="elites_n50", P=1, R=1, level="tick",
+                                                device="cpu"))
+    finally:
+        H._SPLIT_ABOVE["per_tick"] = H.PER_TICK_SPLIT_ABOVE
+    check(f"a failing case is recorded as failed, not raised ({r['status'][:60]})",
+          r["status"].startswith("failed") and "header message is too large" in r["status"])
     r = TB.run_case(rd, "c_cuda", case=dict(TINY, level="run", device="cuda"))
     import torch
     if not torch.cuda.is_available():
@@ -186,8 +194,7 @@ def test_scalar(tmp, files):
     check(f"scalar 'all' writes the same dataset names as the tensor code ({len(names['all'])})",
           names["all"] == tensor_names)
     r = TB.run_case(rd, "s_c_tick", case=dict(group="C", population="elites_n50", P=1, R=1, level="tick", device="scalar"))
-    check(f"scalar n = 50 per-tick fails on the header limit, as the tensor code ({r['status'][:60]})",
-          r["status"].startswith("failed") and "header message is too large" in r["status"])
+    check(f"scalar n = 50 per-tick: ok since Step 33, as the tensor code ({r['status'][:60]})", r["status"] == "ok")
     rt = TB.run_case(rd, "t_all", keep_files=False, case=dict(TINY, level="all"))
     (rd / "cases" / "t_all.json").write_text(json.dumps(rt))
     (rd / "system.json").write_text(json.dumps({"cpu_model": "test", "cpus_allowed": {"count": 4}, "gpus": []}))

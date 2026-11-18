@@ -30,6 +30,8 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
+from simulate import hdf5_utils
+
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "lustre", "gpfs", "beegfs", "ceph",
               "fuse.sshfs", "afs", "9p", "webdav", "fuse.glusterfs"}
 RAM_FS = {"tmpfs", "ramfs"}
@@ -209,7 +211,7 @@ class TrackingFile:
         self._put(self._group(f"variant_{v}"), "summary", summary, compression="gzip")
 
     def wiring(self, v, wiring):
-        self._put(self._group(f"variant_{v}"), "wiring", wiring, compression="gzip")
+        hdf5_utils.write_wiring(self._group(f"variant_{v}"), wiring)     # splits above the header limit (Step 33)
 
     def modulation(self, v, modulation):
         self._put(self._group(f"variant_{v}"), "modulation", modulation, compression="gzip")
@@ -221,7 +223,7 @@ class TrackingFile:
         self._put(self._group(f"variant_{v}"), "tonic_activations", tonic, compression="gzip")
 
     def per_tick(self, v, r, arr):
-        self._put(self._group(f"variant_{v}", f"run_{r}"), "per_tick", arr, compression="gzip")
+        hdf5_utils.write_per_tick(self._group(f"variant_{v}", f"run_{r}"), arr)
 
     def heatmap(self, v, r, staying):
         self._put(self._group(f"variant_{v}", f"run_{r}"), "staying", staying, compression="gzip")
