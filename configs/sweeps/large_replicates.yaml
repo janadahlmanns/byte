@@ -1,0 +1,25 @@
+# ============================================================
+# LARGE CONFIG, 4 independent replicates, 10 generations each (multi-GPU showcase, 2026-11-20)
+# ============================================================
+# The production large config (n = 50, population 1000, 300 runs, elite 50) with
+# per_child mutation and 10 instead of 150 generations, four times with a different
+# simulation_seed. simulation_seed drives every run's world, noise and decision seeds and
+# the mutation streams, so the four replicates simulate different runs from the first
+# tick and evolve apart. (The production run used simulation_seed 1; these use 2-5.)
+# The generation-0 genomes come from wiring_randomization_seed, which stays 1: the four
+# start from the same random population, as replicate EAs often do.
+#
+# Meant as a job array, one replicate per GPU (plan Step 24): all four at once take about
+# as long as one (~35-40 min on an A100), against ~2.5 h one after another.
+#   N=$(apptainer exec $WORK/byte.sif python -m simulate.run_selected --preset large_replicates --count)
+#   sbatch.tinygpu --array=0-$((N-1)) --output=%x-%A_%a.out \
+#       --partition=a100 --gres=gpu:a100:1 hpc/tinygpu_job.sh large_replicates
+# ============================================================
+base: ea_from_random_large_tensor_cuda
+set:
+  experiment.output_folder: "data/large_replicates/"
+  experiment.simulation_name: "large_replicates"
+  experiment.evolutionary_algorithm.num_generations: 10
+  experiment.evolutionary_algorithm.mutation_rng: per_child
+vary:
+  experiment.simulation_seed: [2, 3, 4, 5]

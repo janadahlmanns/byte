@@ -1,0 +1,11 @@
+# The large config, 4 replicates with different simulation seeds, 10 generations each,
+# per_child mutation (configs/sweeps/large_replicates.yaml). One replicate per A100 as a
+# job array (see the sweep file), or all four one after another in one job as the
+# sequential reference:
+#   sbatch.tinygpu --partition=a100 --gres=gpu:a100:1 --time=04:00:00 hpc/tinygpu_job.sh large_replicates
+description: "Large config, 4 replicates (simulation_seed 2-5), 10 generations each, per_child (~35-40 min each on an A100)"
+configs:
+  - "large_replicates [simulation_seed=2]"
+  - "large_replicates [simulation_seed=3]"
+  - "large_replicates [simulation_seed=4]"
+  - "large_replicates [simulation_seed=5]"
