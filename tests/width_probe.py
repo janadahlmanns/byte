@@ -40,6 +40,7 @@ Usage
     python -m tests.width_probe --device mps --n 50 --runs 20 --vram-gib 2,3   # smoke
 """
 
+import math
 import argparse
 import csv
 import os
@@ -84,7 +85,9 @@ def auto_sizes(device_gib):
     """The usual card sizes up to this card's memory, then the card itself (20c)."""
     out = [float(s) for s in CARD_SIZES_GIB if s <= device_gib + 1e-9]
     if not out or abs(out[-1] - device_gib) > 1e-6:
-        out.append(round(float(device_gib), 2))
+        # rounded DOWN to 0.01 GiB: rounding up (7.6866 -> 7.69) put the card's own size
+        # above its memory, and parse_sizes refused it (uni PC, 2026-11-20)
+        out.append(math.floor(float(device_gib) * 100) / 100)
     return out
 
 

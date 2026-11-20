@@ -176,6 +176,9 @@ def test_vram_helpers():
     check("auto, 80 GiB card: all 15 sizes", WP.auto_sizes(80.0) == [float(s) for s in WP.CARD_SIZES_GIB])
     check(f"auto, 7.63 GiB card (RTX 3070) ends with the card itself ({WP.auto_sizes(7.63)})",
           WP.auto_sizes(7.63) == [2, 3, 4, 6, 7.63])
+    real = 7.6866                                # the uni PC's RTX 3070 as torch reports it
+    check(f"auto, {real} GiB card: ends at {WP.auto_sizes(real)[-1]} (rounded down) and is accepted",
+          WP.auto_sizes(real)[-1] == 7.68 and WP.parse_sizes("auto", real)[-1] == 7.68)
     try:
         WP.parse_sizes("4,12", 8.0)
         refused = False
